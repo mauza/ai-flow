@@ -1,0 +1,19 @@
+# Binary
+ai-flow
+
+# Config (contains secrets)
+config.yaml
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
