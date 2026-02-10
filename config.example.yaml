@@ -1,0 +1,42 @@
+# ai-flow configuration
+# Environment variables are expanded: ${VAR_NAME}
+
+server:
+  port: 8080
+
+linear:
+  api_key: "${LINEAR_API_KEY}"
+  webhook_secret: "${LINEAR_WEBHOOK_SECRET}"
+  team_key: "ENG"                   # Your Linear team key
+
+project:
+  github_repo: "owner/repo"         # GitHub owner/repo for PR creation
+  default_branch: "main"            # Base branch for PRs (default: main)
+
+pipeline:
+  - name: "triage"
+    linear_state: "Triage"          # Trigger when issue enters this state
+    command: "claude-code"
+    args: ["--print"]
+    prompt: |
+      You are a triage agent. Analyze this issue and categorize it.
+      Determine priority and add relevant context for implementation.
+    next_state: "In Progress"       # Transition to on success
+    timeout: 300                    # Seconds (default: 300)
+    labels: []                      # Empty = match all issues
+
+  - name: "implement"
+    linear_state: "In Progress"
+    command: "claude-code"
+    args: ["--print"]
+    prompt: |
+      You are an implementation agent. Write code to address this issue.
+      Follow the project's coding conventions and include tests.
+    next_state: "In Review"
+    timeout: 600
+    labels: ["auto"]                # Only issues with this label
+    creates_pr: true                # Clone repo, run subprocess in it, create PR
+
+subprocess:
+  context_mode: "env"               # "env" | "stdin" | "both"
+  max_concurrent: 3                 # Max parallel subprocess runs
