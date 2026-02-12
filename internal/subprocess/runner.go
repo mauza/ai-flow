@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// Comment represents a human comment on an issue.
+type Comment struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
 // Input contains everything needed to run a subprocess for a pipeline stage.
 type Input struct {
 	// Issue context
@@ -34,6 +40,9 @@ type Input struct {
 	// Git context (set when stage creates a PR)
 	WorkDir    string
 	BranchName string
+
+	// Comments from the issue (filtered, human-only)
+	Comments []Comment
 }
 
 // Result captures the outcome of a subprocess run.
@@ -93,7 +102,7 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 
 	// Optionally pipe JSON to stdin
 	if input.ContextMode == "stdin" || input.ContextMode == "both" {
-		stdinData, err := json.Marshal(map[string]any{
+		stdinMap := map[string]any{
 			"issue_id":          input.IssueID,
 			"issue_identifier":  input.IssueIdentifier,
 			"issue_title":       input.IssueTitle,
@@ -104,7 +113,11 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 			"stage_name":        input.StageName,
 			"next_state":        input.NextState,
 			"prompt":            input.Prompt,
-		})
+		}
+		if len(input.Comments) > 0 {
+			stdinMap["comments"] = input.Comments
+		}
+		stdinData, err := json.Marshal(stdinMap)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling stdin: %w", err)
 		}
@@ -145,6 +158,14 @@ func composePrompt(input Input) string {
 	}
 	b.WriteString("\n---\n\n")
 	b.WriteString(input.Prompt)
+
+	if len(input.Comments) > 0 {
+		b.WriteString("\n\n---\n\nComments:\n")
+		for _, c := range input.Comments {
+			b.WriteString(fmt.Sprintf("\n[%s]:\n%s\n", c.Author, c.Body))
+		}
+	}
+
 	return b.String()
 }
 
@@ -170,6 +191,11 @@ func buildEnv(input Input, composedPrompt string) []string {
 	}
 	if input.BranchName != "" {
 		env = append(env, "AIFLOW_BRANCH="+input.BranchName)
+	}
+	if len(input.Comments) > 0 {
+		if commentsJSON, err := json.Marshal(input.Comments); err == nil {
+			env = append(env, "AIFLOW_COMMENTS="+string(commentsJSON))
+		}
 	}
 	return env
 }

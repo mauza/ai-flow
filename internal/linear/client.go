@@ -201,6 +201,43 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateID string) 
 	return nil
 }
 
+// GetIssueComments fetches all comments on an issue, ordered by creation time.
+func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]CommentNode, error) {
+	query := `query($id: String!) {
+		issue(id: $id) {
+			comments(orderBy: createdAt) {
+				nodes {
+					id
+					body
+					createdAt
+					user { name }
+				}
+			}
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		Issue struct {
+			Comments struct {
+				Nodes []CommentNode `json:"nodes"`
+			} `json:"comments"`
+		} `json:"issue"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"id": issueID},
+	}, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("getting issue comments: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+
+	return resp.Data.Issue.Comments.Nodes, nil
+}
+
 // PostComment adds a comment to an issue.
 func (c *Client) PostComment(ctx context.Context, issueID, body string) error {
 	query := `mutation($issueId: String!, $body: String!) {

@@ -39,8 +39,11 @@ type StageConfig struct {
 	Prompt      string   `yaml:"prompt"`
 	NextState   string   `yaml:"next_state"`
 	Timeout     int      `yaml:"timeout"`
-	Labels      []string `yaml:"labels"`
-	CreatesPR   bool     `yaml:"creates_pr"`
+	Labels          []string `yaml:"labels"`
+	CreatesPR       bool     `yaml:"creates_pr"`
+	UsesBranch      bool     `yaml:"uses_branch"`
+	FailureState    string   `yaml:"failure_state"`
+	WaitForApproval bool     `yaml:"wait_for_approval"`
 }
 
 type SubprocessConfig struct {
@@ -130,6 +133,17 @@ func (c *Config) validate() error {
 			if c.Project == nil || c.Project.GithubRepo == "" {
 				return fmt.Errorf("pipeline[%d] has creates_pr but project.github_repo is not configured", i)
 			}
+		}
+		if stage.UsesBranch {
+			if c.Project == nil || c.Project.GithubRepo == "" {
+				return fmt.Errorf("pipeline[%d] has uses_branch but project.github_repo is not configured", i)
+			}
+		}
+		if stage.UsesBranch && stage.CreatesPR {
+			return fmt.Errorf("pipeline[%d] has both uses_branch and creates_pr (mutually exclusive)", i)
+		}
+		if stage.FailureState != "" && strings.EqualFold(stage.FailureState, stage.LinearState) {
+			return fmt.Errorf("pipeline[%d] failure_state cannot equal linear_state", i)
 		}
 		if seen[stage.LinearState] {
 			return fmt.Errorf("duplicate linear_state %q in pipeline", stage.LinearState)

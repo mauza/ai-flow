@@ -38,26 +38,41 @@ func New(dbPath string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// RunInfo holds metadata from a previous completed run.
+type RunInfo struct {
+	ID         int64
+	BranchName string
+	PRURL      string
+}
+
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS runs (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			issue_id   TEXT NOT NULL,
-			stage_name TEXT NOT NULL,
-			status     TEXT NOT NULL DEFAULT 'running',
-			exit_code  INTEGER,
-			output     TEXT,
-			pr_url     TEXT,
-			error      TEXT,
-			started_at DATETIME NOT NULL DEFAULT (datetime('now')),
-			ended_at   DATETIME
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_id    TEXT NOT NULL,
+			stage_name  TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'running',
+			exit_code   INTEGER,
+			output      TEXT,
+			pr_url      TEXT,
+			branch_name TEXT,
+			error       TEXT,
+			started_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+			ended_at    DATETIME
 		);
 
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_dedup
 			ON runs (issue_id, stage_name)
 			WHERE status = 'running';
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration for existing databases: add branch_name column if missing
+	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN branch_name TEXT`)
+
+	return nil
 }
 
 // StartRun attempts to insert a new running record. Returns true if inserted
@@ -84,11 +99,11 @@ func (s *Store) StartRun(issueID, stageName string) (int64, bool, error) {
 	return id, true, nil
 }
 
-// CompleteRun marks a run as completed with the given exit code, output, and optional PR URL.
-func (s *Store) CompleteRun(runID int64, exitCode int, output, prURL string) error {
+// CompleteRun marks a run as completed with the given exit code, output, optional PR URL, and branch name.
+func (s *Store) CompleteRun(runID int64, exitCode int, output, prURL, branchName string) error {
 	_, err := s.db.Exec(
-		`UPDATE runs SET status = 'completed', exit_code = ?, output = ?, pr_url = ?, ended_at = ? WHERE id = ?`,
-		exitCode, output, prURL, time.Now().UTC(), runID,
+		`UPDATE runs SET status = 'completed', exit_code = ?, output = ?, pr_url = ?, branch_name = ?, ended_at = ? WHERE id = ?`,
+		exitCode, output, prURL, branchName, time.Now().UTC(), runID,
 	)
 	return err
 }
@@ -109,6 +124,50 @@ func (s *Store) TimeoutRun(runID int64, errMsg string) error {
 		errMsg, time.Now().UTC(), runID,
 	)
 	return err
+}
+
+// GetLastCompletedRun returns the most recent successful run's branch and PR info for an issue+stage.
+// Returns nil if no completed run exists.
+func (s *Store) GetLastCompletedRun(issueID, stageName string) (*RunInfo, error) {
+	var info RunInfo
+	var branchName, prURL sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, branch_name, pr_url FROM runs
+		 WHERE issue_id = ? AND stage_name = ? AND status = 'completed' AND exit_code = 0
+		 ORDER BY ended_at DESC LIMIT 1`,
+		issueID, stageName,
+	).Scan(&info.ID, &branchName, &prURL)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying last completed run: %w", err)
+	}
+	info.BranchName = branchName.String
+	info.PRURL = prURL.String
+	return &info, nil
+}
+
+// GetBranchForIssue returns the most recent branch/PR info from ANY completed run for this issue (cross-stage lookup).
+// Returns nil if no completed run with a branch exists.
+func (s *Store) GetBranchForIssue(issueID string) (*RunInfo, error) {
+	var info RunInfo
+	var branchName, prURL sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, branch_name, pr_url FROM runs
+		 WHERE issue_id = ? AND status = 'completed' AND exit_code = 0 AND branch_name IS NOT NULL AND branch_name != ''
+		 ORDER BY ended_at DESC LIMIT 1`,
+		issueID,
+	).Scan(&info.ID, &branchName, &prURL)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying branch for issue: %w", err)
+	}
+	info.BranchName = branchName.String
+	info.PRURL = prURL.String
+	return &info, nil
 }
 
 // IsRunning checks whether there is currently a running record for the given issue+stage.

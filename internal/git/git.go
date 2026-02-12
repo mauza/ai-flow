@@ -50,6 +50,31 @@ func (m *Manager) CreateBranch(ctx context.Context, dir, name string) error {
 	return nil
 }
 
+// FetchAndCheckout fetches a remote branch and checks it out locally.
+func (m *Manager) FetchAndCheckout(ctx context.Context, dir, branch string) error {
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", branch)
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	checkoutCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-b", branch, "origin/"+branch)
+	if out, err := checkoutCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// BranchExistsOnRemote checks if a branch exists on the remote origin.
+func (m *Manager) BranchExistsOnRemote(ctx context.Context, dir, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-remote", "--heads", "origin", branch)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("git ls-remote: %w", err)
+	}
+	return strings.TrimSpace(stdout.String()) != "", nil
+}
+
 // HasChanges returns true if the working tree has uncommitted changes.
 func (m *Manager) HasChanges(ctx context.Context, dir string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain")

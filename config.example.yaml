@@ -14,17 +14,19 @@ project:
   default_branch: "main"            # Base branch for PRs (default: main)
 
 pipeline:
-  - name: "triage"
-    linear_state: "Triage"          # Trigger when issue enters this state
+  # Stage 1: Plan — analyze issue and create implementation plan
+  - name: "plan"
+    linear_state: "Todo"            # Trigger when issue enters this state
     command: "claude-code"
     args: ["--print"]
     prompt: |
-      You are a triage agent. Analyze this issue and categorize it.
-      Determine priority and add relevant context for implementation.
+      You are a planning agent. Analyze this issue and create a detailed
+      implementation plan.
     next_state: "In Progress"       # Transition to on success
     timeout: 300                    # Seconds (default: 300)
-    labels: []                      # Empty = match all issues
+    labels: ["auto"]                # Only issues with this label
 
+  # Stage 2: Implement — write code and create PR
   - name: "implement"
     linear_state: "In Progress"
     command: "claude-code"
@@ -32,10 +34,52 @@ pipeline:
     prompt: |
       You are an implementation agent. Write code to address this issue.
       Follow the project's coding conventions and include tests.
-    next_state: "In Review"
+    next_state: "Security Review"
     timeout: 600
-    labels: ["auto"]                # Only issues with this label
-    creates_pr: true                # Clone repo, run subprocess in it, create PR
+    labels: ["auto"]
+    creates_pr: true                # Clone repo, run in it, create PR
+
+  # Stage 3: Security — review code on existing branch
+  - name: "security"
+    linear_state: "Security Review"
+    command: "claude-code"
+    args: ["--print"]
+    prompt: |
+      You are a security review agent. Review the code changes for
+      security vulnerabilities. Fix issues directly if found.
+    next_state: "Testing"
+    failure_state: "In Progress"    # On failure, go back to implementation
+    timeout: 600
+    labels: ["auto"]
+    uses_branch: true               # Checkout existing branch (no new PR)
+
+  # Stage 4: Test — run tests on existing branch
+  - name: "test"
+    linear_state: "Testing"
+    command: "claude-code"
+    args: ["--print"]
+    prompt: |
+      You are a testing agent. Run the test suite and add missing coverage.
+      Fix any failing tests directly.
+    next_state: "Review"
+    failure_state: "In Progress"
+    timeout: 600
+    labels: ["auto"]
+    uses_branch: true
+
+  # Stage 5: Review — final code review on existing branch
+  - name: "review"
+    linear_state: "Review"
+    command: "claude-code"
+    args: ["--print"]
+    prompt: |
+      You are a code review agent. Review code quality, maintainability,
+      and correctness. Fix issues directly if found.
+    next_state: "Done"
+    failure_state: "In Progress"
+    timeout: 600
+    labels: ["auto"]
+    uses_branch: true
 
 subprocess:
   context_mode: "env"               # "env" | "stdin" | "both"

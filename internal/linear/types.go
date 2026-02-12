@@ -62,6 +62,24 @@ type IssueDetails struct {
 	} `json:"labels"`
 }
 
+// CommentData is the comment object embedded in webhook payloads.
+type CommentData struct {
+	ID      string `json:"id"`
+	Body    string `json:"body"`
+	IssueID string `json:"issueId"`
+	UserID  string `json:"userId"`
+}
+
+// CommentNode represents a comment returned by a GraphQL query.
+type CommentNode struct {
+	ID        string `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt"`
+	User      struct {
+		Name string `json:"name"`
+	} `json:"user"`
+}
+
 // GraphQLRequest is a generic GraphQL request body.
 type GraphQLRequest struct {
 	Query     string         `json:"query"`

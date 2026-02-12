@@ -73,14 +73,15 @@ func NewWebhookHandler(secret string, dispatch DispatchFunc) http.HandlerFunc {
 		// Return 200 immediately
 		w.WriteHeader(http.StatusOK)
 
-		// Filter: only Issue updates
-		if payload.Type != "Issue" || payload.Action != "update" {
+		// Filter: only Issue updates and Comment creates
+		switch {
+		case payload.Type == "Issue" && payload.Action == "update":
+			go dispatch(payload)
+		case payload.Type == "Comment" && payload.Action == "create":
+			go dispatch(payload)
+		default:
 			slog.Debug("ignoring webhook", "type", payload.Type, "action", payload.Action)
-			return
 		}
-
-		// Dispatch in background goroutine
-		go dispatch(payload)
 	}
 }
 

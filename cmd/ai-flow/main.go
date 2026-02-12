@@ -76,6 +76,15 @@ func main() {
 			)
 			os.Exit(1)
 		}
+		if stage.FailureState != "" {
+			if _, ok := client.ResolveStateID(stage.FailureState); !ok {
+				slog.Error("failure state not found in Linear",
+					"stage", stage.Name,
+					"failureState", stage.FailureState,
+				)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// Init git manager (optional — only when project is configured)
@@ -99,7 +108,12 @@ func main() {
 	mux.HandleFunc("POST /webhook", linear.NewWebhookHandler(
 		cfg.Linear.WebhookSecret,
 		func(payload linear.WebhookPayload) {
-			orch.HandleWebhook(context.Background(), payload)
+			switch payload.Type {
+			case "Issue":
+				orch.HandleWebhook(context.Background(), payload)
+			case "Comment":
+				orch.HandleCommentWebhook(context.Background(), payload)
+			}
 		},
 	))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
