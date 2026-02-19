@@ -22,11 +22,9 @@ pipeline:
     linear_state: "Todo"            # Trigger when issue enters this state
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt: |
-      You are a planning agent. Analyze this issue and create a detailed
-      implementation plan.
+    prompt_file: "prompts/plan.md"  # Path to prompt file (relative to config)
     next_state: "In Progress"       # Transition to on success
-    timeout: 300                    # Seconds (default: 300)
+    timeout: 7200                   # Seconds (default: 3600)
     labels: ["auto"]                # Only issues with this label
 
   # Stage 2: Implement — write code and create PR
@@ -34,11 +32,9 @@ pipeline:
     linear_state: "In Progress"
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt: |
-      You are an implementation agent. Write code to address this issue.
-      Follow the project's coding conventions and include tests.
+    prompt_file: "prompts/implement.md"
     next_state: "Security Review"
-    timeout: 600
+    timeout: 7200
     labels: ["auto"]
     creates_pr: true                # Clone repo, run in it, create PR
 
@@ -47,12 +43,10 @@ pipeline:
     linear_state: "Security Review"
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt: |
-      You are a security review agent. Review the code changes for
-      security vulnerabilities. Fix issues directly if found.
+    prompt_file: "prompts/security.md"
     next_state: "Testing"
     failure_state: "In Progress"    # On failure, go back to implementation
-    timeout: 600
+    timeout: 7200
     labels: ["auto"]
     uses_branch: true               # Checkout existing branch (no new PR)
 
@@ -61,12 +55,10 @@ pipeline:
     linear_state: "Testing"
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt: |
-      You are a testing agent. Run the test suite and add missing coverage.
-      Fix any failing tests directly.
+    prompt_file: "prompts/test.md"
     next_state: "Review"
     failure_state: "In Progress"
-    timeout: 600
+    timeout: 7200
     labels: ["auto"]
     uses_branch: true
 
@@ -75,12 +67,10 @@ pipeline:
     linear_state: "Review"
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt: |
-      You are a code review agent. Review code quality, maintainability,
-      and correctness. Fix issues directly if found.
+    prompt_file: "prompts/review.md"
     next_state: "Done"
     failure_state: "In Progress"
-    timeout: 600
+    timeout: 7200
     labels: ["auto"]
     uses_branch: true
 

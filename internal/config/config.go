@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -35,7 +36,8 @@ type StageConfig struct {
 	LinearState string   `yaml:"linear_state"`
 	Command     string   `yaml:"command"`
 	Args        []string `yaml:"args"`
-	Prompt      string   `yaml:"prompt"`
+	PromptFile  string   `yaml:"prompt_file"`
+	Prompt      string   `yaml:"-"` // resolved from PromptFile at load time
 	NextState   string   `yaml:"next_state"`
 	Timeout     int      `yaml:"timeout"`
 	Labels          []string `yaml:"labels"`
@@ -51,6 +53,7 @@ type SubprocessConfig struct {
 }
 
 // Load reads and parses a YAML config file, expanding environment variables.
+// Prompt file paths are resolved relative to the config file's directory.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -64,14 +67,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	if err := cfg.validate(); err != nil {
+	configDir := filepath.Dir(path)
+	if err := cfg.validate(configDir); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	return &cfg, nil
 }
 
-func (c *Config) validate() error {
+func (c *Config) validate(configDir string) error {
 	// Defaults
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
@@ -124,11 +128,24 @@ func (c *Config) validate() error {
 		if stage.Command == "" {
 			return fmt.Errorf("pipeline[%d].command is required", i)
 		}
+		if stage.PromptFile == "" {
+			return fmt.Errorf("pipeline[%d].prompt_file is required", i)
+		}
+		promptPath := stage.PromptFile
+		if !filepath.IsAbs(promptPath) {
+			promptPath = filepath.Join(configDir, promptPath)
+		}
+		promptData, err := os.ReadFile(promptPath)
+		if err != nil {
+			return fmt.Errorf("pipeline[%d].prompt_file %q: %w", i, stage.PromptFile, err)
+		}
+		c.Pipeline[i].Prompt = string(promptData)
+
 		if stage.NextState == "" {
 			return fmt.Errorf("pipeline[%d].next_state is required", i)
 		}
 		if stage.Timeout == 0 {
-			c.Pipeline[i].Timeout = 300
+			c.Pipeline[i].Timeout = 3600
 		}
 		if stage.UsesBranch && stage.CreatesPR {
 			return fmt.Errorf("pipeline[%d] has both uses_branch and creates_pr (mutually exclusive)", i)
