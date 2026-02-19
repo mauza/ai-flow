@@ -11,7 +11,11 @@ import (
 )
 
 // Manager wraps git and gh CLI commands for repository operations.
-type Manager struct{}
+type Manager struct {
+	// Git author identity for commits in temp clones.
+	AuthorName  string
+	AuthorEmail string
+}
 
 // NewManager creates a new git Manager after verifying that git and gh are available.
 // Returns an error describing which tools are missing.
@@ -26,16 +30,38 @@ func NewManager() (*Manager, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("required tools not found in PATH: %s", strings.Join(missing, ", "))
 	}
-	return &Manager{}, nil
+	return &Manager{
+		AuthorName:  "ai-flow",
+		AuthorEmail: "ai-flow@noreply",
+	}, nil
 }
 
-// Clone performs a shallow clone of the given repo into dir.
+// Clone performs a shallow clone of the given repo into dir, then configures
+// the git identity so commits work even without global git config.
 func (m *Manager) Clone(ctx context.Context, repo, branch, dir string) error {
 	url := "https://github.com/" + repo + ".git"
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, url, dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	// Configure git identity in the clone so commits don't fail
+	if err := m.configureIdentity(ctx, dir); err != nil {
+		return fmt.Errorf("configuring git identity: %w", err)
+	}
+	return nil
+}
+
+// configureIdentity sets user.name and user.email in the clone's local config.
+func (m *Manager) configureIdentity(ctx context.Context, dir string) error {
+	nameCmd := exec.CommandContext(ctx, "git", "-C", dir, "config", "user.name", m.AuthorName)
+	if out, err := nameCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config user.name: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	emailCmd := exec.CommandContext(ctx, "git", "-C", dir, "config", "user.email", m.AuthorEmail)
+	if out, err := emailCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config user.email: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
@@ -127,6 +153,17 @@ func (m *Manager) CreatePR(ctx context.Context, dir, title, body, base, head str
 		return "", fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(stderr), err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// CommentOnPR posts a comment on an existing PR using the gh CLI.
+func (m *Manager) CommentOnPR(ctx context.Context, dir, prURL, body string) error {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "comment", prURL, "--body", body)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh pr comment: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // Cleanup removes the temporary directory.

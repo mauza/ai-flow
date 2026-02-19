@@ -183,6 +183,44 @@ func (s *Store) IsRunning(issueID, stageName string) (bool, error) {
 	return count > 0, nil
 }
 
+// CleanStaleRuns marks any "running" records older than the given duration as failed.
+// This recovers from process crashes that leave zombie running records.
+func (s *Store) CleanStaleRuns(maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	res, err := s.db.Exec(
+		`UPDATE runs SET status = 'failed', error = 'stale run recovered on startup', ended_at = ?
+		 WHERE status = 'running' AND started_at < ?`,
+		time.Now().UTC(), cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("cleaning stale runs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// GetFirstBranchForIssue returns the branch/PR info from the earliest completed run
+// that has a branch for this issue. This ensures uses_branch stages always pick up
+// the branch created by the first creates_pr stage rather than the most recent run.
+func (s *Store) GetFirstBranchForIssue(issueID string) (*RunInfo, error) {
+	var info RunInfo
+	var branchName, prURL sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, branch_name, pr_url FROM runs
+		 WHERE issue_id = ? AND status = 'completed' AND exit_code = 0 AND branch_name IS NOT NULL AND branch_name != ''
+		 ORDER BY started_at ASC LIMIT 1`,
+		issueID,
+	).Scan(&info.ID, &branchName, &prURL)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying first branch for issue: %w", err)
+	}
+	info.BranchName = branchName.String
+	info.PRURL = prURL.String
+	return &info, nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()

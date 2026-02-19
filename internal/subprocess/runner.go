@@ -5,11 +5,44 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+const maxOutputBytes = 1 << 20 // 1 MB per stream
+
+// limitedWriter wraps a bytes.Buffer and stops writing after a limit.
+type limitedWriter struct {
+	buf     bytes.Buffer
+	limit   int
+	dropped int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.buf.Len()
+	if remaining <= 0 {
+		w.dropped += len(p)
+		return len(p), nil // discard silently to avoid blocking subprocess
+	}
+	if len(p) > remaining {
+		w.dropped += len(p) - remaining
+		p = p[:remaining]
+	}
+	return w.buf.Write(p)
+}
+
+func (w *limitedWriter) String() string {
+	s := w.buf.String()
+	if w.dropped > 0 {
+		return s + fmt.Sprintf("\n... (%d bytes truncated)", w.dropped)
+	}
+	return s
+}
+
+var _ io.Writer = (*limitedWriter)(nil)
 
 // Comment represents a human comment on an issue.
 type Comment struct {
@@ -96,9 +129,10 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 	// Set environment variables
 	cmd.Env = buildEnv(input, composedPrompt)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedWriter{limit: maxOutputBytes}
+	stderr := &limitedWriter{limit: maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	// Optionally pipe JSON to stdin
 	if input.ContextMode == "stdin" || input.ContextMode == "both" {

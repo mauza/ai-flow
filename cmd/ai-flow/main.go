@@ -50,6 +50,14 @@ func main() {
 	defer db.Close()
 	slog.Info("database initialized", "path", *dbPath)
 
+	// Clean up zombie running records from previous crashes
+	cleaned, err := db.CleanStaleRuns(10 * time.Minute)
+	if err != nil {
+		slog.Warn("cleaning stale runs", "error", err)
+	} else if cleaned > 0 {
+		slog.Info("recovered stale running records", "count", cleaned)
+	}
+
 	// Init Linear client and load workflow states
 	client := linear.NewClient(cfg.Linear.APIKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"sync"
+	"time"
 )
 
 const apiURL = "https://api.linear.app/graphql"
@@ -33,12 +35,44 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
+const (
+	maxRetries     = 3
+	baseRetryDelay = 500 * time.Millisecond
+)
+
 func (c *Client) do(ctx context.Context, req GraphQLRequest, result any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			delay := time.Duration(float64(baseRetryDelay) * math.Pow(2, float64(attempt-1)))
+			slog.Debug("retrying Linear API request", "attempt", attempt+1, "delay", delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		lastErr = c.doOnce(ctx, body, result)
+		if lastErr == nil {
+			return nil
+		}
+
+		// Don't retry on context cancellation or client errors (4xx except 429)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		slog.Warn("Linear API request failed", "attempt", attempt+1, "error", lastErr)
+	}
+	return fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (c *Client) doOnce(ctx context.Context, body []byte, result any) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
