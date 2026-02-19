@@ -95,16 +95,14 @@ func main() {
 		}
 	}
 
-	// Init git manager (optional — only when project is configured)
+	// Init git manager (optional — depends on git/gh availability)
 	var gitMgr *git.Manager
-	if cfg.Project != nil {
-		var err error
-		gitMgr, err = git.NewManager()
-		if err != nil {
-			slog.Warn("git manager not available, PR creation disabled", "error", err)
-		} else {
-			slog.Info("git manager initialized", "repo", cfg.Project.GithubRepo)
-		}
+	gitMgr, err = git.NewManager()
+	if err != nil {
+		slog.Warn("git manager not available, PR creation disabled", "error", err)
+		gitMgr = nil
+	} else {
+		slog.Info("git manager initialized")
 	}
 
 	// Init runner and orchestrator

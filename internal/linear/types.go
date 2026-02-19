@@ -60,6 +60,11 @@ type IssueDetails struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
+	Project *struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"project"`
 }
 
 // CommentData is the comment object embedded in webhook payloads.

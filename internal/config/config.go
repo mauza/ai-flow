@@ -11,14 +11,8 @@ import (
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Linear     LinearConfig     `yaml:"linear"`
-	Project    *ProjectConfig   `yaml:"project"`
 	Pipeline   []StageConfig    `yaml:"pipeline"`
 	Subprocess SubprocessConfig `yaml:"subprocess"`
-}
-
-type ProjectConfig struct {
-	GithubRepo    string `yaml:"github_repo"`
-	DefaultBranch string `yaml:"default_branch"`
 }
 
 type ServerConfig struct {
@@ -106,11 +100,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("subprocess.context_mode must be env, stdin, or both; got %q", c.Subprocess.ContextMode)
 	}
 
-	// Default project settings
-	if c.Project != nil && c.Project.DefaultBranch == "" {
-		c.Project.DefaultBranch = "main"
-	}
-
 	// Check stages and no duplicate linear_states
 	seen := make(map[string]bool)
 	for i, stage := range c.Pipeline {
@@ -128,16 +117,6 @@ func (c *Config) validate() error {
 		}
 		if stage.Timeout == 0 {
 			c.Pipeline[i].Timeout = 300
-		}
-		if stage.CreatesPR {
-			if c.Project == nil || c.Project.GithubRepo == "" {
-				return fmt.Errorf("pipeline[%d] has creates_pr but project.github_repo is not configured", i)
-			}
-		}
-		if stage.UsesBranch {
-			if c.Project == nil || c.Project.GithubRepo == "" {
-				return fmt.Errorf("pipeline[%d] has uses_branch but project.github_repo is not configured", i)
-			}
 		}
 		if stage.UsesBranch && stage.CreatesPR {
 			return fmt.Errorf("pipeline[%d] has both uses_branch and creates_pr (mutually exclusive)", i)

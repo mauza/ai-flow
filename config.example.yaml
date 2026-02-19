@@ -9,9 +9,12 @@ linear:
   webhook_secret: "${LINEAR_WEBHOOK_SECRET}"
   team_key: "ENG"                   # Your Linear team key
 
-project:
-  github_repo: "owner/repo"         # GitHub owner/repo for PR creation
-  default_branch: "main"            # Base branch for PRs (default: main)
+# GitHub repo config is defined per Linear project (not here).
+# Add YAML frontmatter to each Linear project's description:
+#   ---
+#   github_repo: owner/repo
+#   default_branch: main
+#   ---
 
 pipeline:
   # Stage 1: Plan — analyze issue and create implementation plan

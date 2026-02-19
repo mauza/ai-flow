@@ -183,6 +183,7 @@ func (c *Client) GetIssue(ctx context.Context, id string) (*IssueDetails, error)
 			state { id name }
 			team { id key }
 			labels { nodes { id name } }
+			project { id name description }
 		}
 	}`
 

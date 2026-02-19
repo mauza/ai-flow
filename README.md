@@ -45,7 +45,26 @@ ai-flow bridges two systems: **Linear** (for project management and issue tracki
 - **GitHub** provides the code: the repo where AI agents write code, push branches, and open PRs
 - **ai-flow** is the bridge: it listens for Linear state changes and orchestrates git operations
 
-The connection between a Linear project and a GitHub repo is configured in `config.yaml`. Each ai-flow instance handles **one Linear team** and **one GitHub repo**. If you have multiple repos, run multiple ai-flow instances with different configs.
+The connection between a Linear project and a GitHub repo is defined in the **Linear project description** using YAML frontmatter. Each Linear project maps to one GitHub repo, so a single ai-flow instance can handle multiple repos — one per project.
+
+Every issue that uses git stages (`creates_pr` or `uses_branch`) **must belong to a Linear project** with the repo metadata in its description.
+
+### Project Description Format
+
+Add YAML frontmatter to your Linear project's description:
+
+```
+---
+github_repo: your-org/your-repo
+default_branch: main
+---
+Rest of your project description here...
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `github_repo` | Yes | — | GitHub `owner/repo` (e.g. `acme/backend`) |
+| `default_branch` | No | `main` | Base branch for new PRs |
 
 ### Configuration
 
@@ -55,16 +74,11 @@ linear:
   api_key: "${LINEAR_API_KEY}"
   webhook_secret: "${LINEAR_WEBHOOK_SECRET}"
   team_key: "ENG"              # Your Linear team key (visible in team settings)
-
-# GitHub side: which repo to work with
-project:
-  github_repo: "your-org/your-repo"   # GitHub owner/repo
-  default_branch: "main"               # Base branch for new PRs
 ```
 
 The `team_key` is found in Linear under **Settings > Teams > [Your Team]** — it's the short prefix like `ENG`, `PROD`, etc. that appears before issue numbers (e.g. `ENG-123`).
 
-The `github_repo` is the `owner/repo` format used by GitHub (e.g. `acme/backend`). ai-flow clones via HTTPS using `gh` authentication.
+The `github_repo` in each project description uses the `owner/repo` format used by GitHub (e.g. `acme/backend`). ai-flow clones via HTTPS using `gh` authentication.
 
 ### What You Need Set Up Before Running
 
@@ -73,6 +87,7 @@ The `github_repo` is the `owner/repo` format used by GitHub (e.g. `acme/backend`
 3. **GitHub CLI (`gh`)** — Install and authenticate with `gh auth login`
 4. **Git** — Must be installed and on PATH
 5. **Linear workflow states** — Must match the `linear_state` and `next_state` values in your pipeline
+6. **Linear projects** — Each project that uses git stages must have YAML frontmatter with `github_repo` in its description
 
 ## Setting Up Git / PR Creation
 
@@ -89,15 +104,18 @@ gh auth login
 
 ai-flow automatically configures git identity (`user.name` and `user.email`) in each temp clone, so you don't need global git config on the server.
 
-### 2. Configure the `project` section
+### 2. Add repo metadata to your Linear project
 
-The `project` block in `config.yaml` tells ai-flow which GitHub repository to work with:
+Add YAML frontmatter to your Linear project's description:
 
-```yaml
-project:
-  github_repo: "your-org/your-repo"   # GitHub owner/repo
-  default_branch: "main"               # Base branch for PRs
 ```
+---
+github_repo: your-org/your-repo
+default_branch: main
+---
+```
+
+Every issue that triggers a git stage must belong to a Linear project with this metadata.
 
 ### 3. Use `creates_pr` or `uses_branch` on pipeline stages
 
@@ -198,11 +216,11 @@ subprocess:
   max_concurrent: 3
 ```
 
-No `project` section needed since no stage creates PRs.
+No Linear project metadata needed since no stage creates PRs.
 
 ### Full Pipeline: Plan through Review
 
-This is the recommended setup for fully autonomous ticket-to-PR:
+This is the recommended setup for fully autonomous ticket-to-PR. Issues must belong to a Linear project with `github_repo` in its description frontmatter.
 
 ```yaml
 server:
@@ -212,10 +230,6 @@ linear:
   api_key: "${LINEAR_API_KEY}"
   webhook_secret: "${LINEAR_WEBHOOK_SECRET}"
   team_key: "ENG"
-
-project:
-  github_repo: "your-org/your-repo"
-  default_branch: "main"
 
 pipeline:
   # 1. Plan: analyze the issue, break it down (no git needed)
@@ -379,15 +393,6 @@ Each git stage runs in a fresh temp directory that is cleaned up after the stage
 | `webhook_secret` | Yes | Webhook signing secret (from Settings > API > Webhooks) |
 | `team_key` | Yes | Linear team key — the prefix before issue numbers (e.g. `ENG` for `ENG-123`) |
 
-### `project`
-
-Required if any stage uses `creates_pr` or `uses_branch`. Defines which GitHub repo ai-flow operates on.
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `github_repo` | — | GitHub `owner/repo` (e.g. `acme/backend`) |
-| `default_branch` | `main` | Base branch for new PRs |
-
 ### `pipeline[]`
 
 | Field | Default | Description |
@@ -407,7 +412,7 @@ Required if any stage uses `creates_pr` or `uses_branch`. Defines which GitHub r
 
 **Constraints:**
 - `creates_pr` and `uses_branch` are mutually exclusive
-- Both require `project.github_repo` to be set
+- Both require the issue to belong to a Linear project with `github_repo` in its description frontmatter
 - `failure_state` cannot be the same as `linear_state`
 - Each `linear_state` must be unique across the pipeline
 - Only **one** stage should have `creates_pr: true` per pipeline — downstream stages use `uses_branch: true`

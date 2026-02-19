@@ -190,10 +190,27 @@ func (o *Orchestrator) handleWithoutGit(ctx context.Context, runID int64, detail
 	}
 }
 
+// resolveRepoConfig extracts GitHub repo metadata from the issue's Linear project.
+func resolveRepoConfig(details *linear.IssueDetails) (repo, branch string, err error) {
+	if details.Project == nil {
+		return "", "", fmt.Errorf("issue %s has no Linear project", details.Identifier)
+	}
+	meta, err := linear.ParseProjectMeta(details.Project.Description)
+	if err != nil {
+		return "", "", fmt.Errorf("issue %s: project %q: %w", details.Identifier, details.Project.Name, err)
+	}
+	return meta.GithubRepo, meta.DefaultBranch, nil
+}
+
 func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string) {
 	branchName := git.SanitizeBranchName(details.Identifier, details.Title)
-	repo := o.cfg.Project.GithubRepo
-	baseBranch := o.cfg.Project.DefaultBranch
+	repo, baseBranch, err := resolveRepoConfig(details)
+	if err != nil {
+		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
+		o.store.FailRun(runID, -1, err.Error())
+		o.failAndTransition(ctx, details.ID, details.Identifier, stage, err.Error())
+		return
+	}
 
 	// Create temp directory for the clone
 	tmpDir, err := os.MkdirTemp("", "aiflow-"+details.Identifier+"-*")
@@ -333,8 +350,13 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 }
 
 func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string) {
-	repo := o.cfg.Project.GithubRepo
-	baseBranch := o.cfg.Project.DefaultBranch
+	repo, baseBranch, err := resolveRepoConfig(details)
+	if err != nil {
+		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
+		o.store.FailRun(runID, -1, err.Error())
+		o.failAndTransition(ctx, details.ID, details.Identifier, stage, err.Error())
+		return
+	}
 
 	// Look up branch from any previous run for this issue
 	prevRun, err := o.store.GetFirstBranchForIssue(details.ID)
@@ -731,13 +753,17 @@ func (o *Orchestrator) handleRerunWithoutGit(ctx context.Context, runID int64, d
 }
 
 func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string, comments []subprocess.Comment) {
-	repo := o.cfg.Project.GithubRepo
-	baseBranch := o.cfg.Project.DefaultBranch
+	repo, baseBranch, err := resolveRepoConfig(details)
+	if err != nil {
+		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
+		o.store.FailRun(runID, -1, err.Error())
+		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, err.Error())
+		return
+	}
 
 	// For uses_branch stages, look up branch from any previous run (cross-stage)
 	// For creates_pr stages, look up from the same stage's previous run
 	var prevRun *store.RunInfo
-	var err error
 	if stage.UsesBranch {
 		prevRun, err = o.store.GetFirstBranchForIssue(details.ID)
 	} else {
