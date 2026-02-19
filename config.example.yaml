@@ -20,8 +20,8 @@ pipeline:
   # Stage 1: Plan — analyze issue and create implementation plan
   - name: "plan"
     linear_state: "Todo"            # Trigger when issue enters this state
-    command: "claude-code"
-    args: ["--print"]
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt: |
       You are a planning agent. Analyze this issue and create a detailed
       implementation plan.
@@ -32,8 +32,8 @@ pipeline:
   # Stage 2: Implement — write code and create PR
   - name: "implement"
     linear_state: "In Progress"
-    command: "claude-code"
-    args: ["--print"]
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt: |
       You are an implementation agent. Write code to address this issue.
       Follow the project's coding conventions and include tests.
@@ -45,8 +45,8 @@ pipeline:
   # Stage 3: Security — review code on existing branch
   - name: "security"
     linear_state: "Security Review"
-    command: "claude-code"
-    args: ["--print"]
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt: |
       You are a security review agent. Review the code changes for
       security vulnerabilities. Fix issues directly if found.
@@ -59,8 +59,8 @@ pipeline:
   # Stage 4: Test — run tests on existing branch
   - name: "test"
     linear_state: "Testing"
-    command: "claude-code"
-    args: ["--print"]
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt: |
       You are a testing agent. Run the test suite and add missing coverage.
       Fix any failing tests directly.
@@ -73,8 +73,8 @@ pipeline:
   # Stage 5: Review — final code review on existing branch
   - name: "review"
     linear_state: "Review"
-    command: "claude-code"
-    args: ["--print"]
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt: |
       You are a code review agent. Review code quality, maintainability,
       and correctness. Fix issues directly if found.
@@ -87,3 +87,11 @@ pipeline:
 subprocess:
   context_mode: "env"               # "env" | "stdin" | "both"
   max_concurrent: 3                 # Max parallel subprocess runs
+
+# Persistent workspace directories (optional).
+# When set, repos are cloned once and reused across pipeline stages
+# instead of creating ephemeral temp directories each time.
+# Structure: <root>/<owner>/<repo>/<branch>/
+# Workspaces are cleaned up when issues reach "Done" state.
+workspace:
+  root: "${HOME}/ai-flow-workspaces"

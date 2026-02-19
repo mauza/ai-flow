@@ -66,6 +66,37 @@ func (m *Manager) configureIdentity(ctx context.Context, dir string) error {
 	return nil
 }
 
+// Fetch fetches all refs from origin.
+func (m *Manager) Fetch(ctx context.Context, dir string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// ResetToRemote checks out the given branch and hard-resets it to match the remote,
+// then cleans any untracked files. This ensures a clean workspace matching origin.
+func (m *Manager) ResetToRemote(ctx context.Context, dir, branch string) error {
+	checkoutCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", branch)
+	if out, err := checkoutCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
+	if out, err := resetCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	cleanCmd := exec.CommandContext(ctx, "git", "-C", dir, "clean", "-fd")
+	if out, err := cleanCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git clean: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	return nil
+}
+
 // CreateBranch creates and checks out a new branch in the given directory.
 func (m *Manager) CreateBranch(ctx context.Context, dir, name string) error {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-b", name)

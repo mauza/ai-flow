@@ -273,6 +273,37 @@ func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]Commen
 	return resp.Data.Issue.Comments.Nodes, nil
 }
 
+// UpdateIssueDescription updates the description of a Linear issue.
+func (c *Client) UpdateIssueDescription(ctx context.Context, issueID, description string) error {
+	query := `mutation($id: String!, $description: String!) {
+		issueUpdate(id: $id, input: { description: $description }) {
+			success
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		IssueUpdate struct {
+			Success bool `json:"success"`
+		} `json:"issueUpdate"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"id": issueID, "description": description},
+	}, &resp)
+	if err != nil {
+		return fmt.Errorf("updating issue description: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+	if !resp.Data.IssueUpdate.Success {
+		return fmt.Errorf("issue description update returned success=false")
+	}
+
+	return nil
+}
+
 // PostComment adds a comment to an issue.
 func (c *Client) PostComment(ctx context.Context, issueID, body string) error {
 	query := `mutation($issueId: String!, $body: String!) {

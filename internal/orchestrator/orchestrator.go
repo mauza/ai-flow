@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +35,76 @@ func New(cfg *config.Config, client *linear.Client, store *store.Store, runner *
 		runner: runner,
 		git:    gitMgr,
 	}
+}
+
+// workspacePath returns the persistent workspace directory for a repo+branch,
+// or empty string if workspace root is not configured (fallback to temp dirs).
+func (o *Orchestrator) workspacePath(repo, branch string) string {
+	if o.cfg.Workspace.Root == "" {
+		return ""
+	}
+	return filepath.Join(o.cfg.Workspace.Root, repo, branch)
+}
+
+// setupWorkspace prepares a workspace directory for a git operation.
+// If persistent workspaces are configured, it reuses or creates the workspace.
+// Otherwise, it creates a temp directory. Returns the work directory and a cleanup
+// function (no-op for persistent workspaces).
+func (o *Orchestrator) setupWorkspace(ctx context.Context, repo, baseBranch, targetBranch, identifier string) (workDir string, cleanup func(), err error) {
+	wsPath := o.workspacePath(repo, targetBranch)
+	if wsPath != "" {
+		if err := os.MkdirAll(filepath.Dir(wsPath), 0755); err != nil {
+			return "", nil, fmt.Errorf("creating workspace parent: %w", err)
+		}
+
+		gitDir := filepath.Join(wsPath, ".git")
+		if info, statErr := os.Stat(gitDir); statErr == nil && info.IsDir() {
+			// Existing workspace: fetch + reset to clean state
+			slog.Info("reusing persistent workspace", "path", wsPath, "issue", identifier)
+			if err := o.git.Fetch(ctx, wsPath); err != nil {
+				return "", nil, fmt.Errorf("fetching in workspace: %w", err)
+			}
+			if err := o.git.ResetToRemote(ctx, wsPath, targetBranch); err != nil {
+				return "", nil, fmt.Errorf("resetting workspace: %w", err)
+			}
+			return wsPath, func() {}, nil
+		}
+
+		// First time: clone into workspace dir
+		cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cloneCancel()
+		if err := o.git.Clone(cloneCtx, repo, baseBranch, wsPath); err != nil {
+			return "", nil, fmt.Errorf("cloning into workspace: %w", err)
+		}
+		return wsPath, func() {}, nil
+	}
+
+	// Fallback: temp dir
+	tmpDir, err := os.MkdirTemp("", "aiflow-"+identifier+"-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating temp dir: %w", err)
+	}
+	cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cloneCancel()
+	if err := o.git.Clone(cloneCtx, repo, baseBranch, tmpDir); err != nil {
+		o.git.Cleanup(tmpDir)
+		return "", nil, fmt.Errorf("cloning repo: %w", err)
+	}
+	return tmpDir, func() { o.git.Cleanup(tmpDir) }, nil
+}
+
+// cleanupWorkspaceIfDone removes the persistent workspace directory when the
+// issue transitions to the Done state.
+func (o *Orchestrator) cleanupWorkspaceIfDone(stage *config.StageConfig, repo, branchName string) {
+	if !strings.EqualFold(stage.NextState, "Done") {
+		return
+	}
+	wsPath := o.workspacePath(repo, branchName)
+	if wsPath == "" {
+		return
+	}
+	slog.Info("cleaning up workspace (issue done)", "path", wsPath)
+	os.RemoveAll(wsPath)
 }
 
 // HandleWebhook processes a validated webhook payload through the pipeline.
@@ -212,28 +283,18 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 		return
 	}
 
-	// Create temp directory for the clone
-	tmpDir, err := os.MkdirTemp("", "aiflow-"+details.Identifier+"-*")
+	// Set up workspace (persistent or temp)
+	workDir, cleanup, err := o.setupWorkspace(ctx, repo, baseBranch, branchName, details.Identifier)
 	if err != nil {
-		slog.Error("creating temp dir", "error", err, "issue", details.Identifier)
+		slog.Error("setting up workspace", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
-		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to create temp dir: "+err.Error())
+		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to set up workspace: "+err.Error())
 		return
 	}
-	defer o.git.Cleanup(tmpDir)
-
-	// Clone repository
-	cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cloneCancel()
-	if err := o.git.Clone(cloneCtx, repo, baseBranch, tmpDir); err != nil {
-		slog.Error("cloning repo", "error", err, "issue", details.Identifier)
-		o.store.FailRun(runID, -1, err.Error())
-		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to clone repo: "+err.Error())
-		return
-	}
+	defer cleanup()
 
 	// Check if branch already exists on remote (cycling case: security failed → back to implement)
-	branchExists, err := o.git.BranchExistsOnRemote(ctx, tmpDir, branchName)
+	branchExists, err := o.git.BranchExistsOnRemote(ctx, workDir, branchName)
 	if err != nil {
 		slog.Warn("checking remote branch", "error", err, "issue", details.Identifier)
 		branchExists = false
@@ -245,15 +306,18 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 		if prevRun, err := o.store.GetFirstBranchForIssue(details.ID); err == nil && prevRun != nil {
 			prURL = prevRun.PRURL
 		}
-		if err := o.git.FetchAndCheckout(ctx, tmpDir, branchName); err != nil {
-			slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
-			o.store.FailRun(runID, -1, err.Error())
-			o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to fetch existing branch: "+err.Error())
-			return
+		// If workspace already has the branch checked out (persistent), skip fetch+checkout
+		if o.workspacePath(repo, branchName) == "" {
+			if err := o.git.FetchAndCheckout(ctx, workDir, branchName); err != nil {
+				slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
+				o.store.FailRun(runID, -1, err.Error())
+				o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to fetch existing branch: "+err.Error())
+				return
+			}
 		}
 		slog.Info("reusing existing branch", "branch", branchName, "issue", details.Identifier)
 	} else {
-		if err := o.git.CreateBranch(ctx, tmpDir, branchName); err != nil {
+		if err := o.git.CreateBranch(ctx, workDir, branchName); err != nil {
 			slog.Error("creating branch", "error", err, "issue", details.Identifier)
 			o.store.FailRun(runID, -1, err.Error())
 			o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to create branch: "+err.Error())
@@ -261,9 +325,9 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 		}
 	}
 
-	// Run subprocess in the cloned repo
+	// Run subprocess in the workspace
 	input := o.buildInput(details, stage, stateName, labelNames)
-	input.WorkDir = tmpDir
+	input.WorkDir = workDir
 	input.BranchName = branchName
 
 	// Fetch cross-stage comments for context
@@ -290,7 +354,7 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 	case 0:
 		if branchExists {
 			// Push to existing branch (PR auto-updates)
-			pushed, err := o.commitAndPush(ctx, tmpDir, branchName, details, stage.Name)
+			pushed, err := o.commitAndPush(ctx, workDir, branchName, details, stage.Name)
 			if err != nil {
 				slog.Error("commit and push failed (cycling)", "error", err, "issue", details.Identifier)
 				o.store.FailRun(runID, -1, err.Error())
@@ -298,16 +362,24 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 				return
 			}
 			if pushed && prURL != "" {
-				o.commentOnPR(ctx, tmpDir, prURL, stage.Name, details.Identifier)
+				o.commentOnPR(ctx, workDir, prURL, stage.Name, details.Identifier)
 			}
 		} else {
 			var err error
-			prURL, err = o.commitAndCreatePR(ctx, tmpDir, branchName, baseBranch, details)
+			prURL, err = o.commitAndCreatePR(ctx, workDir, branchName, baseBranch, details)
 			if err != nil {
 				slog.Error("creating PR", "error", err, "issue", details.Identifier)
 				o.store.FailRun(runID, -1, err.Error())
 				o.failAndTransition(ctx, details.ID, details.Identifier, stage, "subprocess succeeded but PR creation failed: "+err.Error())
 				return
+			}
+
+			// Write branch metadata to issue description
+			if prURL != "" {
+				newDesc := linear.AppendBranchMetadata(details.Description, branchName, prURL)
+				if err := o.client.UpdateIssueDescription(ctx, details.ID, newDesc); err != nil {
+					slog.Warn("updating issue description with branch metadata", "error", err, "issue", details.Identifier)
+				}
 			}
 		}
 
@@ -324,6 +396,7 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 			}
 		} else {
 			o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL)
+			o.cleanupWorkspaceIfDone(stage, repo, branchName)
 		}
 
 	case 2:
@@ -377,37 +450,29 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 	branchName := prevRun.BranchName
 	prURL := prevRun.PRURL
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "aiflow-"+details.Identifier+"-*")
+	// Set up workspace (persistent or temp)
+	workDir, cleanup, err := o.setupWorkspace(ctx, repo, baseBranch, branchName, details.Identifier)
 	if err != nil {
-		slog.Error("creating temp dir", "error", err, "issue", details.Identifier)
+		slog.Error("setting up workspace", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
-		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to create temp dir: "+err.Error())
+		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to set up workspace: "+err.Error())
 		return
 	}
-	defer o.git.Cleanup(tmpDir)
+	defer cleanup()
 
-	// Clone base branch
-	cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cloneCancel()
-	if err := o.git.Clone(cloneCtx, repo, baseBranch, tmpDir); err != nil {
-		slog.Error("cloning repo", "error", err, "issue", details.Identifier)
-		o.store.FailRun(runID, -1, err.Error())
-		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to clone repo: "+err.Error())
-		return
-	}
-
-	// Fetch and checkout existing branch
-	if err := o.git.FetchAndCheckout(ctx, tmpDir, branchName); err != nil {
-		slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
-		o.store.FailRun(runID, -1, err.Error())
-		o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to fetch branch: "+err.Error())
-		return
+	// For temp dirs, fetch and checkout existing branch
+	if o.workspacePath(repo, branchName) == "" {
+		if err := o.git.FetchAndCheckout(ctx, workDir, branchName); err != nil {
+			slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
+			o.store.FailRun(runID, -1, err.Error())
+			o.failAndTransition(ctx, details.ID, details.Identifier, stage, "failed to fetch branch: "+err.Error())
+			return
+		}
 	}
 
 	// Build input and fetch cross-stage comments
 	input := o.buildInput(details, stage, stateName, labelNames)
-	input.WorkDir = tmpDir
+	input.WorkDir = workDir
 	input.BranchName = branchName
 
 	commentNodes, err := o.client.GetIssueComments(ctx, details.ID)
@@ -432,7 +497,7 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 	switch result.ExitCode {
 	case 0:
 		// Commit and push (PR auto-updates)
-		pushed, err := o.commitAndPush(ctx, tmpDir, branchName, details, stage.Name)
+		pushed, err := o.commitAndPush(ctx, workDir, branchName, details, stage.Name)
 		if err != nil {
 			slog.Error("commit and push failed", "error", err, "issue", details.Identifier)
 			o.store.FailRun(runID, -1, err.Error())
@@ -440,7 +505,7 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 			return
 		}
 		if pushed && prURL != "" {
-			o.commentOnPR(ctx, tmpDir, prURL, stage.Name, details.Identifier)
+			o.commentOnPR(ctx, workDir, prURL, stage.Name, details.Identifier)
 		}
 
 		slog.Info("subprocess succeeded",
@@ -456,6 +521,7 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 			}
 		} else {
 			o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL)
+			o.cleanupWorkspaceIfDone(stage, repo, branchName)
 		}
 
 	case 2:
@@ -783,37 +849,29 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 		prURL = prevRun.PRURL
 	}
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "aiflow-"+details.Identifier+"-*")
+	// Set up workspace (persistent or temp)
+	workDir, cleanup, err := o.setupWorkspace(ctx, repo, baseBranch, branchName, details.Identifier)
 	if err != nil {
-		slog.Error("creating temp dir", "error", err, "issue", details.Identifier)
+		slog.Error("setting up workspace", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
-		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to create temp dir: "+err.Error())
+		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to set up workspace: "+err.Error())
 		return
 	}
-	defer o.git.Cleanup(tmpDir)
-
-	// Clone base branch
-	cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cloneCancel()
-	if err := o.git.Clone(cloneCtx, repo, baseBranch, tmpDir); err != nil {
-		slog.Error("cloning repo", "error", err, "issue", details.Identifier)
-		o.store.FailRun(runID, -1, err.Error())
-		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to clone repo: "+err.Error())
-		return
-	}
+	defer cleanup()
 
 	if isRerun {
-		// Fetch and checkout existing feature branch
-		if err := o.git.FetchAndCheckout(ctx, tmpDir, branchName); err != nil {
-			slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
-			o.store.FailRun(runID, -1, err.Error())
-			o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to fetch branch: "+err.Error())
-			return
+		// For temp dirs, fetch and checkout existing feature branch
+		if o.workspacePath(repo, branchName) == "" {
+			if err := o.git.FetchAndCheckout(ctx, workDir, branchName); err != nil {
+				slog.Error("fetching existing branch", "error", err, "issue", details.Identifier, "branch", branchName)
+				o.store.FailRun(runID, -1, err.Error())
+				o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to fetch branch: "+err.Error())
+				return
+			}
 		}
 	} else {
 		// First run: create new branch
-		if err := o.git.CreateBranch(ctx, tmpDir, branchName); err != nil {
+		if err := o.git.CreateBranch(ctx, workDir, branchName); err != nil {
 			slog.Error("creating branch", "error", err, "issue", details.Identifier)
 			o.store.FailRun(runID, -1, err.Error())
 			o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "failed to create branch: "+err.Error())
@@ -823,7 +881,7 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 
 	// Run subprocess with comments
 	input := o.buildInput(details, stage, stateName, labelNames)
-	input.WorkDir = tmpDir
+	input.WorkDir = workDir
 	input.BranchName = branchName
 	input.Comments = comments
 
@@ -843,7 +901,7 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 	case 0:
 		if isRerun {
 			// Push to existing branch (PR auto-updates)
-			pushed, err := o.commitAndPush(ctx, tmpDir, branchName, details, stage.Name)
+			pushed, err := o.commitAndPush(ctx, workDir, branchName, details, stage.Name)
 			if err != nil {
 				slog.Error("commit and push failed (re-run)", "error", err, "issue", details.Identifier)
 				o.store.FailRun(runID, -1, err.Error())
@@ -851,17 +909,25 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 				return
 			}
 			if pushed && prURL != "" {
-				o.commentOnPR(ctx, tmpDir, prURL, stage.Name, details.Identifier)
+				o.commentOnPR(ctx, workDir, prURL, stage.Name, details.Identifier)
 			}
 		} else {
 			// First run via comment: create PR
 			var err error
-			prURL, err = o.commitAndCreatePR(ctx, tmpDir, branchName, baseBranch, details)
+			prURL, err = o.commitAndCreatePR(ctx, workDir, branchName, baseBranch, details)
 			if err != nil {
 				slog.Error("creating PR (comment first run)", "error", err, "issue", details.Identifier)
 				o.store.FailRun(runID, -1, err.Error())
 				o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, "subprocess succeeded but PR creation failed: "+err.Error())
 				return
+			}
+
+			// Write branch metadata to issue description
+			if prURL != "" {
+				newDesc := linear.AppendBranchMetadata(details.Description, branchName, prURL)
+				if err := o.client.UpdateIssueDescription(ctx, details.ID, newDesc); err != nil {
+					slog.Warn("updating issue description with branch metadata", "error", err, "issue", details.Identifier)
+				}
 			}
 		}
 

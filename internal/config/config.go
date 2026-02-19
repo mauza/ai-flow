@@ -13,6 +13,11 @@ type Config struct {
 	Linear     LinearConfig     `yaml:"linear"`
 	Pipeline   []StageConfig    `yaml:"pipeline"`
 	Subprocess SubprocessConfig `yaml:"subprocess"`
+	Workspace  WorkspaceConfig  `yaml:"workspace"`
+}
+
+type WorkspaceConfig struct {
+	Root string `yaml:"root"`
 }
 
 type ServerConfig struct {
@@ -98,6 +103,13 @@ func (c *Config) validate() error {
 	case "env", "stdin", "both":
 	default:
 		return fmt.Errorf("subprocess.context_mode must be env, stdin, or both; got %q", c.Subprocess.ContextMode)
+	}
+
+	// Create workspace root if configured
+	if c.Workspace.Root != "" {
+		if err := os.MkdirAll(c.Workspace.Root, 0755); err != nil {
+			return fmt.Errorf("creating workspace root %q: %w", c.Workspace.Root, err)
+		}
 	}
 
 	// Check stages and no duplicate linear_states

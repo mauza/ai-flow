@@ -2,10 +2,34 @@ package linear
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+const branchMetadataMarker = "<!-- ai-flow-branch-metadata -->"
+
+var branchMetadataBlock = regexp.MustCompile(`(?s)\n*` + regexp.QuoteMeta(branchMetadataMarker) + `.*$`)
+
+// AppendBranchMetadata appends (or replaces) a branch metadata block at the end
+// of an issue description. The block is idempotent — calling it again with different
+// values replaces the previous block.
+func AppendBranchMetadata(description, branchName, prURL string) string {
+	// Remove existing metadata block if present
+	description = branchMetadataBlock.ReplaceAllString(description, "")
+
+	var block strings.Builder
+	block.WriteString("\n\n")
+	block.WriteString(branchMetadataMarker)
+	block.WriteString("\n---\n")
+	block.WriteString(fmt.Sprintf("**Branch:** `%s`", branchName))
+	if prURL != "" {
+		block.WriteString(fmt.Sprintf("\n**PR:** %s", prURL))
+	}
+
+	return description + block.String()
+}
 
 // ProjectMeta holds GitHub repository metadata parsed from a Linear project description.
 type ProjectMeta struct {
