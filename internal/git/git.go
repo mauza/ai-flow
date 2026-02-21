@@ -39,7 +39,7 @@ func NewManager() (*Manager, error) {
 // Clone performs a shallow clone of the given repo into dir, then configures
 // the git identity so commits work even without global git config.
 func (m *Manager) Clone(ctx context.Context, repo, branch, dir string) error {
-	url := "https://github.com/" + repo + ".git"
+	url := "git@github.com:" + repo + ".git"
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, url, dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -66,9 +66,14 @@ func (m *Manager) configureIdentity(ctx context.Context, dir string) error {
 	return nil
 }
 
-// Fetch fetches all refs from origin.
+// Fetch fetches all refs from origin, unshallowing if necessary.
 func (m *Manager) Fetch(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin")
+	// Unshallow if this was a shallow clone, so all refs are available
+	args := []string{"-C", dir, "fetch", "origin"}
+	if isShallow(dir) {
+		args = []string{"-C", dir, "fetch", "--unshallow", "origin"}
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
@@ -76,17 +81,31 @@ func (m *Manager) Fetch(ctx context.Context, dir string) error {
 	return nil
 }
 
+// isShallow returns true if the repo is a shallow clone.
+func isShallow(dir string) bool {
+	_, err := os.Stat(fmt.Sprintf("%s/.git/shallow", dir))
+	return err == nil
+}
+
 // ResetToRemote checks out the given branch and hard-resets it to match the remote,
 // then cleans any untracked files. This ensures a clean workspace matching origin.
+// If the remote tracking branch doesn't exist, it just checks out and cleans.
 func (m *Manager) ResetToRemote(ctx context.Context, dir, branch string) error {
 	checkoutCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", branch)
 	if out, err := checkoutCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
+	// Try to reset to remote tracking branch; skip if it doesn't exist
 	resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
 	if out, err := resetCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git reset: %s: %w", strings.TrimSpace(string(out)), err)
+		// Check if origin/<branch> exists
+		checkCmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "origin/"+branch)
+		if checkErr := checkCmd.Run(); checkErr != nil {
+			// Remote tracking branch doesn't exist — just use local branch as-is
+		} else {
+			return fmt.Errorf("git reset: %s: %w", strings.TrimSpace(string(out)), err)
+		}
 	}
 
 	cleanCmd := exec.CommandContext(ctx, "git", "-C", dir, "clean", "-fd")

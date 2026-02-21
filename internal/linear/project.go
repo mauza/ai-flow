@@ -1,6 +1,7 @@
 package linear
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -33,14 +34,41 @@ func AppendBranchMetadata(description, branchName, prURL string) string {
 
 // ProjectMeta holds GitHub repository metadata parsed from a Linear project description.
 type ProjectMeta struct {
-	GithubRepo    string `yaml:"github_repo"`
-	DefaultBranch string `yaml:"default_branch"`
+	GithubRepo    string `yaml:"github_repo" json:"github_repo"`
+	DefaultBranch string `yaml:"default_branch" json:"default_branch"`
 }
 
-// ParseProjectMeta extracts YAML frontmatter from a Linear project description.
-// The frontmatter must be delimited by "---" lines. If default_branch is not set,
-// it defaults to "main".
+// ParseProjectMeta extracts project metadata from a Linear project description.
+// It tries JSON first (since Linear's editor mangles YAML frontmatter), then
+// falls back to YAML frontmatter delimited by "---" lines.
+// If default_branch is not set, it defaults to "main".
 func ParseProjectMeta(description string) (*ProjectMeta, error) {
+	description = strings.TrimSpace(description)
+
+	// Try JSON first
+	if meta, err := parseProjectMetaJSON(description); err == nil {
+		return meta, nil
+	}
+
+	// Fall back to YAML frontmatter
+	return parseProjectMetaYAML(description)
+}
+
+func parseProjectMetaJSON(description string) (*ProjectMeta, error) {
+	var meta ProjectMeta
+	if err := json.Unmarshal([]byte(description), &meta); err != nil {
+		return nil, err
+	}
+	if meta.GithubRepo == "" {
+		return nil, fmt.Errorf("github_repo is required in project metadata")
+	}
+	if meta.DefaultBranch == "" {
+		meta.DefaultBranch = "main"
+	}
+	return &meta, nil
+}
+
+func parseProjectMetaYAML(description string) (*ProjectMeta, error) {
 	const delimiter = "---"
 
 	lines := strings.Split(description, "\n")
@@ -54,7 +82,7 @@ func ParseProjectMeta(description string) (*ProjectMeta, error) {
 		}
 	}
 	if start == -1 {
-		return nil, fmt.Errorf("no YAML frontmatter found in project description")
+		return nil, fmt.Errorf("no project metadata found in description (expected JSON or YAML frontmatter)")
 	}
 
 	// Find closing delimiter
