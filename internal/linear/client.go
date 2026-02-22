@@ -205,6 +205,59 @@ func (c *Client) GetIssue(ctx context.Context, id string) (*IssueDetails, error)
 	return &resp.Data.Issue, nil
 }
 
+// GetIssuesByState fetches issues for a team filtered by workflow state name.
+// Returns full issue details so no second fetch is needed.
+func (c *Client) GetIssuesByState(ctx context.Context, teamKey, stateName string) ([]IssueDetails, error) {
+	query := `query($teamKey: String!, $stateName: String!) {
+		issues(
+			filter: {
+				team: { key: { eq: $teamKey } }
+				state: { name: { eq: $stateName } }
+			}
+			first: 50
+		) {
+			nodes {
+				id
+				identifier
+				title
+				description
+				url
+				state { id name }
+				team { id key }
+				labels { nodes { id name } }
+				project { id name description }
+			}
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		Issues struct {
+			Nodes []IssueDetails `json:"nodes"`
+		} `json:"issues"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"teamKey": teamKey, "stateName": stateName},
+	}, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("getting issues by state: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+
+	issues := resp.Data.Issues.Nodes
+	if len(issues) == 50 {
+		slog.Warn("GetIssuesByState returned exactly 50 issues, there may be more (pagination not implemented)",
+			"teamKey", teamKey,
+			"stateName", stateName,
+		)
+	}
+
+	return issues, nil
+}
+
 // UpdateIssueState transitions an issue to a new workflow state.
 func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateID string) error {
 	query := `mutation($id: String!, $stateId: String!) {

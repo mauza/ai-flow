@@ -154,6 +154,12 @@ func (o *Orchestrator) HandleWebhook(ctx context.Context, payload linear.Webhook
 		return
 	}
 
+	o.ProcessIssue(ctx, details, stage)
+}
+
+// ProcessIssue handles label filtering, dedup, and handler routing for an issue
+// that has been matched to a pipeline stage. Used by both webhook and poll modes.
+func (o *Orchestrator) ProcessIssue(ctx context.Context, details *linear.IssueDetails, stage *config.StageConfig) {
 	// Collect label names
 	var labelNames []string
 	for _, l := range details.Labels.Nodes {
@@ -163,7 +169,7 @@ func (o *Orchestrator) HandleWebhook(ctx context.Context, payload linear.Webhook
 	// Check label filters using resolved label names
 	if !matchesLabels(stage.Labels, labelNames) {
 		slog.Debug("issue does not match label filter",
-			"issue", issue.Identifier,
+			"issue", details.Identifier,
 			"stage", stage.Name,
 			"requiredLabels", stage.Labels,
 			"issueLabels", labelNames,
@@ -172,23 +178,25 @@ func (o *Orchestrator) HandleWebhook(ctx context.Context, payload linear.Webhook
 	}
 
 	// Dedup check
-	runID, inserted, err := o.store.StartRun(issue.ID, stage.Name)
+	runID, inserted, err := o.store.StartRun(details.ID, stage.Name)
 	if err != nil {
-		slog.Error("dedup check failed", "error", err, "issue", issue.Identifier)
+		slog.Error("dedup check failed", "error", err, "issue", details.Identifier)
 		return
 	}
 	if !inserted {
 		slog.Info("run already in progress, skipping",
-			"issue", issue.Identifier,
+			"issue", details.Identifier,
 			"stage", stage.Name,
 		)
 		return
 	}
 
 	slog.Info("starting pipeline stage",
-		"issue", issue.Identifier,
+		"issue", details.Identifier,
 		"stage", stage.Name,
 	)
+
+	stateName := details.State.Name
 
 	if stage.UsesBranch && o.git != nil {
 		o.handleWithExistingBranch(ctx, runID, details, stage, stateName, labelNames)

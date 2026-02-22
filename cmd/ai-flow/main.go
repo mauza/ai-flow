@@ -15,6 +15,7 @@ import (
 	"github.com/mauza/ai-flow/internal/git"
 	"github.com/mauza/ai-flow/internal/linear"
 	"github.com/mauza/ai-flow/internal/orchestrator"
+	"github.com/mauza/ai-flow/internal/poller"
 	"github.com/mauza/ai-flow/internal/store"
 	"github.com/mauza/ai-flow/internal/subprocess"
 )
@@ -38,6 +39,7 @@ func main() {
 	slog.Info("config loaded",
 		"port", cfg.Server.Port,
 		"team", cfg.Linear.TeamKey,
+		"mode", cfg.Linear.Mode,
 		"stages", len(cfg.Pipeline),
 	)
 
@@ -111,21 +113,24 @@ func main() {
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhook", linear.NewWebhookHandler(
-		cfg.Linear.WebhookSecret,
-		func(payload linear.WebhookPayload) {
-			switch payload.Type {
-			case "Issue":
-				orch.HandleWebhook(context.Background(), payload)
-			case "Comment":
-				orch.HandleCommentWebhook(context.Background(), payload)
-			}
-		},
-	))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		fmt.Fprintf(w, `{"status":"ok","mode":%q}`, cfg.Linear.Mode)
 	})
+
+	if cfg.Linear.Mode == "webhook" {
+		mux.HandleFunc("POST /webhook", linear.NewWebhookHandler(
+			cfg.Linear.WebhookSecret,
+			func(payload linear.WebhookPayload) {
+				switch payload.Type {
+				case "Issue":
+					orch.HandleWebhook(context.Background(), payload)
+				case "Comment":
+					orch.HandleCommentWebhook(context.Background(), payload)
+				}
+			},
+		))
+	}
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
@@ -138,8 +143,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Start poller in poll mode
+	if cfg.Linear.Mode == "poll" {
+		p := poller.New(cfg, client, orch)
+		go p.Run(ctx)
+	}
+
 	go func() {
-		slog.Info("server starting", "addr", server.Addr)
+		slog.Info("server starting", "addr", server.Addr, "mode", cfg.Linear.Mode)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)

@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,9 +28,12 @@ type ServerConfig struct {
 }
 
 type LinearConfig struct {
-	APIKey        string `yaml:"api_key"`
-	WebhookSecret string `yaml:"webhook_secret"`
-	TeamKey       string `yaml:"team_key"`
+	APIKey             string        `yaml:"api_key"`
+	WebhookSecret      string        `yaml:"webhook_secret"`
+	TeamKey            string        `yaml:"team_key"`
+	Mode               string        `yaml:"mode"`
+	PollInterval       string        `yaml:"poll_interval"`
+	ParsedPollInterval time.Duration `yaml:"-"`
 }
 
 type StageConfig struct {
@@ -91,11 +96,42 @@ func (c *Config) validate(configDir string) error {
 	if c.Linear.APIKey == "" {
 		return fmt.Errorf("linear.api_key is required")
 	}
-	if c.Linear.WebhookSecret == "" {
-		return fmt.Errorf("linear.webhook_secret is required")
-	}
 	if c.Linear.TeamKey == "" {
 		return fmt.Errorf("linear.team_key is required")
+	}
+
+	// Default mode to webhook
+	if c.Linear.Mode == "" {
+		c.Linear.Mode = "webhook"
+	}
+	switch c.Linear.Mode {
+	case "webhook":
+		if c.Linear.WebhookSecret == "" {
+			return fmt.Errorf("linear.webhook_secret is required when mode is \"webhook\"")
+		}
+	case "poll":
+		if c.Linear.PollInterval == "" {
+			return fmt.Errorf("linear.poll_interval is required when mode is \"poll\"")
+		}
+		d, err := time.ParseDuration(c.Linear.PollInterval)
+		if err != nil {
+			return fmt.Errorf("linear.poll_interval: %w", err)
+		}
+		if d < 10*time.Second {
+			return fmt.Errorf("linear.poll_interval must be at least 10s, got %s", d)
+		}
+		c.Linear.ParsedPollInterval = d
+
+		// Warn about wait_for_approval in poll mode
+		for _, stage := range c.Pipeline {
+			if stage.WaitForApproval {
+				slog.Warn("wait_for_approval has limited functionality in poll mode (comment re-runs won't auto-trigger)",
+					"stage", stage.Name,
+				)
+			}
+		}
+	default:
+		return fmt.Errorf("linear.mode must be \"webhook\" or \"poll\", got %q", c.Linear.Mode)
 	}
 
 	if len(c.Pipeline) == 0 {
