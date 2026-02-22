@@ -32,35 +32,34 @@ func AppendBranchMetadata(description, branchName, prURL string) string {
 	return description + block.String()
 }
 
-// ProjectMeta holds GitHub repository metadata parsed from a Linear project description.
-type ProjectMeta struct {
+// IssueMeta holds GitHub repository metadata parsed from a Linear issue description.
+type IssueMeta struct {
 	GithubRepo    string `yaml:"github_repo" json:"github_repo"`
 	DefaultBranch string `yaml:"default_branch" json:"default_branch"`
 }
 
-// ParseProjectMeta extracts project metadata from a Linear project description.
-// It tries JSON first (since Linear's editor mangles YAML frontmatter), then
-// falls back to YAML frontmatter delimited by "---" lines.
-// If default_branch is not set, it defaults to "main".
-func ParseProjectMeta(description string) (*ProjectMeta, error) {
+// ParseIssueMeta extracts repository metadata from a Linear issue description.
+// It looks for a YAML frontmatter block delimited by "---" lines, or a JSON object
+// embedded in the description. If default_branch is not set, it defaults to "main".
+func ParseIssueMeta(description string) (*IssueMeta, error) {
 	description = strings.TrimSpace(description)
 
-	// Try JSON first
-	if meta, err := parseProjectMetaJSON(description); err == nil {
+	// Try YAML frontmatter first (most natural for issue descriptions)
+	if meta, err := parseIssueMetaYAML(description); err == nil {
 		return meta, nil
 	}
 
-	// Fall back to YAML frontmatter
-	return parseProjectMetaYAML(description)
+	// Fall back to JSON
+	return parseIssueMetaJSON(description)
 }
 
-func parseProjectMetaJSON(description string) (*ProjectMeta, error) {
-	var meta ProjectMeta
+func parseIssueMetaJSON(description string) (*IssueMeta, error) {
+	var meta IssueMeta
 	if err := json.Unmarshal([]byte(description), &meta); err != nil {
 		return nil, err
 	}
 	if meta.GithubRepo == "" {
-		return nil, fmt.Errorf("github_repo is required in project metadata")
+		return nil, fmt.Errorf("github_repo is required in issue metadata")
 	}
 	if meta.DefaultBranch == "" {
 		meta.DefaultBranch = "main"
@@ -68,7 +67,7 @@ func parseProjectMetaJSON(description string) (*ProjectMeta, error) {
 	return &meta, nil
 }
 
-func parseProjectMetaYAML(description string) (*ProjectMeta, error) {
+func parseIssueMetaYAML(description string) (*IssueMeta, error) {
 	const delimiter = "---"
 
 	lines := strings.Split(description, "\n")
@@ -82,7 +81,7 @@ func parseProjectMetaYAML(description string) (*ProjectMeta, error) {
 		}
 	}
 	if start == -1 {
-		return nil, fmt.Errorf("no project metadata found in description (expected JSON or YAML frontmatter)")
+		return nil, fmt.Errorf("no metadata found in issue description (expected YAML frontmatter or JSON)")
 	}
 
 	// Find closing delimiter
@@ -94,18 +93,18 @@ func parseProjectMetaYAML(description string) (*ProjectMeta, error) {
 		}
 	}
 	if end == -1 {
-		return nil, fmt.Errorf("no closing --- delimiter in project description frontmatter")
+		return nil, fmt.Errorf("no closing --- delimiter in issue description frontmatter")
 	}
 
 	frontmatter := strings.Join(lines[start+1:end], "\n")
 
-	var meta ProjectMeta
+	var meta IssueMeta
 	if err := yaml.Unmarshal([]byte(frontmatter), &meta); err != nil {
-		return nil, fmt.Errorf("parsing project frontmatter: %w", err)
+		return nil, fmt.Errorf("parsing issue frontmatter: %w", err)
 	}
 
 	if meta.GithubRepo == "" {
-		return nil, fmt.Errorf("github_repo is required in project frontmatter")
+		return nil, fmt.Errorf("github_repo is required in issue frontmatter")
 	}
 
 	if meta.DefaultBranch == "" {

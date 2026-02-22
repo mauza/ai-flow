@@ -269,14 +269,11 @@ func (o *Orchestrator) handleWithoutGit(ctx context.Context, runID int64, detail
 	}
 }
 
-// resolveRepoConfig extracts GitHub repo metadata from the issue's Linear project.
+// resolveRepoConfig extracts GitHub repo metadata from the issue's description.
 func resolveRepoConfig(details *linear.IssueDetails) (repo, branch string, err error) {
-	if details.Project == nil {
-		return "", "", fmt.Errorf("issue %s has no Linear project", details.Identifier)
-	}
-	meta, err := linear.ParseProjectMeta(details.Project.Description)
+	meta, err := linear.ParseIssueMeta(details.Description)
 	if err != nil {
-		return "", "", fmt.Errorf("issue %s: project %q: %w", details.Identifier, details.Project.Name, err)
+		return "", "", fmt.Errorf("issue %s: %w", details.Identifier, err)
 	}
 	return meta.GithubRepo, meta.DefaultBranch, nil
 }
