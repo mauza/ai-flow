@@ -2,15 +2,17 @@
 # Environment variables are expanded: ${VAR_NAME}
 
 server:
-  port: 8080
+  port: 11811
 
 linear:
   api_key: "${LINEAR_API_KEY}"
-  webhook_secret: "${LINEAR_WEBHOOK_SECRET}"
-  team_key: "ENG"                   # Your Linear team key
+  team_key: "MAU"                     # Your Linear team key
+  mode: "webhook"                     # "webhook" or "poll" (default: "webhook")
+  webhook_secret: "${LINEAR_WEBHOOK_SECRET}"  # Required when mode is "webhook"
+  # poll_interval: "30s"              # Required when mode is "poll" (min 10s)
 
-# GitHub repo config is defined per Linear project (not here).
-# Add YAML frontmatter to each Linear project's description:
+# GitHub repo config is defined per issue description (not per project).
+# Add YAML frontmatter to each Linear issue's description:
 #   ---
 #   github_repo: owner/repo
 #   default_branch: main
@@ -19,44 +21,45 @@ linear:
 pipeline:
   # Stage 1: Plan — analyze issue and create implementation plan
   - name: "plan"
-    linear_state: "Todo"            # Trigger when issue enters this state
+    linear_state: "Todo"              # Trigger when issue enters this state
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt_file: "prompts/plan.md"  # Path to prompt file (relative to config)
-    next_state: "In Progress"       # Transition to on success
-    timeout: 7200                   # Seconds (default: 3600)
-    labels: ["auto"]                # Only issues with this label
+    prompt_file: "prompts/plan.md"    # Path to prompt file (relative to config)
+    next_state: "In Progress"         # Transition to on success
+    timeout: 7200                     # Seconds (default: 3600)
+    labels: ["auto"]                  # Only issues with this label
+    creates_pr: true                  # Clone repo, run in it, create PR
 
-  # Stage 2: Implement — write code and create PR
+  # Stage 2: Implement — write code on existing branch
   - name: "implement"
     linear_state: "In Progress"
-    command: "claude"
-    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
+    command: "opencode"
+    args: ["run", "-m", "synthetic/hf:moonshotai/Kimi-K2.5"]
     prompt_file: "prompts/implement.md"
-    next_state: "Security Review"
-    timeout: 7200
-    labels: ["auto"]
-    creates_pr: true                # Clone repo, run in it, create PR
-
-  # Stage 3: Security — review code on existing branch
-  - name: "security"
-    linear_state: "Security Review"
-    command: "claude"
-    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
-    prompt_file: "prompts/security.md"
     next_state: "Testing"
-    failure_state: "In Progress"    # On failure, go back to implementation
     timeout: 7200
     labels: ["auto"]
-    uses_branch: true               # Checkout existing branch (no new PR)
+    uses_branch: true                 # Checkout existing branch (no new PR)
 
-  # Stage 4: Test — run tests on existing branch
+  # Stage 3: Test — run tests on existing branch
   - name: "test"
     linear_state: "Testing"
-    command: "claude"
-    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
+    command: "opencode"
+    args: ["run", "-m", "synthetic/hf:moonshotai/Kimi-K2.5"]
     prompt_file: "prompts/test.md"
-    next_state: "Review"
+    next_state: "Security Review"
+    failure_state: "In Progress"      # On failure, go back to implementation
+    timeout: 7200
+    labels: ["auto"]
+    uses_branch: true
+
+  # Stage 4: Security — review code on existing branch
+  - name: "security"
+    linear_state: "Security Review"
+    command: "opencode"
+    args: ["run", "-m", "synthetic/hf:moonshotai/Kimi-K2.5"]
+    prompt_file: "prompts/security.md"
+    next_state: "Overall Review"
     failure_state: "In Progress"
     timeout: 7200
     labels: ["auto"]
@@ -64,7 +67,7 @@ pipeline:
 
   # Stage 5: Review — final code review on existing branch
   - name: "review"
-    linear_state: "Review"
+    linear_state: "Overall Review"
     command: "claude"
     args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
     prompt_file: "prompts/review.md"
@@ -75,8 +78,8 @@ pipeline:
     uses_branch: true
 
 subprocess:
-  context_mode: "env"               # "env" | "stdin" | "both"
-  max_concurrent: 3                 # Max parallel subprocess runs
+  context_mode: "env"                 # "env" | "stdin" | "both"
+  max_concurrent: 3                   # Max parallel subprocess runs
 
 # Persistent workspace directories (optional).
 # When set, repos are cloned once and reused across pipeline stages
