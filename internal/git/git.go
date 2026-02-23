@@ -205,6 +205,20 @@ func (m *Manager) CreatePR(ctx context.Context, dir, title, body, base, head str
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// FindPR looks up an existing open PR for the given branch using the gh CLI.
+// Returns the PR URL if found, or empty string if no PR exists.
+func (m *Manager) FindPR(ctx context.Context, dir, branch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		// gh pr view exits non-zero when no PR exists
+		return "", nil
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 // CommentOnPR posts a comment on an existing PR using the gh CLI.
 func (m *Manager) CommentOnPR(ctx context.Context, dir, prURL, body string) error {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "comment", prURL, "--body", body)

@@ -23,7 +23,7 @@ func AppendBranchMetadata(description, branchName, prURL string) string {
 	var block strings.Builder
 	block.WriteString("\n\n")
 	block.WriteString(branchMetadataMarker)
-	block.WriteString("\n---\n")
+	block.WriteString("\n")
 	block.WriteString(fmt.Sprintf("**Branch:** `%s`", branchName))
 	if prURL != "" {
 		block.WriteString(fmt.Sprintf("\n**PR:** %s", prURL))
@@ -54,8 +54,20 @@ func ParseIssueMeta(description string) (*IssueMeta, error) {
 }
 
 func parseIssueMetaJSON(description string) (*IssueMeta, error) {
+	// Extract just the first JSON object from the description,
+	// ignoring any trailing content (e.g. branch metadata, markdown).
+	start := strings.Index(description, "{")
+	if start == -1 {
+		return nil, fmt.Errorf("no JSON object found in description")
+	}
+	end := strings.Index(description[start:], "}")
+	if end == -1 {
+		return nil, fmt.Errorf("no closing brace found in description")
+	}
+	jsonStr := description[start : start+end+1]
+
 	var meta IssueMeta
-	if err := json.Unmarshal([]byte(description), &meta); err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &meta); err != nil {
 		return nil, err
 	}
 	if meta.GithubRepo == "" {
