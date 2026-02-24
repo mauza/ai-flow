@@ -127,15 +127,27 @@ func (m *Manager) CreateBranch(ctx context.Context, dir, name string) error {
 }
 
 // FetchAndCheckout fetches a remote branch and checks it out locally.
+// Handles the case where the local branch may or may not already exist.
 func (m *Manager) FetchAndCheckout(ctx context.Context, dir, branch string) error {
-	fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", branch)
+	// Fetch with explicit refspec so origin/<branch> tracking ref is updated
+	refspec := "refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", refspec)
 	if out, err := fetchCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
+	// Try creating a new local branch tracking the remote
 	checkoutCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-b", branch, "origin/"+branch)
 	if out, err := checkoutCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git checkout: %s: %w", strings.TrimSpace(string(out)), err)
+		// Branch may already exist locally — just checkout and reset
+		coCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", branch)
+		if coOut, coErr := coCmd.CombinedOutput(); coErr != nil {
+			return fmt.Errorf("git checkout: %s (original: %s): %w", strings.TrimSpace(string(coOut)), strings.TrimSpace(string(out)), coErr)
+		}
+		resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
+		if resetOut, resetErr := resetCmd.CombinedOutput(); resetErr != nil {
+			return fmt.Errorf("git reset: %s: %w", strings.TrimSpace(string(resetOut)), resetErr)
+		}
 	}
 	return nil
 }
@@ -160,6 +172,21 @@ func (m *Manager) HasChanges(ctx context.Context, dir string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return strings.TrimSpace(stdout.String()) != "", nil
+}
+
+// HasUnpushedCommits returns true if the current branch has commits not present
+// on the given base branch (or its remote tracking ref). This detects changes
+// that a subprocess committed directly.
+func (m *Manager) HasUnpushedCommits(ctx context.Context, dir, baseBranch string) (bool, error) {
+	// Compare HEAD against the base branch's remote tracking ref
+	ref := "origin/" + baseBranch
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-list", "--count", ref+"..HEAD")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("git rev-list: %w", err)
+	}
+	return strings.TrimSpace(stdout.String()) != "0", nil
 }
 
 // CommitAll stages all changes and commits with the given message.

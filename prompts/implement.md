@@ -4,4 +4,5 @@ Review any previous stage comments for context and requirements.
 
 IMPORTANT: You are working in an existing git clone of the repository.
 Do NOT run `git init`, `git clone`, or modify git remotes.
-Make your changes, commit them, but do NOT push — the system handles pushing and PR creation automatically.
+Do NOT commit or push — the system handles committing, pushing, and PR creation automatically.
+Just write the code and leave your changes uncommitted.
