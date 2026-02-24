@@ -19,6 +19,11 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	// SQLite only supports one writer at a time. Limiting to a single
+	// connection serializes all access and eliminates SQLITE_BUSY errors
+	// from concurrent goroutines.
+	db.SetMaxOpenConns(1)
+
 	// Enable WAL mode and set busy timeout
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",

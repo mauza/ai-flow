@@ -117,11 +117,16 @@ func (m *Manager) ResetToRemote(ctx context.Context, dir, branch string) error {
 }
 
 // CreateBranch creates and checks out a new branch in the given directory.
+// If the branch already exists locally (e.g. from a previous stage that
+// never pushed), it checks out the existing branch instead.
 func (m *Manager) CreateBranch(ctx context.Context, dir, name string) error {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-b", name)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git checkout -b: %s: %w", strings.TrimSpace(string(out)), err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// Branch may already exist locally — just check it out
+		coCmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", name)
+		if coOut, coErr := coCmd.CombinedOutput(); coErr != nil {
+			return fmt.Errorf("git checkout: %s (original: %s): %w", strings.TrimSpace(string(coOut)), strings.TrimSpace(string(out)), coErr)
+		}
 	}
 	return nil
 }
