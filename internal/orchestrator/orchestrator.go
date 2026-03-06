@@ -219,6 +219,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, details *linear.IssueDe
 
 func (o *Orchestrator) handleWithoutGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string) {
 	input := o.buildInput(details, stage, stateName, labelNames)
+	input.RunID = runID
 
 	// Fetch cross-stage comments for context
 	commentNodes, err := o.client.GetIssueComments(ctx, details.ID)
@@ -339,6 +340,7 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 
 	// Run subprocess in the workspace
 	input := o.buildInput(details, stage, stateName, labelNames)
+	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
 
@@ -497,6 +499,7 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 
 	// Build input and fetch cross-stage comments
 	input := o.buildInput(details, stage, stateName, labelNames)
+	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
 
@@ -802,6 +805,7 @@ func (o *Orchestrator) HandleCommentWebhook(ctx context.Context, payload linear.
 
 func (o *Orchestrator) handleRerunWithoutGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string, comments []subprocess.Comment) {
 	input := o.buildInput(details, stage, stateName, labelNames)
+	input.RunID = runID
 	input.Comments = comments
 
 	result, err := o.runner.Run(ctx, input)
@@ -923,6 +927,7 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 
 	// Run subprocess with comments
 	input := o.buildInput(details, stage, stateName, labelNames)
+	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
 	input.Comments = comments

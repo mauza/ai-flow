@@ -226,6 +226,91 @@ func (s *Store) GetFirstBranchForIssue(issueID string) (*RunInfo, error) {
 	return &info, nil
 }
 
+// RunRecord holds the full data for a single pipeline run.
+type RunRecord struct {
+	ID         int64      `json:"id"`
+	IssueID    string     `json:"issue_id"`
+	StageName  string     `json:"stage_name"`
+	Status     string     `json:"status"`
+	ExitCode   *int       `json:"exit_code"`
+	Output     string     `json:"output"`
+	PRURL      string     `json:"pr_url"`
+	BranchName string     `json:"branch_name"`
+	Error      string     `json:"error"`
+	StartedAt  time.Time  `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
+}
+
+// ListRecentRuns returns the most recent runs, newest first.
+func (s *Store) ListRecentRuns(limit int) ([]RunRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, issue_id, stage_name, status, exit_code,
+		        COALESCE(output,''), COALESCE(pr_url,''), COALESCE(branch_name,''),
+		        COALESCE(error,''), started_at, ended_at
+		 FROM runs ORDER BY started_at DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying recent runs: %w", err)
+	}
+	defer rows.Close()
+
+	var records []RunRecord
+	for rows.Next() {
+		r, err := scanRunRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// GetRun returns a single run by ID.
+func (s *Store) GetRun(id int64) (*RunRecord, error) {
+	row := s.db.QueryRow(
+		`SELECT id, issue_id, stage_name, status, exit_code,
+		        COALESCE(output,''), COALESCE(pr_url,''), COALESCE(branch_name,''),
+		        COALESCE(error,''), started_at, ended_at
+		 FROM runs WHERE id = ?`,
+		id,
+	)
+	r, err := scanRunRecord(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying run %d: %w", id, err)
+	}
+	return &r, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRunRecord(row rowScanner) (RunRecord, error) {
+	var r RunRecord
+	var exitCode sql.NullInt64
+	var endedAt sql.NullTime
+	err := row.Scan(
+		&r.ID, &r.IssueID, &r.StageName, &r.Status,
+		&exitCode, &r.Output, &r.PRURL, &r.BranchName,
+		&r.Error, &r.StartedAt, &endedAt,
+	)
+	if err != nil {
+		return r, err
+	}
+	if exitCode.Valid {
+		ec := int(exitCode.Int64)
+		r.ExitCode = &ec
+	}
+	if endedAt.Valid {
+		r.EndedAt = &endedAt.Time
+	}
+	return r, nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()

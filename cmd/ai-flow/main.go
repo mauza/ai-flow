@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
+	"github.com/mauza/ai-flow/internal/dashboard"
 	"github.com/mauza/ai-flow/internal/git"
 	"github.com/mauza/ai-flow/internal/linear"
 	"github.com/mauza/ai-flow/internal/orchestrator"
@@ -107,8 +108,10 @@ func main() {
 		slog.Info("git manager initialized")
 	}
 
-	// Init runner and orchestrator
+	// Init runner, session registry, and orchestrator
 	runner := subprocess.NewRunner(cfg.Subprocess.MaxConcurrent)
+	registry := dashboard.NewRegistry()
+	runner.SetTracker(registry)
 	orch := orchestrator.New(cfg, client, db, runner, gitMgr)
 
 	// Set up HTTP server
@@ -117,6 +120,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"ok","mode":%q}`, cfg.Linear.Mode)
 	})
+
+	// Dashboard UI
+	dash := dashboard.New(registry, db, dashboard.WebDist)
+	mux.Handle("/dashboard/", dash)
+	mux.Handle("/dashboard", dash)
 
 	if cfg.Linear.Mode == "webhook" {
 		mux.HandleFunc("POST /webhook", linear.NewWebhookHandler(
@@ -133,10 +141,12 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:        fmt.Sprintf(":%d", cfg.Server.Port),
+		Handler:     mux,
+		ReadTimeout: 10 * time.Second,
+		// WriteTimeout is 0 so SSE connections can stream indefinitely.
+		// Individual handlers are responsible for their own timeouts.
+		WriteTimeout: 0,
 	}
 
 	// Graceful shutdown

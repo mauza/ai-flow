@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// OutputTracker receives live output from subprocesses.
+// Defined here (not in dashboard) to avoid circular imports.
+type OutputTracker interface {
+	TrackStart(runID int64, input Input, cancel context.CancelFunc) (stdout, stderr io.Writer)
+	TrackEnd(runID int64)
+}
+
 const maxOutputBytes = 1 << 20 // 1 MB per stream
 
 // limitedWriter wraps a bytes.Buffer and stops writing after a limit.
@@ -52,6 +59,9 @@ type Comment struct {
 
 // Input contains everything needed to run a subprocess for a pipeline stage.
 type Input struct {
+	// Run tracking (set by orchestrator for dashboard visibility)
+	RunID int64
+
 	// Issue context
 	IssueID          string
 	IssueIdentifier  string
@@ -87,7 +97,8 @@ type Result struct {
 
 // Runner manages subprocess execution with concurrency control.
 type Runner struct {
-	sem chan struct{}
+	sem     chan struct{}
+	tracker OutputTracker // optional, set via SetTracker
 }
 
 // NewRunner creates a runner with the given max concurrency.
@@ -96,6 +107,9 @@ func NewRunner(maxConcurrent int) *Runner {
 		sem: make(chan struct{}, maxConcurrent),
 	}
 }
+
+// SetTracker attaches an OutputTracker to receive live subprocess output.
+func (r *Runner) SetTracker(t OutputTracker) { r.tracker = t }
 
 // Run executes a subprocess with the given input, respecting concurrency limits.
 func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
@@ -110,6 +124,13 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 	// Build timeout context
 	ctx, cancel := context.WithTimeout(ctx, input.Timeout)
 	defer cancel()
+
+	// Hook up output tracker if present
+	var stdoutExtra, stderrExtra io.Writer = io.Discard, io.Discard
+	if r.tracker != nil && input.RunID != 0 {
+		stdoutExtra, stderrExtra = r.tracker.TrackStart(input.RunID, input, cancel)
+		defer r.tracker.TrackEnd(input.RunID)
+	}
 
 	// Compose the full prompt with issue context
 	composedPrompt := composePrompt(input)
@@ -131,8 +152,8 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 
 	stdout := &limitedWriter{limit: maxOutputBytes}
 	stderr := &limitedWriter{limit: maxOutputBytes}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = io.MultiWriter(stdout, stdoutExtra)
+	cmd.Stderr = io.MultiWriter(stderr, stderrExtra)
 
 	// Optionally pipe JSON to stdin
 	if input.ContextMode == "stdin" || input.ContextMode == "both" {
