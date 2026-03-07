@@ -15,7 +15,10 @@ import (
 // OutputTracker receives live output from subprocesses.
 // Defined here (not in dashboard) to avoid circular imports.
 type OutputTracker interface {
-	TrackStart(runID int64, input Input, cancel context.CancelFunc) (stdout, stderr io.Writer)
+	// TrackStart is called before the subprocess starts.
+	// prompt is the fully-composed prompt string sent to the subprocess.
+	// It returns writers that receive live stdout and stderr.
+	TrackStart(runID int64, input Input, prompt string, cancel context.CancelFunc) (stdout, stderr io.Writer)
 	TrackEnd(runID int64)
 }
 
@@ -125,15 +128,15 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, input.Timeout)
 	defer cancel()
 
+	// Compose the full prompt first so the tracker can emit it as stdin
+	composedPrompt := composePrompt(input)
+
 	// Hook up output tracker if present
 	var stdoutExtra, stderrExtra io.Writer = io.Discard, io.Discard
 	if r.tracker != nil && input.RunID != 0 {
-		stdoutExtra, stderrExtra = r.tracker.TrackStart(input.RunID, input, cancel)
+		stdoutExtra, stderrExtra = r.tracker.TrackStart(input.RunID, input, composedPrompt, cancel)
 		defer r.tracker.TrackEnd(input.RunID)
 	}
-
-	// Compose the full prompt with issue context
-	composedPrompt := composePrompt(input)
 
 	// Build command args: configured args + composed prompt as final arg
 	args := make([]string, len(input.Args))

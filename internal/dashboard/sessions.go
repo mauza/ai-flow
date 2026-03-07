@@ -127,8 +127,9 @@ func NewRegistry() *Registry {
 }
 
 // TrackStart implements subprocess.OutputTracker.
-// It registers a new session and returns stdout/stderr writers.
-func (r *Registry) TrackStart(runID int64, input subprocess.Input, cancel context.CancelFunc) (io.Writer, io.Writer) {
+// It registers a new session, emits the composed prompt as a "stdin" event,
+// and returns stdout/stderr writers for live streaming.
+func (r *Registry) TrackStart(runID int64, input subprocess.Input, prompt string, cancel context.CancelFunc) (io.Writer, io.Writer) {
 	s := &Session{
 		RunID:           runID,
 		IssueID:         input.IssueID,
@@ -140,6 +141,14 @@ func (r *Registry) TrackStart(runID int64, input subprocess.Input, cancel contex
 		cancel:          cancel,
 		Done:            make(chan struct{}),
 	}
+
+	// Emit the composed prompt so the dashboard can show what was sent.
+	// This stays in the in-memory buffer only — never written to the DB.
+	s.appendEvent(OutputEvent{
+		Type: "stdin",
+		Data: prompt,
+		Time: time.Now(),
+	})
 
 	r.mu.Lock()
 	r.sessions[runID] = s
