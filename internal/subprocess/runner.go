@@ -89,6 +89,14 @@ type Input struct {
 
 	// Comments from the issue (filtered, human-only)
 	Comments []Comment
+
+	// Project context (set when processing project pipeline)
+	ProjectID          string
+	ProjectName        string
+	ProjectDescription string
+	ProjectState       string
+	TriggerLabel       string
+	ExistingIssues     []string
 }
 
 // Result captures the outcome of a subprocess run.
@@ -203,6 +211,11 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 }
 
 func composePrompt(input Input) string {
+	// Project pipeline mode: different prompt composition
+	if input.ProjectID != "" {
+		return composeProjectPrompt(input)
+	}
+
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Issue: %s - %s\n", input.IssueIdentifier, input.IssueTitle))
 	if input.IssueDescription != "" {
@@ -224,6 +237,27 @@ func composePrompt(input Input) string {
 		}
 	}
 
+	return b.String()
+}
+
+func composeProjectPrompt(input Input) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Project: %s", input.ProjectName))
+	if input.ProjectState != "" {
+		b.WriteString(fmt.Sprintf(" (%s)", input.ProjectState))
+	}
+	b.WriteString("\n")
+	if input.ProjectDescription != "" {
+		b.WriteString(fmt.Sprintf("Description: %s\n", input.ProjectDescription))
+	}
+	if len(input.ExistingIssues) > 0 {
+		b.WriteString(fmt.Sprintf("Existing Issues (%d):\n", len(input.ExistingIssues)))
+		for _, t := range input.ExistingIssues {
+			b.WriteString(fmt.Sprintf("  - %s\n", t))
+		}
+	}
+	b.WriteString("\n---\n\n")
+	b.WriteString(input.Prompt)
 	return b.String()
 }
 
@@ -253,6 +287,18 @@ func buildEnv(input Input, composedPrompt string) []string {
 	if len(input.Comments) > 0 {
 		if commentsJSON, err := json.Marshal(input.Comments); err == nil {
 			env = append(env, "AIFLOW_COMMENTS="+string(commentsJSON))
+		}
+	}
+	if input.ProjectID != "" {
+		env = append(env,
+			"AIFLOW_PROJECT_ID="+input.ProjectID,
+			"AIFLOW_PROJECT_NAME="+input.ProjectName,
+			"AIFLOW_PROJECT_DESCRIPTION="+input.ProjectDescription,
+			"AIFLOW_PROJECT_STATE="+input.ProjectState,
+			"AIFLOW_TRIGGER_LABEL="+input.TriggerLabel,
+		)
+		if issuesJSON, err := json.Marshal(input.ExistingIssues); err == nil {
+			env = append(env, "AIFLOW_EXISTING_ISSUES="+string(issuesJSON))
 		}
 	}
 	return env

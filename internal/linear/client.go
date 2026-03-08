@@ -23,6 +23,8 @@ type Client struct {
 	mu           sync.RWMutex
 	stateCache   map[string]string // name → ID
 	reverseCache map[string]string // ID → name
+	labelCache   map[string]string // issue label name → ID
+	teamID       string            // cached team ID
 }
 
 // NewClient creates a new Linear API client.
@@ -32,6 +34,7 @@ func NewClient(apiKey string) *Client {
 		httpClient:   &http.Client{},
 		stateCache:   make(map[string]string),
 		reverseCache: make(map[string]string),
+		labelCache:   make(map[string]string),
 	}
 }
 
@@ -107,11 +110,18 @@ func (c *Client) LoadWorkflowStates(ctx context.Context, teamKey string) error {
 	query := `query($teamKey: String!) {
 		teams(filter: { key: { eq: $teamKey } }) {
 			nodes {
+				id
 				states {
 					nodes {
 						id
 						name
 						type
+					}
+				}
+				labels {
+					nodes {
+						id
+						name
 					}
 				}
 			}
@@ -121,9 +131,16 @@ func (c *Client) LoadWorkflowStates(ctx context.Context, teamKey string) error {
 	var resp GraphQLResponse[struct {
 		Teams struct {
 			Nodes []struct {
+				ID     string `json:"id"`
 				States struct {
 					Nodes []WorkflowState `json:"nodes"`
 				} `json:"states"`
+				Labels struct {
+					Nodes []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
 			} `json:"nodes"`
 		} `json:"teams"`
 	}]
@@ -142,14 +159,22 @@ func (c *Client) LoadWorkflowStates(ctx context.Context, teamKey string) error {
 		return fmt.Errorf("team %q not found", teamKey)
 	}
 
-	states := resp.Data.Teams.Nodes[0].States.Nodes
+	team := resp.Data.Teams.Nodes[0]
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, s := range states {
+
+	c.teamID = team.ID
+
+	for _, s := range team.States.Nodes {
 		c.stateCache[s.Name] = s.ID
 		c.reverseCache[s.ID] = s.Name
 		slog.Info("loaded workflow state", "name", s.Name, "id", s.ID, "type", s.Type)
+	}
+
+	for _, l := range team.Labels.Nodes {
+		c.labelCache[l.Name] = l.ID
+		slog.Debug("loaded issue label", "name", l.Name, "id", l.ID)
 	}
 
 	return nil
@@ -386,4 +411,213 @@ func (c *Client) PostComment(ctx context.Context, issueID, body string) error {
 	}
 
 	return nil
+}
+
+// TeamID returns the cached team ID (populated after LoadWorkflowStates).
+func (c *Client) TeamID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.teamID
+}
+
+// ListProjectsWithLabel returns projects that have the given label name.
+func (c *Client) ListProjectsWithLabel(ctx context.Context, labelName string) ([]Project, error) {
+	query := `query($labelName: String!) {
+		projects(
+			filter: {
+				labels: { some: { name: { eq: $labelName } } }
+			}
+			first: 50
+		) {
+			nodes {
+				id
+				name
+				description
+				state { name }
+				labels { nodes { id name } }
+			}
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		Projects struct {
+			Nodes []struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				State       struct {
+					Name string `json:"name"`
+				} `json:"state"`
+				Labels struct {
+					Nodes []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
+			} `json:"nodes"`
+		} `json:"projects"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"labelName": labelName},
+	}, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("listing projects with label: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+
+	var projects []Project
+	for _, n := range resp.Data.Projects.Nodes {
+		p := Project{
+			ID:          n.ID,
+			Name:        n.Name,
+			Description: n.Description,
+			State:       n.State.Name,
+		}
+		for _, l := range n.Labels.Nodes {
+			p.Labels = append(p.Labels, ProjectLabel{ID: l.ID, Name: l.Name})
+		}
+		projects = append(projects, p)
+	}
+	return projects, nil
+}
+
+// GetProjectIssues returns the titles of existing issues in a project.
+func (c *Client) GetProjectIssues(ctx context.Context, projectID string) ([]string, error) {
+	query := `query($projectId: String!) {
+		issues(
+			filter: { project: { id: { eq: $projectId } } }
+			first: 250
+		) {
+			nodes { title }
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		Issues struct {
+			Nodes []struct {
+				Title string `json:"title"`
+			} `json:"nodes"`
+		} `json:"issues"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"projectId": projectID},
+	}, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("getting project issues: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+
+	var titles []string
+	for _, n := range resp.Data.Issues.Nodes {
+		titles = append(titles, n.Title)
+	}
+	return titles, nil
+}
+
+// CreateIssue creates a new issue and returns its ID.
+func (c *Client) CreateIssue(ctx context.Context, input CreateIssueInput) (string, error) {
+	query := `mutation($input: IssueCreateInput!) {
+		issueCreate(input: $input) {
+			success
+			issue { id identifier }
+		}
+	}`
+
+	issueInput := map[string]any{
+		"teamId":    input.TeamID,
+		"title":     input.Title,
+		"stateId":   input.StateID,
+		"priority":  input.Priority,
+	}
+	if input.ProjectID != "" {
+		issueInput["projectId"] = input.ProjectID
+	}
+	if input.Description != "" {
+		issueInput["description"] = input.Description
+	}
+	if len(input.LabelIDs) > 0 {
+		issueInput["labelIds"] = input.LabelIDs
+	}
+
+	var resp GraphQLResponse[struct {
+		IssueCreate struct {
+			Success bool `json:"success"`
+			Issue   struct {
+				ID         string `json:"id"`
+				Identifier string `json:"identifier"`
+			} `json:"issue"`
+		} `json:"issueCreate"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"input": issueInput},
+	}, &resp)
+	if err != nil {
+		return "", fmt.Errorf("creating issue: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return "", fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+	if !resp.Data.IssueCreate.Success {
+		return "", fmt.Errorf("issueCreate returned success=false")
+	}
+
+	return resp.Data.IssueCreate.Issue.ID, nil
+}
+
+// RemoveProjectLabel removes a label from a project by updating labelIds to exclude it.
+func (c *Client) RemoveProjectLabel(ctx context.Context, projectID, labelID string) error {
+	query := `mutation($id: String!, $labelId: String!) {
+		projectUpdate(id: $id, input: { removedLabelIds: [$labelId] }) {
+			success
+		}
+	}`
+
+	var resp GraphQLResponse[struct {
+		ProjectUpdate struct {
+			Success bool `json:"success"`
+		} `json:"projectUpdate"`
+	}]
+
+	err := c.do(ctx, GraphQLRequest{
+		Query:     query,
+		Variables: map[string]any{"id": projectID, "labelId": labelID},
+	}, &resp)
+	if err != nil {
+		return fmt.Errorf("removing project label: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+	}
+	if !resp.Data.ProjectUpdate.Success {
+		return fmt.Errorf("projectUpdate returned success=false")
+	}
+
+	return nil
+}
+
+// ResolveIssueLabels converts label names to IDs using the cached label map.
+// Unknown labels are logged and skipped (best-effort).
+func (c *Client) ResolveIssueLabels(labelNames []string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var ids []string
+	for _, name := range labelNames {
+		if id, ok := c.labelCache[name]; ok {
+			ids = append(ids, id)
+		} else {
+			slog.Warn("issue label not found in cache, skipping", "label", name)
+		}
+	}
+	return ids
 }

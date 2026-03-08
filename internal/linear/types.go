@@ -85,6 +85,32 @@ type CommentNode struct {
 	} `json:"user"`
 }
 
+// Project represents a Linear project.
+type Project struct {
+	ID          string
+	Name        string
+	Description string
+	State       string
+	Labels      []ProjectLabel
+}
+
+// ProjectLabel represents a label attached to a Linear project.
+type ProjectLabel struct {
+	ID   string
+	Name string
+}
+
+// CreateIssueInput holds the fields for creating a new Linear issue.
+type CreateIssueInput struct {
+	TeamID      string
+	ProjectID   string
+	Title       string
+	Description string
+	StateID     string
+	Priority    int
+	LabelIDs    []string
+}
+
 // GraphQLRequest is a generic GraphQL request body.
 type GraphQLRequest struct {
 	Query     string         `json:"query"`

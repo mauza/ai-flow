@@ -98,6 +98,17 @@ func main() {
 		}
 	}
 
+	// Validate project pipeline next_state values
+	for _, stage := range cfg.ProjectPipeline {
+		if _, ok := client.ResolveStateID(stage.NextState); !ok {
+			slog.Error("project pipeline next_state not found in Linear",
+				"stage", stage.Name,
+				"nextState", stage.NextState,
+			)
+			os.Exit(1)
+		}
+	}
+
 	// Init git manager (optional — depends on git/gh availability)
 	var gitMgr *git.Manager
 	gitMgr, err = git.NewManager()
@@ -108,11 +119,16 @@ func main() {
 		slog.Info("git manager initialized")
 	}
 
-	// Init runner, session registry, and orchestrator
+	// Init runner, session registry, and orchestrators
 	runner := subprocess.NewRunner(cfg.Subprocess.MaxConcurrent)
 	registry := dashboard.NewRegistry()
 	runner.SetTracker(registry)
 	orch := orchestrator.New(cfg, client, db, runner, gitMgr)
+	var projectOrch *orchestrator.ProjectOrchestrator
+	if len(cfg.ProjectPipeline) > 0 {
+		projectOrch = orchestrator.NewProjectOrchestrator(cfg, client, db, runner)
+		slog.Info("project orchestrator initialized", "stages", len(cfg.ProjectPipeline))
+	}
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
@@ -157,6 +173,12 @@ func main() {
 	if cfg.Linear.Mode == "poll" {
 		p := poller.New(cfg, client, orch)
 		go p.Run(ctx)
+	}
+
+	// Start project poller if project pipeline is configured (always polls, regardless of mode)
+	if projectOrch != nil {
+		pp := poller.NewProjectPoller(cfg, client, projectOrch)
+		go pp.Run(ctx)
 	}
 
 	go func() {

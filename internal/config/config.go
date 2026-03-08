@@ -12,11 +12,12 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Linear     LinearConfig     `yaml:"linear"`
-	Pipeline   []StageConfig    `yaml:"pipeline"`
-	Subprocess SubprocessConfig `yaml:"subprocess"`
-	Workspace  WorkspaceConfig  `yaml:"workspace"`
+	Server          ServerConfig          `yaml:"server"`
+	Linear          LinearConfig          `yaml:"linear"`
+	Pipeline        []StageConfig         `yaml:"pipeline"`
+	ProjectPipeline []ProjectStageConfig  `yaml:"project_pipeline"`
+	Subprocess      SubprocessConfig      `yaml:"subprocess"`
+	Workspace       WorkspaceConfig       `yaml:"workspace"`
 }
 
 type WorkspaceConfig struct {
@@ -50,6 +51,25 @@ type StageConfig struct {
 	UsesBranch      bool     `yaml:"uses_branch"`
 	FailureState    string   `yaml:"failure_state"`
 	WaitForApproval bool     `yaml:"wait_for_approval"`
+}
+
+type ProjectStageConfig struct {
+	Name       string   `yaml:"name"`
+	Label      string   `yaml:"label"`
+	Command    string   `yaml:"command"`
+	Args       []string `yaml:"args"`
+	PromptFile string   `yaml:"prompt_file"`
+	Prompt     string   `yaml:"-"` // resolved from PromptFile at load time
+	NextState  string   `yaml:"next_state"`
+	Timeout    int      `yaml:"timeout"`
+}
+
+// ParsedTimeout returns the stage timeout as a Duration (defaults to 1 hour).
+func (psc *ProjectStageConfig) ParsedTimeout() time.Duration {
+	if psc.Timeout == 0 {
+		return time.Hour
+	}
+	return time.Duration(psc.Timeout) * time.Second
 }
 
 type SubprocessConfig struct {
@@ -193,6 +213,38 @@ func (c *Config) validate(configDir string) error {
 			return fmt.Errorf("duplicate linear_state %q in pipeline", stage.LinearState)
 		}
 		seen[stage.LinearState] = true
+	}
+
+	// Validate project pipeline stages (optional section)
+	for i, stage := range c.ProjectPipeline {
+		if stage.Name == "" {
+			return fmt.Errorf("project_pipeline[%d].name is required", i)
+		}
+		if stage.Label == "" {
+			return fmt.Errorf("project_pipeline[%d].label is required", i)
+		}
+		if stage.Command == "" {
+			return fmt.Errorf("project_pipeline[%d].command is required", i)
+		}
+		if stage.PromptFile == "" {
+			return fmt.Errorf("project_pipeline[%d].prompt_file is required", i)
+		}
+		promptPath := stage.PromptFile
+		if !filepath.IsAbs(promptPath) {
+			promptPath = filepath.Join(configDir, promptPath)
+		}
+		promptData, err := os.ReadFile(promptPath)
+		if err != nil {
+			return fmt.Errorf("project_pipeline[%d].prompt_file %q: %w", i, stage.PromptFile, err)
+		}
+		c.ProjectPipeline[i].Prompt = string(promptData)
+
+		if stage.NextState == "" {
+			return fmt.Errorf("project_pipeline[%d].next_state is required", i)
+		}
+		if stage.Timeout == 0 {
+			c.ProjectPipeline[i].Timeout = 3600
+		}
 	}
 
 	return nil

@@ -69,6 +69,20 @@ func migrate(db *sql.DB) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_dedup
 			ON runs (issue_id, stage_name)
 			WHERE status = 'running';
+
+		CREATE TABLE IF NOT EXISTS project_plan_runs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id TEXT NOT NULL,
+			stage_name TEXT NOT NULL,
+			status     TEXT NOT NULL DEFAULT 'running',
+			error      TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_project_plan_runs_active
+			ON project_plan_runs(project_id, stage_name)
+			WHERE status = 'running';
 	`)
 	if err != nil {
 		return err
@@ -309,6 +323,48 @@ func scanRunRecord(row rowScanner) (RunRecord, error) {
 		r.EndedAt = &endedAt.Time
 	}
 	return r, nil
+}
+
+// StartProjectRun inserts a new running record for a project stage.
+// Returns the run ID, or an error (including a unique constraint error if already running).
+func (s *Store) StartProjectRun(projectID, stageName string) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO project_plan_runs (project_id, stage_name, status) VALUES (?, ?, 'running')`,
+		projectID, stageName,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("inserting project run: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return 0, fmt.Errorf("project run already in progress for project %s stage %s", projectID, stageName)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("getting last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// CompleteProjectRun marks a project plan run as completed.
+func (s *Store) CompleteProjectRun(id int64) error {
+	_, err := s.db.Exec(
+		`UPDATE project_plan_runs SET status = 'completed', updated_at = ? WHERE id = ?`,
+		time.Now().UTC(), id,
+	)
+	return err
+}
+
+// FailProjectRun marks a project plan run as failed with an error message.
+func (s *Store) FailProjectRun(id int64, errMsg string) error {
+	_, err := s.db.Exec(
+		`UPDATE project_plan_runs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?`,
+		errMsg, time.Now().UTC(), id,
+	)
+	return err
 }
 
 // Close closes the database connection.
