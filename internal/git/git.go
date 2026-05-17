@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,11 @@ type Manager struct {
 	// Git author identity for commits in temp clones.
 	AuthorName  string
 	AuthorEmail string
+}
+
+type RepoInfo struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
 }
 
 // NewManager creates a new git Manager after verifying that git and gh are available.
@@ -39,11 +45,10 @@ func NewManager() (*Manager, error) {
 // Clone performs a shallow clone of the given repo into dir, then configures
 // the git identity so commits work even without global git config.
 func (m *Manager) Clone(ctx context.Context, repo, branch, dir string) error {
-	url := "git@github.com:" + repo + ".git"
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, url, dir)
+	cmd := exec.CommandContext(ctx, "gh", "repo", "clone", repo, dir, "--", "--depth", "1", "--branch", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git clone: %s: %w", strings.TrimSpace(string(out)), err)
+		return fmt.Errorf("gh repo clone: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
 	// Configure git identity in the clone so commits don't fail
@@ -194,6 +199,25 @@ func (m *Manager) HasUnpushedCommits(ctx context.Context, dir, baseBranch string
 	return strings.TrimSpace(stdout.String()) != "0", nil
 }
 
+// HasUnpushedCommitsForBranch returns true when HEAD has commits not present on
+// origin/branch. If the remote branch does not exist yet, it falls back to the
+// base branch comparison used for newly-created branches.
+func (m *Manager) HasUnpushedCommitsForBranch(ctx context.Context, dir, branch, baseBranch string) (bool, error) {
+	ref := "origin/" + branch
+	checkCmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", ref)
+	if err := checkCmd.Run(); err != nil {
+		ref = "origin/" + baseBranch
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-list", "--count", ref+"..HEAD")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("git rev-list: %w", err)
+	}
+	return strings.TrimSpace(stdout.String()) != "0", nil
+}
+
 // CommitAll stages all changes and commits with the given message.
 func (m *Manager) CommitAll(ctx context.Context, dir, message string) error {
 	addCmd := exec.CommandContext(ctx, "git", "-C", dir, "add", "-A")
@@ -260,6 +284,24 @@ func (m *Manager) CommentOnPR(ctx context.Context, dir, prURL, body string) erro
 		return fmt.Errorf("gh pr comment: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// ListRepos returns repositories visible to gh for the given owner.
+func (m *Manager) ListRepos(ctx context.Context, owner string) ([]RepoInfo, error) {
+	cmd := exec.CommandContext(ctx, "gh", "repo", "list", owner, "--limit", "200", "--json", "name,nameWithOwner")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh repo list: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+
+	var repos []RepoInfo
+	if err := json.Unmarshal(stdout.Bytes(), &repos); err != nil {
+		return nil, fmt.Errorf("parsing gh repo list output: %w", err)
+	}
+	return repos, nil
 }
 
 // Cleanup removes the temporary directory.

@@ -217,6 +217,20 @@ func (s *Store) CleanStaleRuns(maxAge time.Duration) (int64, error) {
 	return res.RowsAffected()
 }
 
+// CleanStaleProjectRuns marks any project runs left running after a crash as failed.
+func (s *Store) CleanStaleProjectRuns(maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	res, err := s.db.Exec(
+		`UPDATE project_plan_runs SET status = 'failed', error = 'stale project run recovered on startup', updated_at = ?
+		 WHERE status = 'running' AND created_at < ?`,
+		time.Now().UTC(), cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("cleaning stale project runs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // GetFirstBranchForIssue returns the branch/PR info from the earliest completed run
 // that has a branch for this issue. This ensures uses_branch stages always pick up
 // the branch created by the first creates_pr stage rather than the most recent run.
@@ -347,6 +361,19 @@ func (s *Store) StartProjectRun(projectID, stageName string) (int64, error) {
 		return 0, fmt.Errorf("getting last insert id: %w", err)
 	}
 	return id, nil
+}
+
+// HasCompletedProjectRun reports whether this project stage already completed.
+func (s *Store) HasCompletedProjectRun(projectID, stageName string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM project_plan_runs WHERE project_id = ? AND stage_name = ? AND status = 'completed'`,
+		projectID, stageName,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // CompleteProjectRun marks a project plan run as completed.

@@ -42,15 +42,66 @@ type IssueMeta struct {
 // It looks for a YAML frontmatter block delimited by "---" lines, or a JSON object
 // embedded in the description. If default_branch is not set, it defaults to "main".
 func ParseIssueMeta(description string) (*IssueMeta, error) {
+	meta, err := ParseIssueMetaRelaxed(description)
+	if err != nil {
+		return nil, err
+	}
+	return NormalizeIssueMeta(meta, "")
+}
+
+// ParseIssueMetaRelaxed parses structured issue metadata when present.
+// It defaults default_branch to main and allows github_repo to be empty.
+func ParseIssueMetaRelaxed(description string) (*IssueMeta, error) {
 	description = strings.TrimSpace(description)
 
 	// Try YAML frontmatter first (most natural for issue descriptions)
-	if meta, err := parseIssueMetaYAML(description); err == nil {
+	meta, err := parseIssueMetaYAML(description)
+	if err == nil {
 		return meta, nil
+	}
+	if strings.HasPrefix(description, "---") {
+		return nil, err
 	}
 
 	// Fall back to JSON
-	return parseIssueMetaJSON(description)
+	meta, err = parseIssueMetaJSON(description)
+	if err == nil {
+		return meta, nil
+	}
+	if strings.Contains(description, "{") {
+		return nil, err
+	}
+
+	return &IssueMeta{DefaultBranch: "main"}, nil
+}
+
+// NormalizeIssueMeta fills defaults and applies an optional fallback owner.
+// When GithubRepo is just a repo name, fallbackOwner expands it to owner/repo.
+func NormalizeIssueMeta(meta *IssueMeta, fallbackOwner string) (*IssueMeta, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("issue metadata is required")
+	}
+
+	meta.GithubRepo = strings.TrimSpace(meta.GithubRepo)
+	meta.DefaultBranch = strings.TrimSpace(meta.DefaultBranch)
+	fallbackOwner = strings.TrimSpace(fallbackOwner)
+
+	if meta.GithubRepo == "" {
+		return nil, fmt.Errorf("github_repo is required")
+	}
+
+	if !strings.Contains(meta.GithubRepo, "/") {
+		if fallbackOwner == "" {
+			return nil, fmt.Errorf("github_repo %q must be owner/repo or config github.owner must be set", meta.GithubRepo)
+		}
+		meta.GithubRepo = fallbackOwner + "/" + meta.GithubRepo
+	}
+
+	if meta.DefaultBranch == "" {
+		meta.DefaultBranch = "main"
+	}
+
+	return meta, nil
 }
 
 func parseIssueMetaJSON(description string) (*IssueMeta, error) {
@@ -70,10 +121,7 @@ func parseIssueMetaJSON(description string) (*IssueMeta, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &meta); err != nil {
 		return nil, err
 	}
-	if meta.GithubRepo == "" {
-		return nil, fmt.Errorf("github_repo is required in issue metadata")
-	}
-	if meta.DefaultBranch == "" {
+	if strings.TrimSpace(meta.DefaultBranch) == "" {
 		meta.DefaultBranch = "main"
 	}
 	return &meta, nil
@@ -115,13 +163,8 @@ func parseIssueMetaYAML(description string) (*IssueMeta, error) {
 		return nil, fmt.Errorf("parsing issue frontmatter: %w", err)
 	}
 
-	if meta.GithubRepo == "" {
-		return nil, fmt.Errorf("github_repo is required in issue frontmatter")
-	}
-
-	if meta.DefaultBranch == "" {
+	if strings.TrimSpace(meta.DefaultBranch) == "" {
 		meta.DefaultBranch = "main"
 	}
-
 	return &meta, nil
 }

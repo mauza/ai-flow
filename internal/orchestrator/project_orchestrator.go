@@ -43,6 +43,15 @@ type plannedIssue struct {
 // It handles dedup, subprocess execution, issue creation, and label removal.
 func (po *ProjectOrchestrator) ProcessProject(ctx context.Context, project linear.Project, stage config.ProjectStageConfig) {
 	log := slog.With("project", project.Name, "stage", stage.Name)
+	completed, err := po.store.HasCompletedProjectRun(project.ID, stage.Name)
+	if err != nil {
+		log.Error("checking completed project run", "error", err)
+		return
+	}
+	if completed {
+		log.Info("project stage already completed, skipping")
+		return
+	}
 
 	// Concurrent dedup via DB unique index
 	runID, err := po.store.StartProjectRun(project.ID, stage.Name)
@@ -132,8 +141,21 @@ func (po *ProjectOrchestrator) processProject(ctx context.Context, runID int64, 
 
 	// 7. Create each planned issue
 	teamID := po.linear.TeamID()
+	existing := make(map[string]bool, len(existingTitles)+len(planned))
+	for _, title := range existingTitles {
+		existing[title] = true
+	}
 	created := 0
+	skipped := 0
+	failed := 0
 	for _, pi := range planned {
+		if existing[pi.Title] {
+			log.Info("skipping existing planned issue", "title", pi.Title)
+			skipped++
+			continue
+		}
+		existing[pi.Title] = true
+
 		labelIDs := po.linear.ResolveIssueLabels(pi.Labels)
 
 		issueID, err := po.linear.CreateIssue(ctx, linear.CreateIssueInput{
@@ -147,14 +169,17 @@ func (po *ProjectOrchestrator) processProject(ctx context.Context, runID int64, 
 		})
 		if err != nil {
 			log.Error("creating planned issue", "title", pi.Title, "error", err)
-			// Continue creating other issues rather than aborting
+			failed++
 			continue
 		}
 		log.Info("created issue", "title", pi.Title, "id", issueID)
 		created++
 	}
 
-	log.Info("issues created", "created", created, "planned", len(planned))
+	log.Info("issues processed", "created", created, "skipped", skipped, "failed", failed, "planned", len(planned))
+	if failed > 0 {
+		return fmt.Errorf("created %d/%d planned issues (%d skipped existing, %d failed)", created, len(planned), skipped, failed)
+	}
 
 	// 8. Remove trigger label from project (consume trigger)
 	if err := po.linear.RemoveProjectLabel(ctx, project.ID, triggerLabelID); err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,20 @@ const (
 	baseRetryDelay = 500 * time.Millisecond
 )
 
+type statusError struct {
+	statusCode int
+	body       string
+}
+
+type pageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("unexpected status %d: %s", e.statusCode, e.body)
+}
+
 func (c *Client) do(ctx context.Context, req GraphQLRequest, result any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -70,6 +85,10 @@ func (c *Client) do(ctx context.Context, req GraphQLRequest, result any) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		var statusErr *statusError
+		if errors.As(lastErr, &statusErr) && statusErr.statusCode != http.StatusTooManyRequests && statusErr.statusCode < 500 {
+			return lastErr
+		}
 		slog.Warn("Linear API request failed", "attempt", attempt+1, "error", lastErr)
 	}
 	return fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
@@ -95,7 +114,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte, result any) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return &statusError{statusCode: resp.StatusCode, body: string(respBody)}
 	}
 
 	if err := json.Unmarshal(respBody, result); err != nil {
@@ -233,13 +252,14 @@ func (c *Client) GetIssue(ctx context.Context, id string) (*IssueDetails, error)
 // GetIssuesByState fetches issues for a team filtered by workflow state name.
 // Returns full issue details so no second fetch is needed.
 func (c *Client) GetIssuesByState(ctx context.Context, teamKey, stateName string) ([]IssueDetails, error) {
-	query := `query($teamKey: String!, $stateName: String!) {
+	query := `query($teamKey: String!, $stateName: String!, $after: String) {
 		issues(
 			filter: {
 				team: { key: { eq: $teamKey } }
 				state: { name: { eq: $stateName } }
 			}
 			first: 50
+			after: $after
 		) {
 			nodes {
 				id
@@ -252,35 +272,41 @@ func (c *Client) GetIssuesByState(ctx context.Context, teamKey, stateName string
 				labels { nodes { id name } }
 				project { id name description }
 			}
+			pageInfo { hasNextPage endCursor }
 		}
 	}`
 
-	var resp GraphQLResponse[struct {
-		Issues struct {
-			Nodes []IssueDetails `json:"nodes"`
-		} `json:"issues"`
-	}]
+	var issues []IssueDetails
+	var after any
+	for {
+		var resp GraphQLResponse[struct {
+			Issues struct {
+				Nodes    []IssueDetails `json:"nodes"`
+				PageInfo pageInfo       `json:"pageInfo"`
+			} `json:"issues"`
+		}]
 
-	err := c.do(ctx, GraphQLRequest{
-		Query:     query,
-		Variables: map[string]any{"teamKey": teamKey, "stateName": stateName},
-	}, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("getting issues by state: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
-	}
+		err := c.do(ctx, GraphQLRequest{
+			Query: query,
+			Variables: map[string]any{
+				"teamKey":   teamKey,
+				"stateName": stateName,
+				"after":     after,
+			},
+		}, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("getting issues by state: %w", err)
+		}
+		if len(resp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+		}
 
-	issues := resp.Data.Issues.Nodes
-	if len(issues) == 50 {
-		slog.Warn("GetIssuesByState returned exactly 50 issues, there may be more (pagination not implemented)",
-			"teamKey", teamKey,
-			"stateName", stateName,
-		)
+		issues = append(issues, resp.Data.Issues.Nodes...)
+		if !resp.Data.Issues.PageInfo.HasNextPage {
+			return issues, nil
+		}
+		after = resp.Data.Issues.PageInfo.EndCursor
 	}
-
-	return issues, nil
 }
 
 // UpdateIssueState transitions an issue to a new workflow state.
@@ -316,39 +342,49 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateID string) 
 
 // GetIssueComments fetches all comments on an issue, ordered by creation time.
 func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]CommentNode, error) {
-	query := `query($id: String!) {
+	query := `query($id: String!, $after: String) {
 		issue(id: $id) {
-			comments(orderBy: createdAt) {
+			comments(orderBy: createdAt, first: 50, after: $after) {
 				nodes {
 					id
 					body
 					createdAt
 					user { name }
 				}
+				pageInfo { hasNextPage endCursor }
 			}
 		}
 	}`
 
-	var resp GraphQLResponse[struct {
-		Issue struct {
-			Comments struct {
-				Nodes []CommentNode `json:"nodes"`
-			} `json:"comments"`
-		} `json:"issue"`
-	}]
+	var comments []CommentNode
+	var after any
+	for {
+		var resp GraphQLResponse[struct {
+			Issue struct {
+				Comments struct {
+					Nodes    []CommentNode `json:"nodes"`
+					PageInfo pageInfo      `json:"pageInfo"`
+				} `json:"comments"`
+			} `json:"issue"`
+		}]
 
-	err := c.do(ctx, GraphQLRequest{
-		Query:     query,
-		Variables: map[string]any{"id": issueID},
-	}, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("getting issue comments: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
-	}
+		err := c.do(ctx, GraphQLRequest{
+			Query:     query,
+			Variables: map[string]any{"id": issueID, "after": after},
+		}, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("getting issue comments: %w", err)
+		}
+		if len(resp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+		}
 
-	return resp.Data.Issue.Comments.Nodes, nil
+		comments = append(comments, resp.Data.Issue.Comments.Nodes...)
+		if !resp.Data.Issue.Comments.PageInfo.HasNextPage {
+			return comments, nil
+		}
+		after = resp.Data.Issue.Comments.PageInfo.EndCursor
+	}
 }
 
 // UpdateIssueDescription updates the description of a Linear issue.
@@ -422,12 +458,13 @@ func (c *Client) TeamID() string {
 
 // ListProjectsWithLabel returns projects that have the given label name.
 func (c *Client) ListProjectsWithLabel(ctx context.Context, labelName string) ([]Project, error) {
-	query := `query($labelName: String!) {
+	query := `query($labelName: String!, $after: String) {
 		projects(
 			filter: {
 				labels: { some: { name: { eq: $labelName } } }
 			}
 			first: 50
+			after: $after
 		) {
 			nodes {
 				id
@@ -436,90 +473,107 @@ func (c *Client) ListProjectsWithLabel(ctx context.Context, labelName string) ([
 				state { name }
 				labels { nodes { id name } }
 			}
+			pageInfo { hasNextPage endCursor }
 		}
 	}`
 
-	var resp GraphQLResponse[struct {
-		Projects struct {
-			Nodes []struct {
-				ID          string `json:"id"`
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				State       struct {
-					Name string `json:"name"`
-				} `json:"state"`
-				Labels struct {
-					Nodes []struct {
-						ID   string `json:"id"`
-						Name string `json:"name"`
-					} `json:"nodes"`
-				} `json:"labels"`
-			} `json:"nodes"`
-		} `json:"projects"`
-	}]
-
-	err := c.do(ctx, GraphQLRequest{
-		Query:     query,
-		Variables: map[string]any{"labelName": labelName},
-	}, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("listing projects with label: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
-	}
-
 	var projects []Project
-	for _, n := range resp.Data.Projects.Nodes {
-		p := Project{
-			ID:          n.ID,
-			Name:        n.Name,
-			Description: n.Description,
-			State:       n.State.Name,
+	var after any
+	for {
+		var resp GraphQLResponse[struct {
+			Projects struct {
+				Nodes []struct {
+					ID          string `json:"id"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					State       struct {
+						Name string `json:"name"`
+					} `json:"state"`
+					Labels struct {
+						Nodes []struct {
+							ID   string `json:"id"`
+							Name string `json:"name"`
+						} `json:"nodes"`
+					} `json:"labels"`
+				} `json:"nodes"`
+				PageInfo pageInfo `json:"pageInfo"`
+			} `json:"projects"`
+		}]
+
+		err := c.do(ctx, GraphQLRequest{
+			Query:     query,
+			Variables: map[string]any{"labelName": labelName, "after": after},
+		}, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("listing projects with label: %w", err)
 		}
-		for _, l := range n.Labels.Nodes {
-			p.Labels = append(p.Labels, ProjectLabel{ID: l.ID, Name: l.Name})
+		if len(resp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
 		}
-		projects = append(projects, p)
+
+		for _, n := range resp.Data.Projects.Nodes {
+			p := Project{
+				ID:          n.ID,
+				Name:        n.Name,
+				Description: n.Description,
+				State:       n.State.Name,
+			}
+			for _, l := range n.Labels.Nodes {
+				p.Labels = append(p.Labels, ProjectLabel{ID: l.ID, Name: l.Name})
+			}
+			projects = append(projects, p)
+		}
+		if !resp.Data.Projects.PageInfo.HasNextPage {
+			return projects, nil
+		}
+		after = resp.Data.Projects.PageInfo.EndCursor
 	}
-	return projects, nil
 }
 
 // GetProjectIssues returns the titles of existing issues in a project.
 func (c *Client) GetProjectIssues(ctx context.Context, projectID string) ([]string, error) {
-	query := `query($projectId: String!) {
+	query := `query($projectId: String!, $after: String) {
 		issues(
 			filter: { project: { id: { eq: $projectId } } }
 			first: 250
+			after: $after
 		) {
 			nodes { title }
+			pageInfo { hasNextPage endCursor }
 		}
 	}`
 
-	var resp GraphQLResponse[struct {
-		Issues struct {
-			Nodes []struct {
-				Title string `json:"title"`
-			} `json:"nodes"`
-		} `json:"issues"`
-	}]
-
-	err := c.do(ctx, GraphQLRequest{
-		Query:     query,
-		Variables: map[string]any{"projectId": projectID},
-	}, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("getting project issues: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
-	}
-
 	var titles []string
-	for _, n := range resp.Data.Issues.Nodes {
-		titles = append(titles, n.Title)
+	var after any
+	for {
+		var resp GraphQLResponse[struct {
+			Issues struct {
+				Nodes []struct {
+					Title string `json:"title"`
+				} `json:"nodes"`
+				PageInfo pageInfo `json:"pageInfo"`
+			} `json:"issues"`
+		}]
+
+		err := c.do(ctx, GraphQLRequest{
+			Query:     query,
+			Variables: map[string]any{"projectId": projectID, "after": after},
+		}, &resp)
+		if err != nil {
+			return nil, fmt.Errorf("getting project issues: %w", err)
+		}
+		if len(resp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql errors: %s", resp.Errors[0].Message)
+		}
+
+		for _, n := range resp.Data.Issues.Nodes {
+			titles = append(titles, n.Title)
+		}
+		if !resp.Data.Issues.PageInfo.HasNextPage {
+			return titles, nil
+		}
+		after = resp.Data.Issues.PageInfo.EndCursor
 	}
-	return titles, nil
 }
 
 // CreateIssue creates a new issue and returns its ID.
@@ -532,10 +586,10 @@ func (c *Client) CreateIssue(ctx context.Context, input CreateIssueInput) (strin
 	}`
 
 	issueInput := map[string]any{
-		"teamId":    input.TeamID,
-		"title":     input.Title,
-		"stateId":   input.StateID,
-		"priority":  input.Priority,
+		"teamId":   input.TeamID,
+		"title":    input.Title,
+		"stateId":  input.StateID,
+		"priority": input.Priority,
 	}
 	if input.ProjectID != "" {
 		issueInput["projectId"] = input.ProjectID

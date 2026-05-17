@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/git"
@@ -208,9 +209,17 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, details *linear.IssueDe
 
 	stateName := details.State.Name
 
-	if stage.UsesBranch && o.git != nil {
+	if (stage.CreatesPR || stage.UsesBranch) && o.git == nil {
+		errMsg := "git/gh unavailable for git-enabled stage"
+		slog.Error(errMsg, "issue", details.Identifier, "stage", stage.Name)
+		o.store.FailRun(runID, -1, errMsg)
+		o.failAndTransition(ctx, details.ID, details.Identifier, stage, errMsg)
+		return
+	}
+
+	if stage.UsesBranch {
 		o.handleWithExistingBranch(ctx, runID, details, stage, stateName, labelNames)
-	} else if stage.CreatesPR && o.git != nil {
+	} else if stage.CreatesPR {
 		o.handleWithGit(ctx, runID, details, stage, stateName, labelNames)
 	} else {
 		o.handleWithoutGit(ctx, runID, details, stage, stateName, labelNames)
@@ -247,14 +256,19 @@ func (o *Orchestrator) handleWithoutGit(ctx context.Context, runID int64, detail
 			"issue", details.Identifier,
 			"stage", stage.Name,
 		)
-		o.store.CompleteRun(runID, 0, result.Stdout, "", "")
 		if stage.WaitForApproval {
+			o.store.CompleteRun(runID, 0, result.Stdout, "", "")
 			comment := formatSuccessComment(stage.Name, result.Stdout, "")
 			if err := o.client.PostComment(ctx, details.ID, comment); err != nil {
 				slog.Error("posting comment", "error", err, "issue", details.Identifier)
 			}
 		} else {
-			o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, "")
+			if err := o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, ""); err != nil {
+				o.store.FailRun(runID, -1, err.Error())
+				o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, err.Error())
+				return
+			}
+			o.store.CompleteRun(runID, 0, result.Stdout, "", "")
 		}
 
 	case 2:
@@ -281,17 +295,144 @@ func (o *Orchestrator) handleWithoutGit(ctx context.Context, runID int64, detail
 }
 
 // resolveRepoConfig extracts GitHub repo metadata from the issue's description.
-func resolveRepoConfig(details *linear.IssueDetails) (repo, branch string, err error) {
-	meta, err := linear.ParseIssueMeta(details.Description)
+// When config github.owner is set, github_repo may be either owner/repo or repo.
+func resolveRepoConfig(details *linear.IssueDetails, fallbackOwner string) (repo, branch string, err error) {
+	meta, err := linear.ParseIssueMetaRelaxed(details.Description)
+	if err != nil {
+		return "", "", fmt.Errorf("issue %s: %w", details.Identifier, err)
+	}
+	meta, err = linear.NormalizeIssueMeta(meta, fallbackOwner)
 	if err != nil {
 		return "", "", fmt.Errorf("issue %s: %w", details.Identifier, err)
 	}
 	return meta.GithubRepo, meta.DefaultBranch, nil
 }
 
+func (o *Orchestrator) resolveRepoConfigWithFallback(ctx context.Context, details *linear.IssueDetails) (repo, branch string, err error) {
+	repo, branch, err = resolveRepoConfig(details, o.cfg.GitHub.Owner)
+	if err == nil || o.git == nil || strings.TrimSpace(o.cfg.GitHub.Owner) == "" {
+		return repo, branch, err
+	}
+
+	meta, parseErr := linear.ParseIssueMetaRelaxed(details.Description)
+	if parseErr != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(meta.GithubRepo) != "" {
+		return "", "", err
+	}
+
+	repo, branch, resolveErr := o.resolveRepoFromIssueText(ctx, details, o.cfg.GitHub.Owner, meta.DefaultBranch)
+	if resolveErr != nil {
+		return "", "", fmt.Errorf("%w; repo inference also failed: %v", err, resolveErr)
+	}
+	return repo, branch, nil
+}
+
+func (o *Orchestrator) resolveRepoFromIssueText(ctx context.Context, details *linear.IssueDetails, owner, defaultBranch string) (string, string, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return "", "", fmt.Errorf("github.owner is required for natural-language repo resolution")
+	}
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+
+	repos, err := o.git.ListRepos(ctx, owner)
+	if err != nil {
+		return "", "", err
+	}
+	repo := matchRepoFromText(details.Title+"\n"+details.Description, owner, repos)
+	if repo == "" {
+		return "", "", fmt.Errorf("could not infer repo from issue text for github.owner %q", owner)
+	}
+	return repo, defaultBranch, nil
+}
+
+func matchRepoFromText(text, owner string, repos []git.RepoInfo) string {
+	normalizedText := normalizeRepoText(text)
+	if normalizedText == "" {
+		return ""
+	}
+
+	bestRepo := ""
+	bestScore := 0
+	ambiguous := false
+	for _, repo := range repos {
+		candidates := []string{repo.Name, repo.NameWithOwner}
+		for _, candidate := range candidates {
+			normalizedCandidate := normalizeRepoText(candidate)
+			if normalizedCandidate == "" {
+				continue
+			}
+			score := repoMatchScore(normalizedText, normalizedCandidate)
+			if candidate == repo.NameWithOwner {
+				normalizedOwner := normalizeRepoText(owner)
+				if normalizedOwner != "" && strings.Contains(normalizedText, normalizedOwner) {
+					score++
+				}
+			}
+			if score > bestScore {
+				bestScore = score
+				bestRepo = repo.NameWithOwner
+				ambiguous = false
+			} else if score == bestScore && score > 0 && bestRepo != repo.NameWithOwner {
+				ambiguous = true
+			}
+		}
+	}
+
+	if bestScore < 2 || ambiguous {
+		return ""
+	}
+	return bestRepo
+}
+
+func repoMatchScore(normalizedText, normalizedCandidate string) int {
+	if normalizedText == normalizedCandidate {
+		return 5
+	}
+	if strings.Contains(normalizedText, normalizedCandidate) {
+		return 4
+	}
+	parts := strings.Fields(normalizedCandidate)
+	if len(parts) == 0 {
+		return 0
+	}
+
+	score := 0
+	for _, part := range parts {
+		if len(part) < 3 {
+			continue
+		}
+		if strings.Contains(normalizedText, part) {
+			score++
+		}
+	}
+	return score
+}
+
+func normalizeRepoText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := true
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string) {
 	branchName := git.SanitizeBranchName(details.Identifier, details.Title)
-	repo, baseBranch, err := resolveRepoConfig(details)
+	repo, baseBranch, err := o.resolveRepoConfigWithFallback(ctx, details)
 	if err != nil {
 		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
@@ -403,14 +544,19 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 			"stage", stage.Name,
 			"prURL", prURL,
 		)
-		o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 		if stage.WaitForApproval {
+			o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 			comment := formatSuccessComment(stage.Name, result.Stdout, prURL)
 			if err := o.client.PostComment(ctx, details.ID, comment); err != nil {
 				slog.Error("posting comment", "error", err, "issue", details.Identifier)
 			}
 		} else {
-			o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL)
+			if err := o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL); err != nil {
+				o.store.FailRun(runID, -1, err.Error())
+				o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, err.Error())
+				return
+			}
+			o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 			o.cleanupWorkspaceIfDone(stage, repo, branchName)
 		}
 
@@ -438,7 +584,7 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 }
 
 func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string) {
-	repo, baseBranch, err := resolveRepoConfig(details)
+	repo, baseBranch, err := o.resolveRepoConfigWithFallback(ctx, details)
 	if err != nil {
 		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
@@ -541,14 +687,19 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 			"stage", stage.Name,
 			"prURL", prURL,
 		)
-		o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 		if stage.WaitForApproval {
+			o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 			comment := formatSuccessComment(stage.Name, result.Stdout, prURL)
 			if err := o.client.PostComment(ctx, details.ID, comment); err != nil {
 				slog.Error("posting comment", "error", err, "issue", details.Identifier)
 			}
 		} else {
-			o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL)
+			if err := o.transitionAndComment(ctx, details.ID, details.Identifier, stage, result.Stdout, prURL); err != nil {
+				o.store.FailRun(runID, -1, err.Error())
+				o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, err.Error())
+				return
+			}
+			o.store.CompleteRun(runID, 0, result.Stdout, prURL, branchName)
 			o.cleanupWorkspaceIfDone(stage, repo, branchName)
 		}
 
@@ -650,23 +801,14 @@ func matchesLabels(required, issueLabels []string) bool {
 	return false
 }
 
-func (o *Orchestrator) transitionAndComment(ctx context.Context, issueID, identifier string, stage *config.StageConfig, output, prURL string) {
+func (o *Orchestrator) transitionAndComment(ctx context.Context, issueID, identifier string, stage *config.StageConfig, output, prURL string) error {
 	nextStateID, ok := o.client.ResolveStateID(stage.NextState)
 	if !ok {
-		slog.Error("cannot resolve next state",
-			"nextState", stage.NextState,
-			"issue", identifier,
-		)
-		return
+		return fmt.Errorf("cannot resolve next state %q", stage.NextState)
 	}
 
 	if err := o.client.UpdateIssueState(ctx, issueID, nextStateID); err != nil {
-		slog.Error("transitioning issue",
-			"error", err,
-			"issue", identifier,
-			"nextState", stage.NextState,
-		)
-		return
+		return fmt.Errorf("transitioning issue %s to %s: %w", identifier, stage.NextState, err)
 	}
 
 	slog.Info("transitioned issue",
@@ -679,6 +821,7 @@ func (o *Orchestrator) transitionAndComment(ctx context.Context, issueID, identi
 	if err := o.client.PostComment(ctx, issueID, comment); err != nil {
 		slog.Error("posting comment", "error", err, "issue", identifier)
 	}
+	return nil
 }
 
 func (o *Orchestrator) postFailureComment(ctx context.Context, issueID, identifier, stageName, errMsg string) {
@@ -796,7 +939,15 @@ func (o *Orchestrator) HandleCommentWebhook(ctx context.Context, payload linear.
 		"commentCount", len(comments),
 	)
 
-	if (stage.CreatesPR || stage.UsesBranch) && o.git != nil {
+	if (stage.CreatesPR || stage.UsesBranch) && o.git == nil {
+		errMsg := "git/gh unavailable for git-enabled stage"
+		slog.Error(errMsg, "issue", details.Identifier, "stage", stage.Name)
+		o.store.FailRun(runID, -1, errMsg)
+		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, errMsg)
+		return
+	}
+
+	if stage.CreatesPR || stage.UsesBranch {
 		o.handleRerunWithGit(ctx, runID, details, stage, details.State.Name, labelNames, comments)
 	} else {
 		o.handleRerunWithoutGit(ctx, runID, details, stage, details.State.Name, labelNames, comments)
@@ -855,7 +1006,7 @@ func (o *Orchestrator) handleRerunWithoutGit(ctx context.Context, runID int64, d
 }
 
 func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, details *linear.IssueDetails, stage *config.StageConfig, stateName string, labelNames []string, comments []subprocess.Comment) {
-	repo, baseBranch, err := resolveRepoConfig(details)
+	repo, baseBranch, err := o.resolveRepoConfigWithFallback(ctx, details)
 	if err != nil {
 		slog.Error("resolving repo config", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
@@ -874,6 +1025,13 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 	if err != nil {
 		slog.Error("looking up previous run", "error", err, "issue", details.Identifier)
 		o.store.FailRun(runID, -1, err.Error())
+		return
+	}
+	if stage.UsesBranch && (prevRun == nil || prevRun.BranchName == "") {
+		errMsg := "no existing branch found for this issue"
+		slog.Error(errMsg, "issue", details.Identifier, "stage", stage.Name)
+		o.store.FailRun(runID, -1, errMsg)
+		o.postFailureComment(ctx, details.ID, details.Identifier, stage.Name, errMsg)
 		return
 	}
 
@@ -1027,7 +1185,7 @@ func (o *Orchestrator) commitAndPush(ctx context.Context, dir, branch, baseBranc
 	}
 
 	// Check for commits the subprocess may have made directly
-	hasCommits, err := o.git.HasUnpushedCommits(ctx, dir, baseBranch)
+	hasCommits, err := o.git.HasUnpushedCommitsForBranch(ctx, dir, branch, baseBranch)
 	if err != nil {
 		return false, fmt.Errorf("checking for unpushed commits: %w", err)
 	}

@@ -4,6 +4,9 @@
 server:
   port: 11811
 
+github:
+  owner: "your-org"                    # Optional default GitHub org/user for repo inference
+
 linear:
   api_key: "${LINEAR_API_KEY}"
   team_key: "MAU"                     # Your Linear team key
@@ -11,10 +14,12 @@ linear:
   webhook_secret: "${LINEAR_WEBHOOK_SECRET}"  # Required when mode is "webhook"
   # poll_interval: "30s"              # Required when mode is "poll" (min 10s)
 
-# GitHub repo config is defined per issue description (not per project).
-# Add YAML frontmatter to each Linear issue's description:
+# GitHub repo config can live in each Linear issue description.
+# With github.owner set, github_repo may be either "repo" or "owner/repo".
+# If github_repo is omitted, ai-flow will try to infer the repo from the issue title/description.
+# Add YAML frontmatter to each Linear issue's description when you want to be explicit:
 #   ---
-#   github_repo: owner/repo
+#   github_repo: repo-name
 #   default_branch: main
 #   ---
 

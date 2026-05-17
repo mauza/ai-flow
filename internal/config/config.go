@@ -12,12 +12,17 @@ import (
 )
 
 type Config struct {
-	Server          ServerConfig          `yaml:"server"`
-	Linear          LinearConfig          `yaml:"linear"`
-	Pipeline        []StageConfig         `yaml:"pipeline"`
-	ProjectPipeline []ProjectStageConfig  `yaml:"project_pipeline"`
-	Subprocess      SubprocessConfig      `yaml:"subprocess"`
-	Workspace       WorkspaceConfig       `yaml:"workspace"`
+	Server          ServerConfig         `yaml:"server"`
+	GitHub          GitHubConfig         `yaml:"github"`
+	Linear          LinearConfig         `yaml:"linear"`
+	Pipeline        []StageConfig        `yaml:"pipeline"`
+	ProjectPipeline []ProjectStageConfig `yaml:"project_pipeline"`
+	Subprocess      SubprocessConfig     `yaml:"subprocess"`
+	Workspace       WorkspaceConfig      `yaml:"workspace"`
+}
+
+type GitHubConfig struct {
+	Owner string `yaml:"owner"`
 }
 
 type WorkspaceConfig struct {
@@ -38,14 +43,14 @@ type LinearConfig struct {
 }
 
 type StageConfig struct {
-	Name        string   `yaml:"name"`
-	LinearState string   `yaml:"linear_state"`
-	Command     string   `yaml:"command"`
-	Args        []string `yaml:"args"`
-	PromptFile  string   `yaml:"prompt_file"`
-	Prompt      string   `yaml:"-"` // resolved from PromptFile at load time
-	NextState   string   `yaml:"next_state"`
-	Timeout     int      `yaml:"timeout"`
+	Name            string   `yaml:"name"`
+	LinearState     string   `yaml:"linear_state"`
+	Command         string   `yaml:"command"`
+	Args            []string `yaml:"args"`
+	PromptFile      string   `yaml:"prompt_file"`
+	Prompt          string   `yaml:"-"` // resolved from PromptFile at load time
+	NextState       string   `yaml:"next_state"`
+	Timeout         int      `yaml:"timeout"`
 	Labels          []string `yaml:"labels"`
 	CreatesPR       bool     `yaml:"creates_pr"`
 	UsesBranch      bool     `yaml:"uses_branch"`
@@ -111,6 +116,7 @@ func (c *Config) validate(configDir string) error {
 	if c.Subprocess.MaxConcurrent == 0 {
 		c.Subprocess.MaxConcurrent = 3
 	}
+	c.GitHub.Owner = strings.TrimSpace(c.GitHub.Owner)
 
 	// Required fields
 	if c.Linear.APIKey == "" {

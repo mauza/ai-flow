@@ -35,7 +35,7 @@ Linear webhook → ai-flow → match pipeline stage → run subprocess → post 
    - **1** — failure: post error as a comment, transition to `failure_state` (if configured)
    - **2** — skip: do nothing (no comment, no transition)
 
-## Connecting Linear Projects to Git Repos
+## Connecting Issues to Git Repos
 
 ai-flow bridges two systems: **Linear** (for project management and issue tracking) and **GitHub** (for code). Here's how they connect:
 
@@ -45,30 +45,35 @@ ai-flow bridges two systems: **Linear** (for project management and issue tracki
 - **GitHub** provides the code: the repo where AI agents write code, push branches, and open PRs
 - **ai-flow** is the bridge: it listens for Linear state changes and orchestrates git operations
 
-The connection between a Linear project and a GitHub repo is defined in the **Linear project description** using YAML frontmatter. Each Linear project maps to one GitHub repo, so a single ai-flow instance can handle multiple repos — one per project.
+Repo selection is defined per issue, with an optional flow-level GitHub owner in `config.yaml`. That lets a ticket say just the repo name in frontmatter, or even mention the repo naturally in the title/description when the owner is fixed for the flow.
 
-Every issue that uses git stages (`creates_pr` or `uses_branch`) **must belong to a Linear project** with the repo metadata in its description.
+Every issue that uses git stages (`creates_pr` or `uses_branch`) must identify a repo explicitly or be specific enough for ai-flow to infer one from the issue text.
 
-### Project Description Format
+### Issue Description Format
 
-Add YAML frontmatter to your Linear project's description:
+Add YAML frontmatter to your Linear issue description when you want to be explicit:
 
 ```
 ---
 github_repo: your-org/your-repo
 default_branch: main
 ---
-Rest of your project description here...
+Rest of your issue description here...
 ```
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `github_repo` | Yes | — | GitHub `owner/repo` (e.g. `acme/backend`) |
+| `github_repo` | No* | — | GitHub repo as `owner/repo`, or just `repo` when `github.owner` is set |
 | `default_branch` | No | `main` | Base branch for new PRs |
+
+`*` If `github_repo` is omitted, ai-flow will try to infer the repo from the issue title and description using the repos visible under `github.owner`.
 
 ### Configuration
 
 ```yaml
+github:
+  owner: "acme"               # Optional default org/user for repo resolution
+
 # Linear side: which team to listen to
 linear:
   api_key: "${LINEAR_API_KEY}"
@@ -78,7 +83,7 @@ linear:
 
 The `team_key` is found in Linear under **Settings > Teams > [Your Team]** — it's the short prefix like `ENG`, `PROD`, etc. that appears before issue numbers (e.g. `ENG-123`).
 
-The `github_repo` in each project description uses the `owner/repo` format used by GitHub (e.g. `acme/backend`). ai-flow clones via HTTPS using `gh` authentication.
+When `github.owner` is set, `github_repo` may be either `owner/repo` or just `repo`. If you omit `github_repo`, ai-flow tries to match a repo from natural language in the issue text. ai-flow clones via HTTPS using `gh` authentication.
 
 ### What You Need Set Up Before Running
 
@@ -87,7 +92,7 @@ The `github_repo` in each project description uses the `owner/repo` format used 
 3. **GitHub CLI (`gh`)** — Install and authenticate with `gh auth login`
 4. **Git** — Must be installed and on PATH
 5. **Linear workflow states** — Must match the `linear_state` and `next_state` values in your pipeline
-6. **Linear projects** — Each project that uses git stages must have YAML frontmatter with `github_repo` in its description
+6. **GitHub access** — `gh` must be able to list and clone the repos ai-flow may use
 
 ## Setting Up Git / PR Creation
 
@@ -104,18 +109,25 @@ gh auth login
 
 ai-flow automatically configures git identity (`user.name` and `user.email`) in each temp clone, so you don't need global git config on the server.
 
-### 2. Add repo metadata to your Linear project
+### 2. Add repo metadata to your Linear issue (or set a default owner)
 
-Add YAML frontmatter to your Linear project's description:
+Set a default owner in `config.yaml` if most tickets target the same GitHub org/user:
+
+```yaml
+github:
+  owner: "your-org"
+```
+
+Then optionally add YAML frontmatter to an issue description:
 
 ```
 ---
-github_repo: your-org/your-repo
+github_repo: your-repo
 default_branch: main
 ---
 ```
 
-Every issue that triggers a git stage must belong to a Linear project with this metadata.
+Or skip frontmatter and mention the repo naturally in the issue title/description; ai-flow will try to infer it from repos under `github.owner`.
 
 ### 3. Use `creates_pr` or `uses_branch` on pipeline stages
 
@@ -220,7 +232,7 @@ No Linear project metadata needed since no stage creates PRs.
 
 ### Full Pipeline: Plan through Review
 
-This is the recommended setup for fully autonomous ticket-to-PR. Issues must belong to a Linear project with `github_repo` in its description frontmatter.
+This is the recommended setup for fully autonomous ticket-to-PR. Each issue must either provide `github_repo` in its description or be resolvable from `github.owner` plus the issue text.
 
 ```yaml
 server:
@@ -404,7 +416,7 @@ Each git stage runs in a fresh temp directory that is cleaned up after the stage
 | `prompt` | — | Prompt template prepended with issue context |
 | `next_state` | — | Linear state to transition to on exit 0 |
 | `failure_state` | — | Linear state to transition to on failure (exit 1) |
-| `timeout` | `300` | Subprocess timeout in seconds |
+| `timeout` | `3600` | Subprocess timeout in seconds |
 | `labels` | `[]` | Only run for issues with at least one of these labels (empty = all) |
 | `creates_pr` | `false` | Clone repo, create branch, commit, push, open PR |
 | `uses_branch` | `false` | Checkout existing branch from a prior `creates_pr` stage |
@@ -412,7 +424,7 @@ Each git stage runs in a fresh temp directory that is cleaned up after the stage
 
 **Constraints:**
 - `creates_pr` and `uses_branch` are mutually exclusive
-- Both require the issue to belong to a Linear project with `github_repo` in its description frontmatter
+- Both require ai-flow to resolve a GitHub repo for the issue
 - `failure_state` cannot be the same as `linear_state`
 - Each `linear_state` must be unique across the pipeline
 - Only **one** stage should have `creates_pr: true` per pipeline — downstream stages use `uses_branch: true`
@@ -436,7 +448,7 @@ Each git stage runs in a fresh temp directory that is cleaned up after the stage
 
 ### Environment Variables
 
-Every subprocess receives these environment variables (when `context_mode` is `env` or `both`):
+Every subprocess receives these environment variables:
 
 | Variable | Description |
 |----------|-------------|

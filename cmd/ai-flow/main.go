@@ -60,6 +60,12 @@ func main() {
 	} else if cleaned > 0 {
 		slog.Info("recovered stale running records", "count", cleaned)
 	}
+	cleanedProjects, err := db.CleanStaleProjectRuns(orchestrator.StaleProjectRunMaxAge)
+	if err != nil {
+		slog.Warn("cleaning stale project runs", "error", err)
+	} else if cleanedProjects > 0 {
+		slog.Info("recovered stale project running records", "count", cleanedProjects)
+	}
 
 	// Init Linear client and load workflow states
 	client := linear.NewClient(cfg.Linear.APIKey)
