@@ -19,6 +19,7 @@ import (
 	"github.com/mauza/ai-flow/internal/poller"
 	"github.com/mauza/ai-flow/internal/store"
 	"github.com/mauza/ai-flow/internal/subprocess"
+	"github.com/mauza/ai-flow/internal/workqueue"
 )
 
 func main() {
@@ -135,6 +136,13 @@ func main() {
 		projectOrch = orchestrator.NewProjectOrchestrator(cfg, client, db, runner)
 		slog.Info("project orchestrator initialized", "stages", len(cfg.ProjectPipeline))
 	}
+	queueWorkers := cfg.Subprocess.MaxConcurrent
+	workQueue := workqueue.New(queueWorkers, queueWorkers*20)
+
+	// Graceful shutdown
+	appCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	workQueue.Start(appCtx)
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
@@ -152,11 +160,15 @@ func main() {
 		mux.HandleFunc("POST /webhook", linear.NewWebhookHandler(
 			cfg.Linear.WebhookSecret,
 			func(payload linear.WebhookPayload) {
-				switch payload.Type {
-				case "Issue":
-					orch.HandleWebhook(context.Background(), payload)
-				case "Comment":
-					orch.HandleCommentWebhook(context.Background(), payload)
+				if err := workQueue.Enqueue(appCtx, func(workCtx context.Context) {
+					switch payload.Type {
+					case "Issue":
+						orch.HandleWebhook(workCtx, payload)
+					case "Comment":
+						orch.HandleCommentWebhook(workCtx, payload)
+					}
+				}); err != nil {
+					slog.Error("queueing webhook work", "type", payload.Type, "error", err)
 				}
 			},
 		))
@@ -171,20 +183,16 @@ func main() {
 		WriteTimeout: 0,
 	}
 
-	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	// Start poller in poll mode
 	if cfg.Linear.Mode == "poll" {
-		p := poller.New(cfg, client, orch)
-		go p.Run(ctx)
+		p := poller.New(cfg, client, orch, workQueue)
+		go p.Run(appCtx)
 	}
 
 	// Start project poller if project pipeline is configured (always polls, regardless of mode)
 	if projectOrch != nil {
-		pp := poller.NewProjectPoller(cfg, client, projectOrch)
-		go pp.Run(ctx)
+		pp := poller.NewProjectPoller(cfg, client, projectOrch, workQueue)
+		go pp.Run(appCtx)
 	}
 
 	go func() {
@@ -195,7 +203,7 @@ func main() {
 		}
 	}()
 
-	<-ctx.Done()
+	<-appCtx.Done()
 	slog.Info("shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -204,6 +212,7 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
+	workQueue.Wait()
 
 	slog.Info("shutdown complete")
 }

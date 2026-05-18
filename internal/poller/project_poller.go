@@ -8,6 +8,7 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/linear"
 	"github.com/mauza/ai-flow/internal/orchestrator"
+	"github.com/mauza/ai-flow/internal/workqueue"
 )
 
 const defaultProjectPollInterval = 60 * time.Second
@@ -17,12 +18,13 @@ type ProjectPoller struct {
 	cfg      *config.Config
 	linear   *linear.Client
 	orch     *orchestrator.ProjectOrchestrator
+	queue    *workqueue.Queue
 	interval time.Duration
 }
 
 // NewProjectPoller creates a new ProjectPoller.
 // If the config has a poll interval configured, it reuses it; otherwise defaults to 60s.
-func NewProjectPoller(cfg *config.Config, linearClient *linear.Client, orch *orchestrator.ProjectOrchestrator) *ProjectPoller {
+func NewProjectPoller(cfg *config.Config, linearClient *linear.Client, orch *orchestrator.ProjectOrchestrator, queue *workqueue.Queue) *ProjectPoller {
 	interval := cfg.Linear.ParsedPollInterval
 	if interval == 0 {
 		interval = defaultProjectPollInterval
@@ -31,6 +33,7 @@ func NewProjectPoller(cfg *config.Config, linearClient *linear.Client, orch *orc
 		cfg:      cfg,
 		linear:   linearClient,
 		orch:     orch,
+		queue:    queue,
 		interval: interval,
 	}
 }
@@ -88,7 +91,12 @@ func (pp *ProjectPoller) poll(ctx context.Context) {
 		stageCopy := stage
 		for _, project := range projects {
 			projectCopy := project
-			go pp.orch.ProcessProject(ctx, projectCopy, stageCopy)
+			if err := pp.queue.Enqueue(ctx, func(workCtx context.Context) {
+				pp.orch.ProcessProject(workCtx, projectCopy, stageCopy)
+			}); err != nil {
+				slog.Error("queueing project work", "stage", stage.Name, "project", project.Name, "error", err)
+				return
+			}
 		}
 	}
 }

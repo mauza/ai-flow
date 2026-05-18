@@ -8,6 +8,7 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/linear"
 	"github.com/mauza/ai-flow/internal/orchestrator"
+	"github.com/mauza/ai-flow/internal/workqueue"
 )
 
 // Poller periodically queries the Linear API for issues in pipeline states.
@@ -15,14 +16,16 @@ type Poller struct {
 	cfg    *config.Config
 	client *linear.Client
 	orch   *orchestrator.Orchestrator
+	queue  *workqueue.Queue
 }
 
 // New creates a new Poller.
-func New(cfg *config.Config, client *linear.Client, orch *orchestrator.Orchestrator) *Poller {
+func New(cfg *config.Config, client *linear.Client, orch *orchestrator.Orchestrator, queue *workqueue.Queue) *Poller {
 	return &Poller{
 		cfg:    cfg,
 		client: client,
 		orch:   orch,
+		queue:  queue,
 	}
 }
 
@@ -76,8 +79,13 @@ func (p *Poller) poll(ctx context.Context) {
 
 		stageCopy := stage // capture for goroutine
 		for i := range issues {
-			issue := issues[i] // capture for goroutine
-			go p.orch.ProcessIssue(ctx, &issue, &stageCopy)
+			issue := issues[i] // capture for queued work
+			if err := p.queue.Enqueue(ctx, func(workCtx context.Context) {
+				p.orch.ProcessIssue(workCtx, &issue, &stageCopy)
+			}); err != nil {
+				slog.Error("queueing issue work", "stage", stage.Name, "issue", issue.Identifier, "error", err)
+				return
+			}
 		}
 	}
 }

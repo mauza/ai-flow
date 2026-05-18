@@ -2,7 +2,47 @@
 
 ai-flow connects [Linear](https://linear.app) issues to AI-powered pipelines. When an issue transitions to a configured workflow state, ai-flow runs a command (like an AI coding agent), posts the output as a Linear comment, and moves the issue forward. It can manage the full git lifecycle — clone, branch, commit, push, and open a PR — so the subprocess only needs to write files.
 
-With the multi-stage pipeline, you can go from a Linear ticket to a PR ready for human review with zero manual steps.
+With the multi-stage pipeline, you can go from a Linear ticket to a PR ready for human review while keeping normal human interaction inside Linear and GitHub.
+
+## Product Vision
+
+ai-flow is built around a simple operating model: humans stay in planning and review tools, while AI workers handle the command line, codebase navigation, implementation, verification, and PR updates.
+
+The human should not need to sit near the terminal or shepherd an agent session. The human interface should be Linear and the pull request:
+
+- **Linear** is where intent, prioritization, decomposition, approval, and feedback happen.
+- **GitHub PRs** are where the final code, tests, docs, planning artifacts, and review evidence are inspected.
+- **ai-flow** is the automation layer that turns Linear workflow movement and comments into repeatable AI worker runs.
+- **AI workers** do the hands-on coding work and leave behind artifacts that make the result reviewable.
+
+The goal is not just to produce code automatically. The goal is to produce changes that humans are confident enough to accept and merge.
+
+### Success Metric
+
+The core success metric for ai-flow is accepted PRs after the automated flow.
+
+Good automation should increase:
+
+- PRs accepted with minimal human rework
+- small, focused PRs instead of broad risky diffs
+- clear test evidence and review artifacts
+- reviewer confidence that the code matches the Linear request
+
+Bad automation is not just a failed run. A PR that reaches review but is too large, under-tested, poorly explained, or misaligned with the ticket is also a failure of the flow.
+
+### Confidence Model
+
+ai-flow should build reviewer confidence by producing evidence alongside code:
+
+- small Linear issues with narrow scope
+- project-to-issue decomposition for larger work
+- OpenSpec proposals, specs, designs, and task lists for ambiguous work
+- tests that map back to expected behavior
+- review, security, and test stage comments
+- PR comments showing which automated stages modified the branch
+- docs updates when behavior or usage changes
+
+The preferred improvement loop is: make the issue smaller, make the expected behavior clearer, make the verification stronger, then let the worker proceed.
 
 ## Quick Start
 
@@ -137,6 +177,21 @@ Or skip frontmatter and mention the repo naturally in the issue title/descriptio
 
 If neither is set, the stage runs without git — it just executes the command and posts the output as a comment. This is useful for planning or triage stages that only produce analysis.
 
+## Human Operating Model
+
+Humans should operate ai-flow from Linear and GitHub, not from the terminal.
+
+For day-to-day use, the human actions are:
+
+1. Create or refine a Linear issue or project.
+2. Add the configured automation label, such as `auto`.
+3. Move the issue or project into the configured trigger state.
+4. Review planning artifacts, questions, and status updates in Linear or the PR.
+5. Give feedback through Linear comments or PR review comments.
+6. Approve by moving the issue to the next Linear state or by accepting the PR.
+
+The terminal setup is an operator concern for running ai-flow itself. It should not be part of the normal product/engineering review loop once the service is running.
+
 ## The Autonomous Flow (End to End)
 
 Here's exactly what happens when you move an issue through a full pipeline:
@@ -150,10 +205,10 @@ The issue starts in Backlog or wherever your team's default is.
 This triggers the **plan** stage:
 - ai-flow receives a webhook from Linear
 - Runs your planning command with the issue context
-- Posts the plan as a comment on the Linear issue
-- Moves the issue to "In Progress"
+- Posts the plan as a comment on the Linear issue, or opens a planning PR when using OpenSpec
+- Either moves the issue forward automatically or waits for human approval in Linear/PR review
 
-### 3. The "In Progress" state triggers the **implement** stage
+### 3. The human-approved "In Progress" state triggers the **implement** stage
 
 - ai-flow creates a temp directory (sandbox)
 - Clones the repo into it (`git clone --depth 1`)
@@ -193,10 +248,104 @@ When security, test, or review fails (exit 1):
 
 The PR is ready for human review. You review the PR on GitHub, merge it, and close the issue.
 
-**Your only manual steps are:**
-1. Create the issue and add the label
-2. Move it to "Todo" to start the pipeline
-3. Review and merge the final PR
+**The normal human steps are:**
+1. Create or refine the Linear issue and add the automation label
+2. Move it to the trigger state, such as "Todo"
+3. Review plan evidence in Linear or the planning PR when a planning gate is used
+4. Review and merge the final PR
+
+## OpenSpec Planning Gate
+
+ai-flow can use [OpenSpec](https://openspec.dev/) as a human-reviewed planning layer before implementation. In this mode, the first stage creates durable OpenSpec artifacts in the target repo instead of only posting a transient plan comment.
+
+This is the preferred flow when human confidence depends on understanding intent before reading code. The human still does not need to run OpenSpec or inspect the local checkout. They review the generated artifacts in the PR and give feedback in Linear or GitHub.
+
+The planning PR contains:
+
+- `openspec/changes/<change>/proposal.md` for intent, scope, and non-goals
+- `openspec/changes/<change>/specs/` for behavior deltas and acceptance scenarios
+- `openspec/changes/<change>/design.md` for technical approach and tradeoffs
+- `openspec/changes/<change>/tasks.md` for implementation steps
+
+### Target Repo Setup
+
+Each repo that uses the OpenSpec planning stage must have OpenSpec initialized before ai-flow runs against it:
+
+```sh
+npm install -g @fission-ai/openspec@latest
+openspec init
+```
+
+Commit the generated OpenSpec project files according to that repo's policy. ai-flow does not initialize OpenSpec automatically; it expects the target repo to already contain an `openspec/` directory.
+
+### Human-in-the-loop Flow
+
+Use `prompts/openspec-plan.md` with a git-enabled planning stage:
+
+```yaml
+pipeline:
+  - name: "openspec-plan"
+    linear_state: "Todo"
+    command: "claude"
+    args: ["-p", "--model", "sonnet", "--dangerously-skip-permissions"]
+    prompt_file: "prompts/openspec-plan.md"
+    next_state: "In Progress"
+    timeout: 7200
+    labels: ["auto"]
+    creates_pr: true
+    wait_for_approval: true
+
+  - name: "implement"
+    linear_state: "In Progress"
+    command: "opencode"
+    args: ["run"]
+    prompt_file: "prompts/implement.md"
+    next_state: "Testing"
+    timeout: 7200
+    labels: ["auto"]
+    uses_branch: true
+```
+
+With `wait_for_approval: true`, ai-flow posts the planning output and PR link but does not transition the issue automatically. Review the OpenSpec artifacts in the PR, leave Linear comments for requested changes, and rerun the planning stage through comment-triggered approval feedback. When the plan is acceptable, manually move the Linear issue to `In Progress`; the implementation stage reuses the same branch and treats the OpenSpec artifacts as the approved scope.
+
+Webhook mode is recommended for this flow because Linear comment webhooks can trigger planning re-runs. Poll mode can still use the manual state gate, but comment-triggered re-runs are limited.
+
+### When to Use OpenSpec
+
+Use OpenSpec planning for:
+
+- ambiguous product or architecture work
+- API, data model, or contract changes
+- security-sensitive behavior
+- multi-step features
+- changes where reviewers need to understand intent before code
+
+Use a simpler no-git planning or direct implementation stage for obvious small fixes, mechanical cleanup, and low-risk chores.
+
+### Planning for Small PRs
+
+ai-flow works best when each issue can become a small, reviewable PR. For larger requests, use a planning or project stage to split work before implementation starts.
+
+Good issue decomposition should produce tickets that:
+
+- change one behavior or one bounded area
+- have clear acceptance criteria
+- can be tested independently
+- can be reviewed in one focused PR
+- avoid mixing feature work with unrelated cleanup
+
+If a planning agent discovers that an issue is too broad, it should say so and propose smaller Linear issues instead of pushing ahead with a large implementation.
+
+### Review Evidence
+
+Every automated PR should help the reviewer answer four questions:
+
+- **What was requested?** Link back to the Linear issue and, when used, OpenSpec proposal/specs.
+- **What changed?** Keep the diff focused and explain important design choices.
+- **How was it verified?** Include test results, added coverage, and any known gaps.
+- **Why should this be trusted?** Include review/security/test stage outputs and unresolved risks.
+
+The pipeline should optimize for these review signals because they are what turn an automated branch into an accepted PR.
 
 ## Writing a Good Config
 
@@ -244,19 +393,19 @@ linear:
   team_key: "ENG"
 
 pipeline:
-  # 1. Plan: analyze the issue, break it down (no git needed)
-  - name: "plan"
+  # 1. OpenSpec plan: create reviewable planning artifacts in the repo
+  - name: "openspec-plan"
     linear_state: "Todo"
     command: "claude-code"
     args: ["--print"]
-    prompt: |
-      Analyze this issue and create a detailed implementation plan.
-      Break down the work into clear steps and identify relevant files.
+    prompt_file: "prompts/openspec-plan.md"
     next_state: "In Progress"
     timeout: 300
     labels: ["auto"]
+    creates_pr: true
+    wait_for_approval: true
 
-  # 2. Implement: write code, create PR (first git stage)
+  # 2. Implement: write code on the approved planning branch
   - name: "implement"
     linear_state: "In Progress"
     command: "claude-code"
@@ -267,7 +416,7 @@ pipeline:
     next_state: "Security Review"
     timeout: 600
     labels: ["auto"]
-    creates_pr: true
+    uses_branch: true
 
   # 3. Security review on existing branch
   - name: "security"
@@ -319,11 +468,11 @@ subprocess:
 ### Pipeline Flow
 
 ```
-Todo → In Progress → Security Review → Testing → Review → Done
-(plan)  (implement)    (security)       (test)    (review)  (human reviews PR)
-                          ↓               ↓         ↓
-                       In Progress     In Progress  In Progress
-                       (on failure)    (on failure) (on failure)
+Todo ──human approves plan──> In Progress → Security Review → Testing → Review → Done
+(OpenSpec plan PR)            (implement)    (security)       (test)    (review)  (human reviews PR)
+                                             ↓               ↓         ↓
+                                          In Progress     In Progress  In Progress
+                                          (on failure)    (on failure) (on failure)
 ```
 
 When a stage with `failure_state` fails (exit code 1), the issue moves back to that state, which re-triggers the earlier stage. For example: security finds a vulnerability → issue goes back to "In Progress" → the implement stage re-runs with the security feedback as context (from Linear comments) → pushes to the same branch → issue moves to "Security Review" again.
@@ -334,6 +483,8 @@ When a stage with `failure_state` fails (exit code 1), the issue moves back to t
 - The subprocess receives **all Linear comments** as context, including ai-flow's own stage output comments. This means downstream stages can see what upstream stages did and any failure feedback
 - For `uses_branch` stages, tell the agent it's working on an existing branch with existing changes
 - The composed prompt includes the issue identifier, title, description, URL, and labels automatically — you don't need to repeat that in your prompt
+- Ask agents to keep PRs small, call out when a ticket should be split, and include verification evidence in their stage output
+- Tell review and test agents to compare the implementation against Linear acceptance criteria and OpenSpec artifacts when present
 
 ## Linear Setup
 
@@ -342,6 +493,7 @@ When a stage with `failure_state` fails (exit code 1), the issue moves back to t
 Your Linear team needs workflow states that match the `linear_state` and `next_state` values in your pipeline. For the full 5-stage pipeline, you need:
 
 - **Todo** (type: backlog or unstarted)
+- **Plan Review** (type: started) — optional, useful when planning approval is separate from implementation
 - **In Progress** (type: started)
 - **Security Review** (type: started) — create this
 - **Testing** (type: started) — create this
@@ -376,6 +528,10 @@ ai-flow tracks all runs in a SQLite database. On startup, it automatically recov
 ### Deduplication
 
 If the same issue+stage combination is already running, ai-flow skips the duplicate webhook. This prevents parallel execution of the same work.
+
+### Work Queue
+
+Webhook and poller discoveries are placed onto an internal bounded work queue before orchestration starts. This avoids spawning unbounded processing goroutines when many Linear issues or projects match at once, and gives ai-flow one shared concurrency control point for issue and project work.
 
 ### Retry on API Failures
 
@@ -413,14 +569,14 @@ Each git stage runs in a fresh temp directory that is cleaned up after the stage
 | `linear_state` | — | Trigger when issue enters this state |
 | `command` | — | Command to execute |
 | `args` | `[]` | Command arguments (composed prompt appended as final arg) |
-| `prompt` | — | Prompt template prepended with issue context |
+| `prompt_file` | — | Prompt file prepended with issue context |
 | `next_state` | — | Linear state to transition to on exit 0 |
 | `failure_state` | — | Linear state to transition to on failure (exit 1) |
 | `timeout` | `3600` | Subprocess timeout in seconds |
 | `labels` | `[]` | Only run for issues with at least one of these labels (empty = all) |
 | `creates_pr` | `false` | Clone repo, create branch, commit, push, open PR |
 | `uses_branch` | `false` | Checkout existing branch from a prior `creates_pr` stage |
-| `wait_for_approval` | `false` | Don't auto-transition; post output and wait for a comment to re-run |
+| `wait_for_approval` | `false` | Don't auto-transition; post output and wait for human action or a comment-triggered re-run |
 
 **Constraints:**
 - `creates_pr` and `uses_branch` are mutually exclusive
