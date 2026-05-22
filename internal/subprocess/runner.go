@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -86,6 +88,7 @@ type Input struct {
 	// Git context (set when stage creates a PR)
 	WorkDir    string
 	BranchName string
+	PRURL      string
 
 	// Comments from the issue (filtered, human-only)
 	Comments []Comment
@@ -149,9 +152,27 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 	// Build command args: configured args + composed prompt as final arg
 	args := make([]string, len(input.Args))
 	copy(args, input.Args)
+
+	// For opencode, inject --dir so the server runs tool calls in the workspace
+	// directory rather than whatever directory the background opencode server
+	// was started in. Without this, tool calls (pwd, ls, file edits) run in
+	// the server's cwd, not the cloned repo.
+	if input.WorkDir != "" && filepath.Base(input.Command) == "opencode" {
+		args = append(args, "--dir", input.WorkDir)
+	}
+
 	args = append(args, composedPrompt)
 
-	cmd := exec.CommandContext(ctx, input.Command, args...)
+	// opencode buffers its --format json output when stdout is not a TTY.
+	// Wrap with `script -q /dev/null` to allocate a PTY, which forces
+	// line-buffered output that flows back to ai-flow in real time.
+	command := input.Command
+	if filepath.Base(input.Command) == "opencode" {
+		args = append([]string{"-q", "/dev/null", input.Command}, args...)
+		command = "script"
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...)
 
 	// Set working directory for git-managed runs
 	if input.WorkDir != "" {
@@ -166,7 +187,18 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 	cmd.Stdout = io.MultiWriter(stdout, stdoutExtra)
 	cmd.Stderr = io.MultiWriter(stderr, stderrExtra)
 
-	// Optionally pipe JSON to stdin
+	// opencode's agentic loop requires stdin to stay open — if stdin closes (EOF)
+	// opencode exits after the first LLM turn. ai-flow runs via nohup so its own
+	// stdin is /dev/null; child processes inherit that and opencode exits immediately.
+	// Pipe stdin through a reader that blocks until the subprocess exits.
+	stdinR, stdinW, pipeErr := os.Pipe()
+	if pipeErr == nil {
+		cmd.Stdin = stdinR
+		defer stdinW.Close()
+		defer stdinR.Close()
+	}
+
+	// Optionally pipe JSON context to stdin as well (written before cmd.Run)
 	if input.ContextMode == "stdin" || input.ContextMode == "both" {
 		stdinMap := map[string]any{
 			"issue_id":          input.IssueID,
@@ -179,6 +211,8 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 			"stage_name":        input.StageName,
 			"next_state":        input.NextState,
 			"prompt":            input.Prompt,
+			"pr_url":            input.PRURL,
+			"branch_name":       input.BranchName,
 		}
 		if len(input.Comments) > 0 {
 			stdinMap["comments"] = input.Comments
@@ -187,13 +221,20 @@ func (r *Runner) Run(ctx context.Context, input Input) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("marshaling stdin: %w", err)
 		}
-		cmd.Stdin = bytes.NewReader(stdinData)
+		// Write context JSON to the pipe's write end, then leave the pipe open
+		// so opencode's stdin doesn't close. The defer above closes stdinW after
+		// cmd.Run() completes.
+		if stdinW != nil {
+			if _, werr := stdinW.Write(stdinData); werr != nil {
+				slog.Warn("writing context to stdin pipe", "error", werr)
+			}
+		}
 	}
 
 	err := cmd.Run()
 
 	result := &Result{
-		Stdout: stdout.String(),
+		Stdout: extractReadableOutput(stdout.String()),
 		Stderr: stderr.String(),
 	}
 
@@ -284,6 +325,9 @@ func buildEnv(input Input, composedPrompt string) []string {
 	if input.BranchName != "" {
 		env = append(env, "AIFLOW_BRANCH="+input.BranchName)
 	}
+	if input.PRURL != "" {
+		env = append(env, "AIFLOW_PR_URL="+input.PRURL)
+	}
 	if len(input.Comments) > 0 {
 		if commentsJSON, err := json.Marshal(input.Comments); err == nil {
 			env = append(env, "AIFLOW_COMMENTS="+string(commentsJSON))
@@ -303,3 +347,66 @@ func buildEnv(input Input, composedPrompt string) []string {
 	}
 	return env
 }
+
+// extractReadableOutput detects whether s is an opencode JSON event stream
+// (lines of {"type":"...","part":{...}} objects) and if so, extracts just the
+// agent's text output into clean readable markdown. If s is not a JSON event
+// stream it is returned unchanged.
+func extractReadableOutput(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) == 0 {
+		return s
+	}
+
+	// Quick check: does this look like an opencode event stream?
+	// First non-empty line should be a JSON object with a "type" field.
+	firstLine := strings.TrimSpace(lines[0])
+	if !strings.HasPrefix(firstLine, "{") {
+		return s
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(firstLine), &probe); err != nil {
+		return s
+	}
+	if _, ok := probe["type"]; !ok {
+		return s
+	}
+
+	// It's an event stream — extract text and tool-result parts.
+	var textParts []string
+	seen := map[string]bool{} // deduplicate consecutive identical text chunks
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		eventType, _ := event["type"].(string)
+		part, _ := event["part"].(map[string]any)
+		if part == nil {
+			continue
+		}
+
+		switch eventType {
+		case "text":
+			txt, _ := part["text"].(string)
+			txt = strings.TrimSpace(txt)
+			if txt != "" && !seen[txt] {
+				seen[txt] = true
+				textParts = append(textParts, txt)
+			}
+		}
+	}
+
+	if len(textParts) == 0 {
+		// No text parts found — fall back to the raw output so we don't lose info
+		return s
+	}
+
+	return strings.Join(textParts, "\n\n")
+}
+

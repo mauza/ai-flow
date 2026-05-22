@@ -2,7 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,21 +42,129 @@ type Session struct {
 }
 
 // sessionWriter is an io.Writer that forwards data to a Session as OutputEvents.
+// If the data looks like an opencode JSON event stream it extracts only the
+// human-readable text parts; otherwise it passes the data through as-is.
 type sessionWriter struct {
-	session *Session
-	evtType string
+	session  *Session
+	evtType  string
+	lineBuf  strings.Builder // accumulates partial lines for JSON parsing
 }
 
 func (w *sessionWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	w.session.appendEvent(OutputEvent{
-		Type: w.evtType,
-		Data: string(p),
-		Time: time.Now(),
-	})
+
+	w.lineBuf.Write(p)
+	content := w.lineBuf.String()
+
+	// Process complete lines
+	for {
+		idx := strings.IndexByte(content, '\n')
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimSpace(content[:idx])
+		content = content[idx+1:]
+
+		if line == "" {
+			continue
+		}
+
+		// Try to parse as an opencode JSON event
+		readable := extractEventText(line)
+		if readable != "" {
+			w.session.appendEvent(OutputEvent{
+				Type: w.evtType,
+				Data: readable,
+				Time: time.Now(),
+			})
+		}
+		// If readable is empty it was a non-text event (tool_use, step_start, etc.)
+		// — we silently drop those from the live view.
+	}
+
+	w.lineBuf.Reset()
+	w.lineBuf.WriteString(content)
 	return len(p), nil
+}
+
+// extractEventText parses one line of opencode --format json output and returns
+// the human-readable text if it's a "text" event, or the tool title/summary if
+// it's a tool_use event. Returns "" for all other event types.
+func extractEventText(line string) string {
+	if !strings.HasPrefix(line, "{") {
+		// Not JSON — plain text subprocess output, pass through as-is
+		return line
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return line // unparseable, show as-is
+	}
+
+	evtType, _ := event["type"].(string)
+	part, _ := event["part"].(map[string]any)
+	if part == nil {
+		return ""
+	}
+
+	switch evtType {
+	case "text":
+		txt, _ := part["text"].(string)
+		return strings.TrimSpace(txt)
+
+	case "tool_use":
+		// Show a compact summary: [tool] description/command
+		state, _ := part["state"].(map[string]any)
+		if state == nil {
+			return ""
+		}
+		tool, _ := part["tool"].(string)
+		title, _ := state["title"].(string)
+		status, _ := state["status"].(string)
+		inp, _ := state["input"].(map[string]any)
+
+		label := title
+		if label == "" && inp != nil {
+			for _, k := range []string{"command", "description", "file_path", "pattern", "name"} {
+				if v, ok := inp[k].(string); ok && v != "" {
+					label = v
+					break
+				}
+			}
+		}
+		if label == "" {
+			label = tool
+		}
+		if len(label) > 120 {
+			label = label[:117] + "..."
+		}
+		icon := "⚙"
+		switch tool {
+		case "bash":
+			icon = "$"
+		case "read":
+			icon = "📄"
+		case "write":
+			icon = "✏"
+		case "edit":
+			icon = "✏"
+		case "glob":
+			icon = "🔍"
+		case "grep":
+			icon = "🔍"
+		}
+		statusSuffix := ""
+		if status == "completed" {
+			statusSuffix = " ✓"
+		} else if status == "error" {
+			statusSuffix = " ✗"
+		}
+		return icon + " " + label + statusSuffix
+	}
+
+	return ""
 }
 
 // appendEvent stores an event and fans it out to all subscribers.

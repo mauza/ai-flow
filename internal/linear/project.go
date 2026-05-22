@@ -132,11 +132,20 @@ func parseIssueMetaYAML(description string) (*IssueMeta, error) {
 
 	lines := strings.Split(description, "\n")
 
-	// Find opening delimiter
+	// Find opening delimiter — either "---" or "```yaml" / "```" (Linear renders
+	// raw YAML frontmatter as a fenced code block when storing the description).
 	start := -1
+	closingDelimiter := delimiter
 	for i, line := range lines {
-		if strings.TrimSpace(line) == delimiter {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == delimiter {
 			start = i
+			closingDelimiter = delimiter
+			break
+		}
+		if trimmed == "```yaml" || trimmed == "```yml" || trimmed == "```" {
+			start = i
+			closingDelimiter = "```"
 			break
 		}
 	}
@@ -147,13 +156,13 @@ func parseIssueMetaYAML(description string) (*IssueMeta, error) {
 	// Find closing delimiter
 	end := -1
 	for i := start + 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == delimiter {
+		if strings.TrimSpace(lines[i]) == closingDelimiter {
 			end = i
 			break
 		}
 	}
 	if end == -1 {
-		return nil, fmt.Errorf("no closing --- delimiter in issue description frontmatter")
+		return nil, fmt.Errorf("no closing %s delimiter in issue description frontmatter", closingDelimiter)
 	}
 
 	frontmatter := strings.Join(lines[start+1:end], "\n")

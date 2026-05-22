@@ -84,7 +84,11 @@ func (o *Orchestrator) setupWorkspace(ctx context.Context, repo, baseBranch, tar
 		// First time: clone into workspace dir
 		cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cloneCancel()
-		if err := o.git.Clone(cloneCtx, repo, baseBranch, wsPath); err != nil {
+		actualBranch, err := o.resolveDefaultBranch(cloneCtx, repo, baseBranch)
+		if err != nil {
+			return "", nil, fmt.Errorf("resolving default branch: %w", err)
+		}
+		if err := o.git.Clone(cloneCtx, repo, actualBranch, wsPath); err != nil {
 			return "", nil, fmt.Errorf("cloning into workspace: %w", err)
 		}
 		return wsPath, func() {}, nil
@@ -97,11 +101,39 @@ func (o *Orchestrator) setupWorkspace(ctx context.Context, repo, baseBranch, tar
 	}
 	cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cloneCancel()
-	if err := o.git.Clone(cloneCtx, repo, baseBranch, tmpDir); err != nil {
+	actualBranch, err := o.resolveDefaultBranch(cloneCtx, repo, baseBranch)
+	if err != nil {
+		o.git.Cleanup(tmpDir)
+		return "", nil, fmt.Errorf("resolving default branch: %w", err)
+	}
+	if err := o.git.Clone(cloneCtx, repo, actualBranch, tmpDir); err != nil {
 		o.git.Cleanup(tmpDir)
 		return "", nil, fmt.Errorf("cloning repo: %w", err)
 	}
 	return tmpDir, func() { o.git.Cleanup(tmpDir) }, nil
+}
+
+// resolveDefaultBranch returns the branch to clone. If the requested branch is
+// non-empty and matches what GitHub reports, it's used as-is. If the requested
+// branch is "main" (the default assumption), it verifies against the real default
+// branch from GitHub and substitutes it if different. This prevents clone failures
+// when a repo uses "master" or another branch name instead of "main".
+func (o *Orchestrator) resolveDefaultBranch(ctx context.Context, repo, requestedBranch string) (string, error) {
+	if o.git == nil {
+		return requestedBranch, nil
+	}
+	actual, err := o.git.DefaultBranch(ctx, repo)
+	if err != nil {
+		// If we can't reach GitHub, fall back to whatever was requested
+		slog.Warn("could not fetch default branch from GitHub, using configured value",
+			"repo", repo, "branch", requestedBranch, "error", err)
+		return requestedBranch, nil
+	}
+	if actual != requestedBranch {
+		slog.Info("using actual default branch from GitHub",
+			"repo", repo, "configured", requestedBranch, "actual", actual)
+	}
+	return actual, nil
 }
 
 // cleanupWorkspaceIfDone removes the persistent workspace directory when the
@@ -186,6 +218,22 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, details *linear.IssueDe
 			"issueLabels", labelNames,
 		)
 		return
+	}
+
+	// For wait_for_approval stages: skip re-running if we already completed
+	// successfully. The issue stays in the same state waiting for human action;
+	// without this check the poller re-runs the agent every 30s indefinitely.
+	if stage.WaitForApproval {
+		prev, err := o.store.GetLastCompletedRun(details.ID, stage.Name)
+		if err != nil {
+			slog.Warn("checking prior completed run", "error", err, "issue", details.Identifier)
+		} else if prev != nil {
+			slog.Debug("wait_for_approval stage already completed, awaiting human action",
+				"issue", details.Identifier,
+				"stage", stage.Name,
+			)
+			return
+		}
 	}
 
 	// Dedup check
@@ -484,6 +532,7 @@ func (o *Orchestrator) handleWithGit(ctx context.Context, runID int64, details *
 	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
+	input.PRURL = prURL
 
 	// Fetch cross-stage comments for context
 	commentNodes, err := o.client.GetIssueComments(ctx, details.ID)
@@ -648,6 +697,7 @@ func (o *Orchestrator) handleWithExistingBranch(ctx context.Context, runID int64
 	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
+	input.PRURL = prURL
 
 	commentNodes, err := o.client.GetIssueComments(ctx, details.ID)
 	if err != nil {
@@ -1088,6 +1138,7 @@ func (o *Orchestrator) handleRerunWithGit(ctx context.Context, runID int64, deta
 	input.RunID = runID
 	input.WorkDir = workDir
 	input.BranchName = branchName
+	input.PRURL = prURL
 	input.Comments = comments
 
 	result, err := o.runner.Run(ctx, input)

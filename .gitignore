@@ -20,3 +20,5 @@ config.yaml
 
 # Node
 internal/dashboard/web/node_modules/
+
+.local

@@ -286,9 +286,24 @@ func (m *Manager) CommentOnPR(ctx context.Context, dir, prURL, body string) erro
 	return nil
 }
 
+// DefaultBranch returns the actual default branch for a GitHub repo by querying
+// the GitHub API via gh. Use this to resolve the real branch instead of assuming "main".
+func (m *Manager) DefaultBranch(ctx context.Context, repo string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "api", "repos/"+repo, "--jq", ".default_branch")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("gh api repos/%s: %s: %w", repo, strings.TrimSpace(string(out)), err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("empty default_branch returned for %s", repo)
+	}
+	return branch, nil
+}
+
 // ListRepos returns repositories visible to gh for the given owner.
 func (m *Manager) ListRepos(ctx context.Context, owner string) ([]RepoInfo, error) {
-	cmd := exec.CommandContext(ctx, "gh", "repo", "list", owner, "--limit", "200", "--json", "name,nameWithOwner")
+	cmd := exec.CommandContext(ctx, "gh", "repo", "list", owner, "--limit", "4000", "--json", "name,nameWithOwner")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
