@@ -359,6 +359,9 @@ func resolveRepoConfig(details *linear.IssueDetails, fallbackOwner string) (repo
 func (o *Orchestrator) resolveRepoConfigWithFallback(ctx context.Context, details *linear.IssueDetails) (repo, branch string, err error) {
 	repo, branch, err = resolveRepoConfig(details, o.cfg.GitHub.Owner)
 	if err == nil || o.git == nil || strings.TrimSpace(o.cfg.GitHub.Owner) == "" {
+		if err == nil && branch == "" {
+			branch, err = o.resolveDefaultBranch(ctx, repo, "main")
+		}
 		return repo, branch, err
 	}
 
@@ -374,6 +377,12 @@ func (o *Orchestrator) resolveRepoConfigWithFallback(ctx context.Context, detail
 	if resolveErr != nil {
 		return "", "", fmt.Errorf("%w; repo inference also failed: %v", err, resolveErr)
 	}
+	if branch == "" {
+		branch, resolveErr = o.resolveDefaultBranch(ctx, repo, "main")
+		if resolveErr != nil {
+			return "", "", fmt.Errorf("resolving default branch for %s: %w", repo, resolveErr)
+		}
+	}
 	return repo, branch, nil
 }
 
@@ -381,9 +390,6 @@ func (o *Orchestrator) resolveRepoFromIssueText(ctx context.Context, details *li
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
 		return "", "", fmt.Errorf("github.owner is required for natural-language repo resolution")
-	}
-	if defaultBranch == "" {
-		defaultBranch = "main"
 	}
 
 	repos, err := o.git.ListRepos(ctx, owner)

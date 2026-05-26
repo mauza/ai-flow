@@ -25,6 +25,25 @@ func TestResolveRepoConfigUsesFallbackOwnerForBareRepo(t *testing.T) {
 	}
 }
 
+func TestResolveRepoConfigEmptyBranchWhenNotSpecified(t *testing.T) {
+	details := &linear.IssueDetails{
+		Identifier:  "ENG-123",
+		Description: "---\ngithub_repo: weave-lab/data-access\n---\nAdd a critical path test",
+	}
+
+	repo, branch, err := resolveRepoConfig(details, "weave-lab")
+	if err != nil {
+		t.Fatalf("resolveRepoConfig returned error: %v", err)
+	}
+	if repo != "weave-lab/data-access" {
+		t.Fatalf("repo = %q, want %q", repo, "weave-lab/data-access")
+	}
+	// Branch should be empty — the orchestrator resolves it live via GitHub API.
+	if branch != "" {
+		t.Fatalf("branch = %q, want empty (resolved at runtime)", branch)
+	}
+}
+
 func TestResolveRepoConfigAllowsFallbackAfterMissingRepo(t *testing.T) {
 	details := &linear.IssueDetails{
 		Identifier:  "ENG-123",

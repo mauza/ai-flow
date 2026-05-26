@@ -23,8 +23,9 @@ func TestParseIssueMetaRelaxedWithoutMetadata(t *testing.T) {
 	if meta.GithubRepo != "" {
 		t.Fatalf("GithubRepo = %q, want empty", meta.GithubRepo)
 	}
-	if meta.DefaultBranch != "main" {
-		t.Fatalf("DefaultBranch = %q, want %q", meta.DefaultBranch, "main")
+	// DefaultBranch is intentionally empty — the orchestrator resolves it live via GitHub API.
+	if meta.DefaultBranch != "" {
+		t.Fatalf("DefaultBranch = %q, want empty (resolved at runtime)", meta.DefaultBranch)
 	}
 }
 

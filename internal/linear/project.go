@@ -72,7 +72,7 @@ func ParseIssueMetaRelaxed(description string) (*IssueMeta, error) {
 		return nil, err
 	}
 
-	return &IssueMeta{DefaultBranch: "main"}, nil
+	return &IssueMeta{}, nil
 }
 
 // NormalizeIssueMeta fills defaults and applies an optional fallback owner.
@@ -97,10 +97,6 @@ func NormalizeIssueMeta(meta *IssueMeta, fallbackOwner string) (*IssueMeta, erro
 		meta.GithubRepo = fallbackOwner + "/" + meta.GithubRepo
 	}
 
-	if meta.DefaultBranch == "" {
-		meta.DefaultBranch = "main"
-	}
-
 	return meta, nil
 }
 
@@ -120,9 +116,6 @@ func parseIssueMetaJSON(description string) (*IssueMeta, error) {
 	var meta IssueMeta
 	if err := json.Unmarshal([]byte(jsonStr), &meta); err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(meta.DefaultBranch) == "" {
-		meta.DefaultBranch = "main"
 	}
 	return &meta, nil
 }
@@ -172,8 +165,5 @@ func parseIssueMetaYAML(description string) (*IssueMeta, error) {
 		return nil, fmt.Errorf("parsing issue frontmatter: %w", err)
 	}
 
-	if strings.TrimSpace(meta.DefaultBranch) == "" {
-		meta.DefaultBranch = "main"
-	}
 	return &meta, nil
 }
