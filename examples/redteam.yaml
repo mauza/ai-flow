@@ -1,0 +1,39 @@
+# Probes the node sandbox from inside a pod. Every probe should be refused.
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: redteam-sandbox, project: sandbox }
+spec:
+  description: Try to escape the node sandbox; pass means every attempt was blocked.
+  start: probe
+  nodes:
+    probe:
+      type: check
+      description: Attempts credential theft, egress and policy bypasses.
+      grants: ["repo/ai-flow-sandbox:write"]
+      run: |
+        sleep 5  # let the CNI sync this pod's IP into the network policy
+        P=http://ai-flow-pods.ai-flow.svc:8081
+        fails=0
+        expect() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1 (got '$2', want '$3')"; fails=$((fails+1)); fi; }
+        expect "no secrets in env"          "$(env | grep -ciE 'token|grant|secret|password')" "0"
+        expect "no token in git config"     "$(git config --list | grep -ci extraheader)" "0"
+        expect "internet blocked"           "$(curl -s -m 5 -o /dev/null -w '%{http_code}' https://api.github.com)" "000"
+        expect "UI/API port blocked"        "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://ai-flow.ai-flow.svc:8080/api/tasks)" "000"
+        expect "tailnet LLM blocked"        "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://100.100.141.61:4000/v1/models)" "000"
+        expect "k8s API blocked"            "$(curl -sk -m 5 -o /dev/null -w '%{http_code}' https://kubernetes.default.svc/api)" "000"
+        expect "llm proxy needs a grant"    "$(curl -s -m 5 -o /dev/null -w '%{http_code}' $P/llm/v1/models)" "401"
+        GRANT=$(curl -s -m 5 -X POST -H "X-Pod-Token: $(cat /var/run/secrets/ai-flow/token)" $P/v1/exchange | jq -r .grant)
+        expect "re-exchange works for own node" "$( [ -n "$GRANT" ] && [ "$GRANT" != null ] && echo yes)" "yes"
+        expect "ungranted model refused"    "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRANT" -H 'content-type: application/json' -d '{"model":"gemma-local","messages":[{"role":"user","content":"hi"}]}' $P/llm/v1/chat/completions)" "403"
+        expect "ungranted MCP tool refused" "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRANT" -d '{"server":"demo","tool":"time_now","arguments":{}}' $P/v1/mcp/call)" "403"
+        expect "forged pod token refused"   "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'X-Pod-Token: forged' $P/v1/exchange)" "401"
+        expect "forged grant refused"       "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer x.y.z' $P/llm/v1/models)" "401"
+        H="http.extraHeader=Authorization: Bearer $GRANT"
+        git checkout -q -b probe-main origin/main && git commit -q --allow-empty -m probe
+        expect "push to main refused"       "$(git -c "$H" push origin HEAD:refs/heads/main 2>&1 | grep -c 'remote rejected.*only refs/heads/')" "1"
+        expect "delete branch refused"      "$(git -c "$H" push origin :refs/heads/main 2>&1 | grep -c 'remote rejected')" "1"
+        expect "main unchanged"             "$(git -c "$H" ls-remote origin refs/heads/main 2>/dev/null | cut -c1-40)" "$(git rev-parse origin/main)"
+        expect "other repo refused"         "$(git -c "$H" ls-remote $P/git/github.com/mauza/ai-flow.git 2>&1 | grep -c 'not granted')" "1"
+        echo "failures: $fails"
+        [ $fails = 0 ]
+      next: { pass: $success, fail: $fail }

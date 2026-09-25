@@ -1,0 +1,8 @@
+# Local kind cluster (make dev-up). Images are loaded with `kind load`.
+image:
+  pullPolicy: Never
+service:
+  type: NodePort
+  nodePort: 30080
+mcpDemo:
+  enabled: true

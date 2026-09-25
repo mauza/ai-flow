@@ -188,7 +188,7 @@ func (c *Client) LoadWorkflowStates(ctx context.Context, teamKey string) error {
 	for _, s := range team.States.Nodes {
 		c.stateCache[s.Name] = s.ID
 		c.reverseCache[s.ID] = s.Name
-		slog.Info("loaded workflow state", "name", s.Name, "id", s.ID, "type", s.Type)
+		slog.Debug("loaded workflow state", "name", s.Name, "id", s.ID, "type", s.Type)
 	}
 
 	for _, l := range team.Labels.Nodes {

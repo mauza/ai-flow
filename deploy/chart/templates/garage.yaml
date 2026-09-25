@@ -1,0 +1,106 @@
+{{- if .Values.garage.enabled }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace "garage" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- if $existing }}
+  rpc-secret: {{ index $existing.data "rpc-secret" }}
+  admin-token: {{ index $existing.data "admin-token" }}
+  {{- else }}
+  rpc-secret: {{ randAlphaNum 32 | sha256sum | b64enc }}
+  admin-token: {{ randAlphaNum 40 | b64enc }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage"
+    [admin]
+    api_bind_addr = "[::]:3903"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  serviceName: garage
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: garage }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: garage }
+      annotations:
+        checksum/config: {{ .Values.garage | toJson | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: garage
+          image: {{ .Values.garage.image }}
+          env:
+            - name: GARAGE_RPC_SECRET
+              valueFrom: { secretKeyRef: { name: garage, key: rpc-secret } }
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: garage, key: admin-token } }
+          ports:
+            - { name: s3, containerPort: 3900 }
+            - { name: admin, containerPort: 3903 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/garage.toml, subPath: garage.toml }
+            - { name: data, mountPath: /var/lib/garage }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: config
+          configMap: { name: garage }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.garage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.garage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/name: garage }
+  ports:
+    - { name: s3, port: 3900, targetPort: s3 }
+    - { name: admin, port: 3903, targetPort: admin }
+{{- end }}

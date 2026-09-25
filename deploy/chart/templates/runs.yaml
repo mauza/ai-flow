@@ -1,0 +1,74 @@
+{{- if .Values.runs.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.runs.namespace }}
+  labels:
+    {{- include "ai-flow.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+---
+{{- end }}
+# Node pods run as this account. It has no RBAC: its only use is a projected
+# token the control plane verifies to identify the pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.runs.serviceAccount }}
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- if .Values.runs.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-to-control-plane
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { ai-flow.dev/role: node }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} }
+          podSelector:
+            matchLabels: {{- include "ai-flow.selector" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8081 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-internet
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { ai-flow.dev/role: node, ai-flow.dev/egress: internet }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{- toYaml .Values.runs.networkPolicy.internetExcept | nindent 14 }}
+{{- end }}

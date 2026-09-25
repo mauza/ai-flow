@@ -1,0 +1,45 @@
+{{- if .Values.mcpDemo.enabled }}
+# Demo MCP server for trying MCP grants (tools: word_stats, time_now).
+# Only the control plane talks to it; node pods reach tools through the broker.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-demo
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: mcp-demo }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: mcp-demo }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mcp-demo
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["mcp-demo", ":8090"]
+          ports:
+            - { name: mcp, containerPort: 8090 }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-demo
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/name: mcp-demo }
+  ports:
+    - { name: mcp, port: 8090, targetPort: mcp }
+{{- end }}

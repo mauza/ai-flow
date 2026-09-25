@@ -1,0 +1,54 @@
+# Verify node pods' projected tokens (TokenReview).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-ai-flow-tokenreview
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-ai-flow-tokenreview
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-ai-flow-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: ai-flow
+    namespace: {{ .Release.Namespace }}
+---
+# Create and watch node Jobs in the runs namespace, and nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ai-flow-runner-manager
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-flow-runner-manager
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ai-flow-runner-manager
+subjects:
+  - kind: ServiceAccount
+    name: ai-flow
+    namespace: {{ .Release.Namespace }}

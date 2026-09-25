@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-flow
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-flow-data
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-flow
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # SQLite on a RWO volume: one writer
+  selector:
+    matchLabels: {{- include "ai-flow.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "ai-flow.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: ai-flow
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ai-flow
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["server", "-config", "/config"]
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: pods, containerPort: 8081 }
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secretName }}
+                optional: true
+          env:
+            {{- if .Values.garage.enabled }}
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: garage, key: admin-token } }
+            {{- end }}
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.config.existingConfigMap | default "ai-flow-config" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: ai-flow-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-flow
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "ai-flow.selector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      {{- if .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+---
+# The only port node pods may reach: broker, git proxy, LLM proxy, MCP calls.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-flow-pods
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "ai-flow.selector" . | nindent 4 }}
+  ports:
+    - { name: pods, port: 8081, targetPort: pods }

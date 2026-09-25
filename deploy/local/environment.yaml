@@ -1,0 +1,32 @@
+# Local development without a cluster: `make dev-local`.
+# Nodes run as child processes (no isolation). Layer after deploy/config.
+apiVersion: ai-flow/v1alpha1
+kind: Environment
+server:
+  listen: ":8080"
+  podListen: ":8081"
+  publicUrl: http://localhost:8080
+  dataDir: .data
+runs:
+  local: true
+  maxConcurrent: 2
+  defaultTimeout: 20m
+llm:
+  upstreams:
+    home:
+      baseUrl: http://litellm:4000/v1
+objectStore:
+  type: local
+git:
+  hosts:
+    github.com: { tokenEnv: GITHUB_TOKEN }
+  authorName: ai-flow
+  authorEmail: ai-flow@users.noreply.github.com
+github:
+  tokenEnv: GITHUB_TOKEN
+mcp:
+  servers:
+    demo:   # `make dev-local` starts it
+      url: http://localhost:8090
+linear:
+  enabled: false
