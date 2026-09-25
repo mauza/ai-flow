@@ -1,24 +1,21 @@
-# Binary
-ai-flow
-
-# Config (contains secrets)
-config.yaml
-
-# Database
+# Build output and local data
+bin/
+.data/
+web/node_modules/
+.env
 *.db
 *.db-wal
 *.db-shm
 
-# IDE
+# Editors / OS
 .idea/
 .vscode/
 *.swp
-*.swo
-
-# OS
 .DS_Store
 
-# Node
-internal/dashboard/web/node_modules/
+# Built UI (make ui); .gitkeep keeps `go build` working without Node
+web/dist/*
+!web/dist/.gitkeep
 
-.local
+# v1 local state
+.local/

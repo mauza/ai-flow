@@ -1,0 +1,43 @@
+# Environment for the local kind cluster (make dev-up). For a prod cluster,
+# copy this file and change the URLs; the catalog and projects stay the same.
+apiVersion: ai-flow/v1alpha1
+kind: Environment
+server:
+  publicUrl: http://localhost:8080
+  podUrl: http://ai-flow-pods.ai-flow.svc:8081
+  dataDir: /data
+runs:
+  namespace: ai-flow-runs
+  maxConcurrent: 3
+  defaultTimeout: 30m
+llm:
+  upstreams:
+    # Any OpenAI-compatible endpoint: llama.cpp / Ollama on the host, vLLM,
+    # LiteLLM, OpenRouter... This one is the home LiteLLM on the tailnet (no auth).
+    home:
+      baseUrl: http://100.100.141.61:4000/v1
+objectStore:
+  type: garage                      # bootstrapped by the control plane
+  endpoint: garage.ai-flow.svc:3900
+  adminEndpoint: http://garage.ai-flow.svc:3903
+  adminTokenEnv: GARAGE_ADMIN_TOKEN
+  bucket: ai-flow
+  region: garage
+git:
+  hosts:
+    github.com: { tokenEnv: GITHUB_TOKEN }
+  authorName: ai-flow
+  authorEmail: ai-flow@users.noreply.github.com
+github:
+  tokenEnv: GITHUB_TOKEN
+mcp:
+  servers:
+    # Demo server from the chart (mcpDemo.enabled). Real servers go here too,
+    # with credentials as headers: { Authorization: "Bearer ${SOME_TOKEN}" }.
+    demo:
+      url: http://mcp-demo.ai-flow.svc:8090
+      description: Demo tools (word_stats, time_now)
+linear:
+  enabled: true
+  mode: poll
+  pollInterval: 30s

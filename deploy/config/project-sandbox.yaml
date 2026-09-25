@@ -1,0 +1,32 @@
+apiVersion: ai-flow/v1alpha1
+kind: Project
+metadata:
+  name: sandbox
+spec:
+  description: Throwaway Python repo for exercising flows end to end.
+  repo: repo/ai-flow-sandbox
+  base: main
+  start: manual
+  linear:
+    team: MAU
+    trigger:
+      label: ai-flow
+      states: [Todo]
+    # Linear states ai-flow moves the issue to. Moving a failed issue back to a
+    # trigger state re-plans it.
+    states:
+      planning: In Progress
+      flow_ready: In Progress
+      running: In Progress
+      succeeded: Overall Review
+      failed: Backlog
+    comments: { flow: true, result: true }
+  allow:
+    grants: ["repo/ai-flow-sandbox:*", "mcp/word-stats"]
+    models: [gemma-local, qwen-local]
+  budget: { usd_per_run: 5 }
+  planner:
+    guidance: |
+      Autonomous by default: no human gates for bug fixes, tests, docs, or small features.
+      Add a gate before open_pull_request only if the task deletes data or changes CI.
+      The repo uses Python's built-in unittest: run tests with `python -m unittest -v`.

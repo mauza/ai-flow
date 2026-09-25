@@ -1,0 +1,31 @@
+# Environment for a real cluster. Pair with the same catalog and projects as kind.
+apiVersion: ai-flow/v1alpha1
+kind: Environment
+server:
+  publicUrl: https://ai-flow.example.com
+  podUrl: http://ai-flow-pods.ai-flow.svc:8081
+  dataDir: /data
+  authTokenEnv: AI_FLOW_TOKEN          # UI/API require this bearer token (or ?token=)
+runs:
+  namespace: ai-flow-runs
+  maxConcurrent: 4
+  imagePullPolicy: IfNotPresent
+llm:
+  upstreams:
+    home:
+      baseUrl: http://litellm.llm-gateway.svc:4000/v1
+objectStore:
+  type: garage
+  endpoint: garage.ai-flow.svc:3900
+  adminEndpoint: http://garage.ai-flow.svc:3903
+  adminTokenEnv: GARAGE_ADMIN_TOKEN
+git:
+  hosts:
+    github.com: { tokenEnv: GITHUB_TOKEN }
+github:
+  tokenEnv: GITHUB_TOKEN
+linear:
+  enabled: true
+  mode: webhook                        # POST https://ai-flow.example.com/webhooks/linear
+mcp:
+  servers: {}

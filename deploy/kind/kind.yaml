@@ -1,0 +1,14 @@
+# Local cluster for ai-flow: `make dev-up` renders __STATE_DIR__ and creates it.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ai-flow
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080   # ai-flow UI (NodePort)
+        hostPort: 8080
+        listenAddress: 127.0.0.1
+    # State (SQLite, Garage objects) lives on the host so it outlives the cluster.
+    extraMounts:
+      - hostPath: __STATE_DIR__
+        containerPath: /ai-flow
