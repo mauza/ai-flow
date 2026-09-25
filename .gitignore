@@ -16,3 +16,6 @@ web/node_modules/
 # Built UI (make ui); .gitkeep keeps `go build` working without Node
 web/dist/*
 !web/dist/.gitkeep
+
+# v1 local state
+.local/
