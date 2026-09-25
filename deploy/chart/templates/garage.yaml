@@ -53,9 +53,9 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        runAsUser: {{ .Values.garage.runAsUser }}
+        runAsGroup: {{ .Values.garage.runAsGroup }}
+        fsGroup: {{ .Values.garage.runAsGroup }}
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: garage
@@ -81,6 +81,13 @@ spec:
       volumes:
         - name: config
           configMap: { name: garage }
+        {{- if .Values.garage.hostPath }}
+        - name: data
+          hostPath:
+            path: {{ .Values.garage.hostPath }}
+            type: Directory
+        {{- end }}
+  {{- if not .Values.garage.hostPath }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -92,6 +99,7 @@ spec:
         resources:
           requests:
             storage: {{ .Values.garage.size }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -3,6 +3,7 @@ kind: ServiceAccount
 metadata:
   name: ai-flow
   labels: {{- include "ai-flow.labels" . | nindent 4 }}
+{{- if not .Values.persistence.hostPath }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -17,6 +18,7 @@ spec:
   resources:
     requests:
       storage: {{ .Values.persistence.size }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -40,9 +42,9 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
+        runAsUser: {{ .Values.runAsUser }}
+        runAsGroup: {{ .Values.runAsGroup }}
+        fsGroup: {{ .Values.runAsGroup }}
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ai-flow
@@ -80,8 +82,14 @@ spec:
           configMap:
             name: {{ .Values.config.existingConfigMap | default "ai-flow-config" }}
         - name: data
+          {{- if .Values.persistence.hostPath }}
+          hostPath:
+            path: {{ .Values.persistence.hostPath }}
+            type: Directory
+          {{- else }}
           persistentVolumeClaim:
             claimName: ai-flow-data
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -3,7 +3,8 @@
 #   make dev-local   run the control plane on the host (nodes = child processes)
 #   make dev-up      kind cluster + images + Helm release, UI on http://localhost:8080
 #   make dev-reload  rebuild images and restart after code changes
-#   make dev-down    delete the kind cluster
+#   make dev-down    delete the kind cluster (state in STATE_DIR is kept)
+#   make dev-reset   delete the cluster and the state: tasks, flows, runs, transcripts
 #
 # Secrets come from .env (gitignored): GITHUB_TOKEN, LINEAR_API_KEY, ...
 
@@ -15,11 +16,13 @@ LDFLAGS   := -s -w -X main.version=$(VERSION)
 KCTX      ?= kind-$(CLUSTER)
 KUBECTL   := kubectl --context $(KCTX)
 HELM      := helm --kube-context $(KCTX)
+# Host folder holding the kind cluster's state; survives dev-down / dev-up.
+STATE_DIR ?= $(HOME)/.local/share/ai-flow/$(CLUSTER)
 
 -include .env
 export
 
-.PHONY: build build-linux ui test lint images kind-up dev-up dev-reload dev-down dev-local secrets deploy logs
+.PHONY: build build-linux ui test lint images kind-up dev-up dev-reload dev-down dev-reset dev-local secrets deploy logs
 
 build: ui
 	go build -ldflags '$(LDFLAGS)' -o bin/ai-flow ./cmd/ai-flow
@@ -44,10 +47,13 @@ images: build-linux
 
 # kind switches the current kube-context; switch back so nothing else moves.
 kind-up:
+	@mkdir -p $(STATE_DIR)/data $(STATE_DIR)/garage bin
+	@sed 's#__STATE_DIR__#$(STATE_DIR)#' deploy/kind/kind.yaml > bin/kind.yaml
 	@kind get clusters | grep -qx $(CLUSTER) || { \
 		prev=$$(kubectl config current-context 2>/dev/null); \
-		kind create cluster --config deploy/kind/kind.yaml; \
+		kind create cluster --name $(CLUSTER) --config bin/kind.yaml; \
 		[ -n "$$prev" ] && kubectl config use-context "$$prev" >/dev/null; true; }
+	@echo "state: $(STATE_DIR)"
 
 secrets:
 	$(KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
@@ -59,6 +65,8 @@ secrets:
 deploy:
 	$(HELM) upgrade --install ai-flow deploy/chart -n $(NAMESPACE) --create-namespace \
 		-f deploy/chart/values-kind.yaml \
+		--set runAsUser=$$(id -u) --set runAsGroup=$$(id -g) \
+		--set garage.runAsUser=$$(id -u) --set garage.runAsGroup=$$(id -g) \
 		$(foreach f,$(wildcard $(CONFIG)/*.yaml),--set-file 'config.files.$(subst .,\.,$(notdir $(f)))=$(f)')
 	$(KUBECTL) -n $(NAMESPACE) rollout status deploy/ai-flow --timeout=180s
 
@@ -75,6 +83,10 @@ dev-reload: images
 
 dev-down:
 	kind delete cluster --name $(CLUSTER)
+	@echo "state kept in $(STATE_DIR) (make dev-reset to delete it)"
+
+dev-reset: dev-down
+	rm -rf $(STATE_DIR)
 
 logs:
 	$(KUBECTL) -n $(NAMESPACE) logs deploy/ai-flow -f

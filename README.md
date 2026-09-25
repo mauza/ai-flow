@@ -22,7 +22,10 @@ open http://localhost:8080
 ```
 
 Then press **New task**, or add the trigger label to a Linear issue. Change code
-and run `make dev-reload`. `make dev-down` deletes the cluster.
+and run `make dev-reload`. `make dev-down` deletes the cluster but keeps its
+state (tasks, flows, runs, transcripts) in `~/.local/share/ai-flow/ai-flow`, so
+the next `make dev-up` picks up where you left off. `make dev-reset` deletes the
+cluster and that state.
 
 No cluster? `make dev-local` runs the control plane on your machine and each
 step as a child process (no isolation; good for iterating).
@@ -58,7 +61,8 @@ changed from the original draft.
 
 | | |
 |---|---|
-| `make dev-up` / `dev-reload` / `dev-down` | kind cluster lifecycle |
+| `make dev-up` / `dev-reload` / `dev-down` | kind cluster lifecycle (state survives `dev-down`) |
+| `make dev-reset` | delete the cluster and its state |
 | `make dev-local` | control plane + demo MCP server on the host, steps as processes |
 | `make test` / `make lint` | Go tests / vet + helm lint |
 | `ai-flow validate -config deploy/config flow.yaml` | validate a flow |

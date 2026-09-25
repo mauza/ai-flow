@@ -4,5 +4,12 @@ image:
 service:
   type: NodePort
   nodePort: 30080
+# State lives in a host folder mounted into the kind node at /ai-flow
+# (deploy/kind/kind.yaml), so tasks, flows, runs and transcripts survive
+# `make dev-down`. The Makefile sets runAsUser/runAsGroup to your uid/gid.
+persistence:
+  hostPath: /ai-flow/data
+garage:
+  hostPath: /ai-flow/garage
 mcpDemo:
   enabled: true

@@ -315,7 +315,10 @@ the demo MCP server. Config files go in with `--set-file` or an existing ConfigM
 secrets via an existing Secret (`ai-flow-secrets`).
 
 - **kind** — `make dev-up` / `dev-reload` / `dev-down`. Images built on the host and
-  loaded; UI at http://localhost:8080. kind's kindnet enforces NetworkPolicy a few
+  loaded; UI at http://localhost:8080. State (SQLite, Garage) lives in a host
+  folder (`STATE_DIR`, default `~/.local/share/ai-flow/<cluster>`) mounted into the
+  node and used through `hostPath` volumes, with pods running as your uid, so it
+  survives `dev-down`; `make dev-reset` removes it. kind's kindnet enforces NetworkPolicy a few
   seconds after a pod starts; use Calico/Cilium where that gap matters.
 - **local processes** — `make dev-local`: no cluster, no isolation; for fast iteration.
 - **prod** — same chart with real values: images from a registry, sealed secrets,

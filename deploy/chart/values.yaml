@@ -27,6 +27,16 @@ service:
 persistence:
   size: 2Gi
   storageClass: ""
+  # Use a directory on the node instead of a PVC (kind: a host folder mounted
+  # into the node, so state survives deleting the cluster). Must already exist
+  # and be writable by runAsUser. Switching an existing release between PVC and
+  # hostPath needs a fresh install.
+  hostPath: ""
+
+# UID/GID the control plane runs as. kind sets these to your own uid so the
+# host folder needs no chmod.
+runAsUser: 65532
+runAsGroup: 65532
 
 resources:
   requests: { cpu: 100m, memory: 128Mi }
@@ -48,6 +58,9 @@ garage:
   image: dxflrs/garage:v2.0.0
   size: 10Gi
   storageClass: ""
+  hostPath: ""        # like persistence.hostPath
+  runAsUser: 1000
+  runAsGroup: 1000
 
 # Demo MCP server (word_stats, time_now) to try MCP grants.
 mcpDemo:
