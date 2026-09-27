@@ -8,3 +8,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: ai-flow
 app.kubernetes.io/component: control-plane
 {{- end }}
+
+{{- define "ai-flow.garageSecret" -}}
+{{ .Values.garage.existingSecret | default "garage" }}
+{{- end }}

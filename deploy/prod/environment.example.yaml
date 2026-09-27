@@ -1,8 +1,9 @@
-# Environment for a real cluster. Pair with the same catalog and projects as kind.
+# Environment for a real cluster. Pair with the same catalog and projects as kind,
+# with runtime images pointed at the registry `make release` pushed to.
 apiVersion: ai-flow/v1alpha1
 kind: Environment
 server:
-  publicUrl: https://ai-flow.example.com
+  publicUrl: http://ai-flow:8080       # tailnet name; https://... behind an ingress
   podUrl: http://ai-flow-pods.ai-flow.svc:8081
   dataDir: /data
   authTokenEnv: AI_FLOW_TOKEN          # UI/API require this bearer token (or ?token=)
@@ -10,22 +11,29 @@ runs:
   namespace: ai-flow-runs
   maxConcurrent: 4
   imagePullPolicy: IfNotPresent
+  nodeSelector:
+    kubernetes.io/arch: amd64
 llm:
   upstreams:
     home:
-      baseUrl: http://litellm.llm-gateway.svc:4000/v1
+      baseUrl: http://litellm-proxy.llm-gateway.svc:4000/v1
 objectStore:
   type: garage
   endpoint: garage.ai-flow.svc:3900
   adminEndpoint: http://garage.ai-flow.svc:3903
   adminTokenEnv: GARAGE_ADMIN_TOKEN
+  bucket: ai-flow
+  region: garage
 git:
   hosts:
     github.com: { tokenEnv: GITHUB_TOKEN }
+  authorName: ai-flow
+  authorEmail: ai-flow@users.noreply.github.com
 github:
   tokenEnv: GITHUB_TOKEN
 linear:
   enabled: true
-  mode: webhook                        # POST https://ai-flow.example.com/webhooks/linear
+  mode: poll                           # webhook needs a public URL: POST <publicUrl>/webhooks/linear
+  pollInterval: 30s
 mcp:
   servers: {}

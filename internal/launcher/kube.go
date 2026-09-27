@@ -131,6 +131,7 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 					ServiceAccountName:           k.cfg.Runs.ServiceAccount,
 					AutomountServiceAccountToken: &no,
 					EnableServiceLinks:           &no,
+					NodeSelector:                 k.cfg.Runs.NodeSelector,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &yes, RunAsUser: &uid, RunAsGroup: &uid, FSGroup: &uid,
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},

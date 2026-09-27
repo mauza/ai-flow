@@ -67,6 +67,9 @@ type Runs struct {
 	JobTTL          flow.Duration `json:"jobTTL,omitzero"`
 	CPU             string        `json:"cpu,omitempty"`
 	Memory          string        `json:"memory,omitempty"`
+	// NodeSelector pins node pods, e.g. {kubernetes.io/arch: amd64} on a
+	// mixed-arch cluster whose runtime images are single-arch.
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// Local mode runs pod-type nodes as child processes instead of Jobs (tests, no cluster).
 	Local bool `json:"local,omitempty"`
 }

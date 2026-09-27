@@ -5,6 +5,7 @@
 #   make dev-reload  rebuild images and restart after code changes
 #   make dev-down    delete the kind cluster (state in STATE_DIR is kept)
 #   make dev-reset   delete the cluster and the state: tasks, flows, runs, transcripts
+#   make release     push the images to REGISTRY tagged VERSION (clean tree only)
 #
 # Secrets come from .env (gitignored): GITHUB_TOKEN, LINEAR_API_KEY, ...
 
@@ -16,13 +17,14 @@ LDFLAGS   := -s -w -X main.version=$(VERSION)
 KCTX      ?= kind-$(CLUSTER)
 KUBECTL   := kubectl --context $(KCTX)
 HELM      := helm --kube-context $(KCTX)
+REGISTRY  ?= docker.mau.guru/library
 # Host folder holding the kind cluster's state; survives dev-down / dev-up.
 STATE_DIR ?= $(HOME)/.local/share/ai-flow/$(CLUSTER)
 
 -include .env
 export
 
-.PHONY: build build-linux ui test lint images kind-up dev-up dev-reload dev-down dev-reset dev-local secrets deploy logs
+.PHONY: build build-linux ui test lint images kind-up dev-up dev-reload dev-down dev-reset dev-local secrets deploy logs release release-check
 
 build: ui
 	go build -ldflags '$(LDFLAGS)' -o bin/ai-flow ./cmd/ai-flow
@@ -44,6 +46,17 @@ images: build-linux
 	docker build -f deploy/images/control-plane.Dockerfile -t ai-flow:dev .
 	docker build -f deploy/images/agent.Dockerfile -t ai-flow-agent:dev .
 	docker build -f deploy/images/agent-go.Dockerfile -t ai-flow-agent-go:dev .
+
+# Tags the dev images as $(REGISTRY)/<name>:$(VERSION) and pushes them. Refuses a
+# dirty tree so a pushed tag always names a commit.
+release: release-check images
+	@for img in ai-flow ai-flow-agent ai-flow-agent-go; do \
+		docker tag $$img:dev $(REGISTRY)/$$img:$(VERSION) && docker push $(REGISTRY)/$$img:$(VERSION) || exit 1; \
+	done
+	@echo "pushed $(REGISTRY)/{ai-flow,ai-flow-agent,ai-flow-agent-go}:$(VERSION)"
+
+release-check:
+	@case "$(VERSION)" in *-dirty|dev) echo "release: commit first (VERSION=$(VERSION))"; exit 1;; esac
 
 # kind switches the current kube-context; switch back so nothing else moves.
 kind-up:
