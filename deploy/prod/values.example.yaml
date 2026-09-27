@@ -12,12 +12,13 @@ config:
 nodeSelector:
   kubernetes.io/arch: amd64             # images are amd64-only
 persistence:
-  storageClass: local-path              # SQLite: keep it off NFS
-  size: 5Gi
+  storageClass: nfs-client              # NFS is fine: SQLite runs WAL in EXCLUSIVE mode (no -shm)
+  size: 10Gi
+# With objectStore.type: local, transcripts live on the same volume and Garage
+# is not needed. Enable it (or use s3) to keep objects elsewhere.
 garage:
-  enabled: true                         # or false + objectStore.type: s3 in environment.yaml
-  storageClass: local-path
-  existingSecret: garage-secrets        # rpc-secret + admin-token; required under ArgoCD
+  enabled: false
+  existingSecret: ""                    # set when enabled under ArgoCD (it cannot `lookup`)
 # Either a tailnet-only Service...
 service:
   annotations:

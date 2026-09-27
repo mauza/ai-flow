@@ -6,7 +6,7 @@ server:
   publicUrl: http://ai-flow:8080       # tailnet name; https://... behind an ingress
   podUrl: http://ai-flow-pods.ai-flow.svc:8081
   dataDir: /data
-  authTokenEnv: AI_FLOW_TOKEN          # UI/API require this bearer token (or ?token=)
+  # authTokenEnv: AI_FLOW_TOKEN        # optional: UI/API then require this bearer token
 runs:
   namespace: ai-flow-runs
   maxConcurrent: 4
@@ -18,12 +18,7 @@ llm:
     home:
       baseUrl: http://litellm-proxy.llm-gateway.svc:4000/v1
 objectStore:
-  type: garage
-  endpoint: garage.ai-flow.svc:3900
-  adminEndpoint: http://garage.ai-flow.svc:3903
-  adminTokenEnv: GARAGE_ADMIN_TOKEN
-  bucket: ai-flow
-  region: garage
+  type: local                          # <dataDir>/objects; only the control plane touches it
 git:
   hosts:
     github.com: { tokenEnv: GITHUB_TOKEN }
