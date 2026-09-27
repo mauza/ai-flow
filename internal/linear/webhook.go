@@ -75,7 +75,7 @@ func NewWebhookHandler(secret string, dispatch DispatchFunc) http.HandlerFunc {
 
 		// Filter: only Issue updates and Comment creates
 		switch {
-		case payload.Type == "Issue" && payload.Action == "update":
+		case payload.Type == "Issue" && (payload.Action == "update" || payload.Action == "create"):
 			go dispatch(payload)
 		case payload.Type == "Comment" && payload.Action == "create":
 			go dispatch(payload)

@@ -1,0 +1,137 @@
+# The menu the planner picks from. Flows reference these names.
+apiVersion: ai-flow/v1alpha1
+kind: Catalog
+
+models:
+  gemma-local:
+    upstream: home
+    model: gemma4-26b
+    size: medium
+    context_tokens: 100000
+    tool_use: ok
+    cost: local
+    max_concurrency: 2
+    notes: Gemma 4 26B-A4B on the 3090. Fast. Good for classification, review, and small well-specified edits.
+  qwen-local:
+    upstream: home
+    model: qwen3.8-27b
+    size: medium
+    context_tokens: 160000
+    tool_use: good
+    cost: local
+    max_concurrency: 2
+    reasoning: true
+    notes: Qwen 3.8 27B on the 5090 (LiteLLM falls back to gemma when the desktop GPU is busy). Best local coder.
+    llm:
+      fallbacks: [gemma-local]
+      on_limit:
+        rate_limited: { action: retry, max: 3, backoff: 15s, then: fallback }
+
+harnesses:
+  pi:
+    description: pi coding agent — read/edit/write/bash plus granted tools.
+
+runtimes:
+  agent-base:
+    image: ai-flow-agent:dev
+    description: pi, git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks.
+  agent-go:
+    image: ai-flow-agent-go:dev
+    description: agent-base plus the Go toolchain.
+
+grants:
+  repo/ai-flow-sandbox:
+    kind: git
+    url: https://github.com/mauza/ai-flow-sandbox.git
+    modes: [read, write]
+    description: Sandbox repo for trying flows end to end.
+  mcp/word-stats:
+    kind: mcp
+    server: demo
+    tools: [word_stats]   # the server also has time_now; this grant does not include it
+    description: Word statistics tool from the demo MCP server.
+
+skills:
+  small-diffs:
+    description: How to keep a change small and reviewable.
+    files:
+      SKILL.md: |
+        ---
+        name: small-diffs
+        description: Keep changes minimal and reviewable. Use when editing code for a task.
+        ---
+        # Small diffs
+        - Change only what the task needs. No drive-by refactors or reformatting.
+        - Prefer editing existing functions over adding new layers.
+        - Keep public names stable unless the task asks to rename them.
+        - Add or update a test for the behaviour you changed.
+
+defaults:
+  runtime: agent-base
+  harness: pi
+  timeout: 20m
+  retry: { limit: 1 }
+  # Every model step gets a budget so a looping agent fails fast instead of
+  # burning its whole timeout. Nodes and presets can raise or route it.
+  llm:
+    limits: { tokens: 500000, turns: 80 }
+
+presets:
+  triage:
+    type: llm
+    min_size: small
+    description: Decide whether the task is clear enough to implement.
+    prompt: |
+      Read the task. Decide whether a developer could implement it without asking questions.
+      If it is unclear, list the questions that block implementation.
+    outputs: { questions: [string] }
+    outcomes: [clear, unclear]
+
+  implement:
+    type: agent
+    min_size: medium
+    description: Make the code change the task asks for.
+    grants: []
+    skills: [small-diffs]
+    prompt: |
+      Implement the task in this repository.
+      - Look around first: read the relevant files before editing.
+      - Keep the change as small as possible.
+      - Run the project's tests with bash if there are any, and fix failures you caused.
+    outputs: { summary_of_change: string }
+    outcomes: [done, stuck]
+
+  write-failing-test:
+    type: agent
+    min_size: medium
+    description: Add a test that reproduces a bug, without fixing it.
+    prompt: |
+      Add a test that reproduces the bug (or specifies the new behaviour) described in the task. Do not fix it.
+      - Put the test next to the existing tests for that module; add to the existing test file when there is one.
+      - Add only the new test case. Never copy or duplicate existing tests.
+      Run the test and confirm it fails for the right reason.
+    outputs: { test_name: string, evidence: string }
+    outcomes: [reproduced, cannot_reproduce]
+
+  code-review:
+    type: llm
+    min_size: medium
+    description: Review the branch diff against the task.
+    prompt: |
+      You are reviewing a change made for the task below. The diff is included.
+      Approve when the change does what the task asks, is small, and has no obvious bugs.
+      Ask for changes for real problems only, for example: wrong behaviour, missing tests for the
+      change, duplicated or copied tests, unrelated edits, or debugging leftovers.
+      List each problem concretely (file and what to change) so the next step can fix it.
+    outputs: { comments: [string] }
+    outcomes: [approve, changes]
+
+planner:
+  model: gemma-local
+  max_attempts: 3
+  guidance: |
+    Break work into the smallest steps that can each be checked.
+    Prefer presets. Use local models for everything.
+    A typical code change: implement (agent) → run the tests (check) → code-review (llm) → open_pull_request (action),
+    with test failures and review changes looping back to implement (max_visits 3 on implement).
+    Skip review for trivial docs-only changes.

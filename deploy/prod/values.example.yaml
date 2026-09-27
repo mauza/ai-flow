@@ -1,0 +1,22 @@
+# Example values for a real cluster (e.g. an ArgoCD Application pointing at deploy/chart).
+# Config files come from an existing ConfigMap you manage in git; secrets from a
+# sealed/external Secret named ai-flow-secrets (GITHUB_TOKEN, LINEAR_API_KEY,
+# LINEAR_WEBHOOK_SECRET, AI_FLOW_TOKEN, upstream model keys).
+image:
+  repository: registry.example.com/ai-flow/ai-flow
+  tag: v0.1.0
+  pullPolicy: IfNotPresent
+imagePullSecrets: [{ name: regcred }]
+config:
+  existingConfigMap: ai-flow-config     # environment.yaml + catalog.yaml + projects
+persistence:
+  storageClass: fast
+  size: 5Gi
+garage:
+  enabled: true                         # or false + objectStore.type: s3 in environment.yaml
+  storageClass: fast
+ingress:
+  enabled: true
+  className: traefik
+  host: ai-flow.example.com
+  tls: [{ hosts: [ai-flow.example.com], secretName: ai-flow-tls }]

@@ -1,0 +1,19 @@
+# An agent granted exactly one MCP tool (word_stats) from the demo server.
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: mcp-word-stats, project: sandbox }
+spec:
+  description: Use a granted MCP tool from inside a node pod.
+  start: stats
+  nodes:
+    stats:
+      type: agent
+      model: gemma-local
+      grants: [mcp/word-stats]
+      prompt: |
+        Read README.md, then call the demo__word_stats tool with its full text.
+        Report the word count and the top words from the tool's answer.
+        Also list the names of every tool you can call whose name starts with "demo__".
+      outputs: { words: number, top_words: [string], demo_tools: [string] }
+      outcomes: [done]
+      next: { done: $success }

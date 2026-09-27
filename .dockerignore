@@ -1,0 +1,7 @@
+# Images copy prebuilt artifacts (bin/linux/ai-flow, pi-ext); keep the context small.
+.git
+.data
+web/node_modules
+web/src
+bin/ai-flow
+*.db*

@@ -1,0 +1,75 @@
+# ai-flow Helm values. Everything environment-specific lives here or in the
+# config files passed with --set-file (see Makefile).
+
+image:
+  repository: ai-flow
+  tag: dev
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Config documents (Environment, Catalog, Project) as files: name → YAML text.
+# The Makefile fills these from deploy/config with --set-file.
+config:
+  files: {}
+  # Use an existing ConfigMap instead of config.files (GitOps).
+  existingConfigMap: ""
+
+# Secret with the control plane's credentials, exposed as env vars. Keys are
+# whatever the Environment config names: GITHUB_TOKEN, LINEAR_API_KEY, ...
+# Never put secret values in values files.
+secretName: ai-flow-secrets
+
+service:
+  type: ClusterIP
+  nodePort: null   # set for kind (30080)
+  port: 8080
+
+persistence:
+  size: 2Gi
+  storageClass: ""
+  # Use a directory on the node instead of a PVC (kind: a host folder mounted
+  # into the node, so state survives deleting the cluster). Must already exist
+  # and be writable by runAsUser. Switching an existing release between PVC and
+  # hostPath needs a fresh install.
+  hostPath: ""
+
+# UID/GID the control plane runs as. kind sets these to your own uid so the
+# host folder needs no chmod.
+runAsUser: 65532
+runAsGroup: 65532
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { memory: 1Gi }
+
+runs:
+  namespace: ai-flow-runs
+  createNamespace: true
+  serviceAccount: ai-flow-runner
+  # Egress for node pods. DNS and the control plane's pod port are always
+  # allowed; everything else is denied unless a node holds an egress grant.
+  networkPolicy:
+    enabled: true
+    # CIDRs "internet" egress may never reach (cluster, tailnet, LAN).
+    internetExcept: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"]
+
+garage:
+  enabled: true
+  image: dxflrs/garage:v2.0.0
+  size: 10Gi
+  storageClass: ""
+  hostPath: ""        # like persistence.hostPath
+  runAsUser: 1000
+  runAsGroup: 1000
+
+# Demo MCP server (word_stats, time_now) to try MCP grants.
+mcpDemo:
+  enabled: false
+
+# Only the UI/API port (8080) is exposed; the pod port (8081) never is.
+ingress:
+  enabled: false
+  className: ""
+  host: ai-flow.example.com
+  annotations: {}
+  tls: []

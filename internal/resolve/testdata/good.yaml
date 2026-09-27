@@ -1,0 +1,61 @@
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: sandbox-fix-slugify
+  project: sandbox
+spec:
+  description: Fix slugify dropping digits.
+  start: reproduce
+  nodes:
+    reproduce:
+      uses: preset/write-failing-test
+      model: gemma-local
+      grants: ["repo/ai-flow-sandbox:write"]
+      max_visits: 2
+      next: { reproduced: fix, cannot_reproduce: ask_human }
+    ask_human:
+      type: gate
+      prompt: "Could not reproduce: ${{ nodes.reproduce.outputs.evidence }}"
+      timeout: 48h
+      outcomes: [retry, abandon]
+      next: { retry: reproduce, abandon: $fail, timeout: $fail }
+    fix:
+      uses: preset/implement
+      llm:
+        model: qwen-local
+        limits: { tokens: 400000 }
+        on_limit:
+          budget_exceeded: { action: outcome }
+      grants: ["repo/ai-flow-sandbox:write"]
+      inputs:
+        test: ${{ nodes.reproduce.outputs.test_name }}
+      prompt: Make ${{ inputs.test }} pass.
+      max_visits: 3
+      on_exhausted: escalate
+      next: { done: test, stuck: escalate, limit: escalate }
+    test:
+      type: check
+      run: python -m unittest -v
+      next: { pass: size_check, fail: fix }
+    size_check:
+      type: switch
+      cases:
+        - when: run.diff.files_changed > 15
+          outcome: too_big
+      default: ok
+      next: { too_big: escalate, ok: review }
+    review:
+      uses: preset/code-review
+      model: gemma-local
+      grants: ["repo/ai-flow-sandbox:read"]
+      next: { approve: open_pr, changes: fix }
+    escalate:
+      type: gate
+      prompt: Flow could not finish cleanly.
+      outcomes: [abandon]
+      next: { abandon: $fail }
+    open_pr:
+      type: action
+      action: open_pull_request
+      with: { title: "${{ task.title }}" }
+      next: { done: $success }

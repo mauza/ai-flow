@@ -1,0 +1,11 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-flow-config
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+data:
+  {{- range $name, $content := .Values.config.files }}
+  {{ $name }}: {{ $content | quote }}
+  {{- end }}
+{{- end }}

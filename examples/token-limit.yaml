@@ -1,0 +1,25 @@
+# A step with a tiny token budget. Hitting it emits the `limit` outcome,
+# which this flow routes to a human instead of failing the run.
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: token-limit-demo, project: sandbox }
+spec:
+  description: Show per-step limits routing to a different node.
+  start: big
+  nodes:
+    big:
+      type: agent
+      model: gemma-local
+      prompt: Read every file in the repository and write a detailed summary of each one.
+      llm:
+        limits: { tokens: 3000 }
+        on_limit:
+          budget_exceeded: { action: outcome }
+      outcomes: [done]
+      next: { done: $success, limit: over_budget }
+    over_budget:
+      type: gate
+      description: The step ran out of budget; a human decides what next.
+      prompt: "big stopped early: ${{ nodes.big.summary }}"
+      outcomes: [stop]
+      next: { stop: $fail }
