@@ -40,8 +40,15 @@ func (s *Server) Mount(pattern string, h http.Handler) {
 	s.extras[pattern] = h
 }
 
-func New(a *app.App, obj objstore.Store, ui fs.FS) *Server {
-	return &Server{app: a, obj: obj, ui: ui, token: config.Secret(a.Cfg.Env.Server.AuthTokenEnv)}
+// New fails when server.authTokenEnv names an unset variable: a missing secret
+// must not silently turn auth off.
+func New(a *app.App, obj objstore.Store, ui fs.FS) (*Server, error) {
+	env := a.Cfg.Env.Server.AuthTokenEnv
+	token := config.Secret(env)
+	if env != "" && token == "" {
+		return nil, fmt.Errorf("server.authTokenEnv is %s but it is unset; refusing to serve the API without auth", env)
+	}
+	return &Server{app: a, obj: obj, ui: ui, token: token}, nil
 }
 
 func (s *Server) Handler() http.Handler {

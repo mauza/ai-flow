@@ -163,7 +163,10 @@ func serverCmd(ctx context.Context, args []string) error {
 	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llm.New(cfg), gh), Hub: h}
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
 
-	ui := server.New(a, obj, web.FS())
+	ui, err := server.New(a, obj, web.FS())
+	if err != nil {
+		return err
+	}
 	var lin *intake.Linear
 	if env.Linear.Enabled {
 		if lin, err = intake.NewLinear(cfg, a); err != nil {

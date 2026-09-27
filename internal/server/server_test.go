@@ -30,7 +30,11 @@ func newTestServer(t *testing.T, token string) http.Handler {
 	t.Cleanup(func() { st.Close() })
 	a := &app.App{Cfg: cfg, Store: st, Hub: hub.New()}
 	ui := fstest.MapFS{"index.html": {Data: []byte("<html>ui</html>")}}
-	return New(a, nil, ui).Handler()
+	s, err := New(a, nil, ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.Handler()
 }
 
 func do(h http.Handler, method, path string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -47,6 +51,17 @@ func TestNoTokenMeansOpen(t *testing.T) {
 	h := newTestServer(t, "")
 	if rec := do(h, "GET", "/api/tasks", nil); rec.Code != 200 {
 		t.Fatalf("GET /api/tasks: %d", rec.Code)
+	}
+}
+
+func TestUnsetTokenEnvFailsClosed(t *testing.T) {
+	cfg, err := config.Load("../../deploy/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Env.Server.AuthTokenEnv = "TEST_AI_FLOW_TOKEN_UNSET"
+	if _, err := New(&app.App{Cfg: cfg}, nil, fstest.MapFS{}); err == nil {
+		t.Fatal("unset auth token env must not start an open server")
 	}
 }
 

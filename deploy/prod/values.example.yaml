@@ -1,22 +1,32 @@
 # Example values for a real cluster (e.g. an ArgoCD Application pointing at deploy/chart).
 # Config files come from an existing ConfigMap you manage in git; secrets from a
 # sealed/external Secret named ai-flow-secrets (GITHUB_TOKEN, LINEAR_API_KEY,
-# LINEAR_WEBHOOK_SECRET, AI_FLOW_TOKEN, upstream model keys).
+# AI_FLOW_TOKEN, upstream model keys). Images come from `make release`.
 image:
-  repository: registry.example.com/ai-flow/ai-flow
+  repository: registry.example.com/library/ai-flow
   tag: v0.1.0
   pullPolicy: IfNotPresent
-imagePullSecrets: [{ name: regcred }]
+imagePullSecrets: []                    # [{ name: regcred }] for a private registry project
 config:
   existingConfigMap: ai-flow-config     # environment.yaml + catalog.yaml + projects
+nodeSelector:
+  kubernetes.io/arch: amd64             # images are amd64-only
 persistence:
-  storageClass: fast
-  size: 5Gi
+  storageClass: nfs-client              # NFS is fine: SQLite runs WAL in EXCLUSIVE mode (no -shm)
+  size: 10Gi
+# With objectStore.type: local, transcripts live on the same volume and Garage
+# is not needed. Enable it (or use s3) to keep objects elsewhere.
 garage:
-  enabled: true                         # or false + objectStore.type: s3 in environment.yaml
-  storageClass: fast
+  enabled: false
+  existingSecret: ""                    # set when enabled under ArgoCD (it cannot `lookup`)
+# Either a tailnet-only Service...
+service:
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: ai-flow
+# ...or a public ingress (then use Linear webhook mode if you like).
 ingress:
-  enabled: true
+  enabled: false
   className: traefik
   host: ai-flow.example.com
   tls: [{ hosts: [ai-flow.example.com], secretName: ai-flow-tls }]

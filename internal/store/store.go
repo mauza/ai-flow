@@ -130,7 +130,11 @@ CREATE TABLE IF NOT EXISTS kv (
 `
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)")
+	// EXCLUSIVE before WAL: SQLite then keeps the WAL index in heap memory
+	// instead of an mmapped -shm file, which is what makes WAL unsafe on NFS,
+	// and the held file lock keeps a second control plane from writing.
+	// Only the server opens this file, over a single connection.
+	db, err := sql.Open("sqlite", path+"?_pragma=locking_mode(EXCLUSIVE)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,13 @@ service:
   type: ClusterIP
   nodePort: null   # set for kind (30080)
   port: 8080
+  # e.g. tailscale.com/expose: "true" to put the UI/API on a tailnet.
+  annotations: {}
+
+# Pins the control plane, Garage and mcp-demo, e.g. kubernetes.io/arch: amd64
+# on a mixed-arch cluster. Node pods are pinned by runs.nodeSelector in the
+# Environment config, not here.
+nodeSelector: {}
 
 persistence:
   size: 2Gi
@@ -56,6 +63,10 @@ runs:
 garage:
   enabled: true
   image: dxflrs/garage:v2.0.0
+  # Secret with rpc-secret and admin-token keys. Leave empty to have the chart
+  # generate one; set it under GitOps (ArgoCD cannot `lookup`, so a generated
+  # secret would be re-randomized on every sync).
+  existingSecret: ""
   size: 10Gi
   storageClass: ""
   hostPath: ""        # like persistence.hostPath

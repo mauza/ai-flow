@@ -1,4 +1,5 @@
 {{- if .Values.garage.enabled }}
+{{- if not .Values.garage.existingSecret }}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace "garage" }}
 apiVersion: v1
 kind: Secret
@@ -15,6 +16,7 @@ data:
   admin-token: {{ randAlphaNum 40 | b64enc }}
   {{- end }}
 ---
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -51,6 +53,9 @@ spec:
       annotations:
         checksum/config: {{ .Values.garage | toJson | sha256sum }}
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: {{ .Values.garage.runAsUser }}
@@ -62,9 +67,9 @@ spec:
           image: {{ .Values.garage.image }}
           env:
             - name: GARAGE_RPC_SECRET
-              valueFrom: { secretKeyRef: { name: garage, key: rpc-secret } }
+              valueFrom: { secretKeyRef: { name: {{ include "ai-flow.garageSecret" . }}, key: rpc-secret } }
             - name: GARAGE_ADMIN_TOKEN
-              valueFrom: { secretKeyRef: { name: garage, key: admin-token } }
+              valueFrom: { secretKeyRef: { name: {{ include "ai-flow.garageSecret" . }}, key: admin-token } }
           ports:
             - { name: s3, containerPort: 3900 }
             - { name: admin, containerPort: 3903 }

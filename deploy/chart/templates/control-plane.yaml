@@ -37,6 +37,9 @@ spec:
         checksum/config: {{ toJson .Values.config | sha256sum }}
     spec:
       serviceAccountName: ai-flow
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -55,13 +58,14 @@ spec:
             - { name: http, containerPort: 8080 }
             - { name: pods, containerPort: 8081 }
           envFrom:
+            # Not optional: starting before the secret exists would run
+            # without credentials (and without auth, if authTokenEnv is set).
             - secretRef:
                 name: {{ .Values.secretName }}
-                optional: true
           env:
             {{- if .Values.garage.enabled }}
             - name: GARAGE_ADMIN_TOKEN
-              valueFrom: { secretKeyRef: { name: garage, key: admin-token } }
+              valueFrom: { secretKeyRef: { name: {{ include "ai-flow.garageSecret" . }}, key: admin-token } }
             {{- end }}
           volumeMounts:
             - { name: config, mountPath: /config, readOnly: true }
@@ -96,6 +100,9 @@ kind: Service
 metadata:
   name: ai-flow
   labels: {{- include "ai-flow.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   selector: {{- include "ai-flow.selector" . | nindent 4 }}
