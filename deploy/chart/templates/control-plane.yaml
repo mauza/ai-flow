@@ -58,9 +58,10 @@ spec:
             - { name: http, containerPort: 8080 }
             - { name: pods, containerPort: 8081 }
           envFrom:
+            # Not optional: starting before the secret exists would run
+            # without credentials (and without auth, if authTokenEnv is set).
             - secretRef:
                 name: {{ .Values.secretName }}
-                optional: true
           env:
             {{- if .Values.garage.enabled }}
             - name: GARAGE_ADMIN_TOKEN
