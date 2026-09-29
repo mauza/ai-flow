@@ -12,11 +12,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/mcpdemo"
 	"github.com/mauza/ai-flow/internal/mcpx"
+	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
@@ -160,6 +163,10 @@ func serverCmd(ctx context.Context, args []string) error {
 	}
 
 	eng := engine.New(cfg, st, launch, h, gh)
+	if n := notify.New(env.Notify); n != nil {
+		eng.SetNotifier(n)
+		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events)
+	}
 	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llm.New(cfg), gh), Hub: h}
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
 
@@ -190,24 +197,38 @@ func serverCmd(ctx context.Context, args []string) error {
 
 	apiSrv := &http.Server{Addr: env.Server.Listen, Handler: logRequests(ui.Handler())}
 	podSrv := &http.Server{Addr: env.Server.PodListen, Handler: br.Handler()}
+	podListener, err := net.Listen("tcp", podSrv.Addr)
+	if err != nil {
+		return fmt.Errorf("broker listener: %w", err)
+	}
+	defer podListener.Close()
+	var brokerReady atomic.Bool
+	brokerReady.Store(true)
+	ui.SetBrokerReady(brokerReady.Load)
 	errc := make(chan error, 2)
 	go func() { errc <- apiSrv.ListenAndServe() }()
-	go func() { errc <- podSrv.ListenAndServe() }()
+	go func() {
+		err := podSrv.Serve(podListener)
+		brokerReady.Store(false)
+		errc <- err
+	}()
 	go eng.Loop(ctx)
 	slog.Info("ai-flow started", "version", version, "ui", env.Server.Listen, "pods", env.Server.PodListen, "runs", ternary(env.Runs.Local, "local", env.Runs.Namespace))
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+			serveErr = err
 		}
 	}
+	brokerReady.Store(false)
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	apiSrv.Shutdown(shutdown)
 	podSrv.Shutdown(shutdown)
-	return nil
+	return serveErr
 }
 
 func portOf(listen string) string {

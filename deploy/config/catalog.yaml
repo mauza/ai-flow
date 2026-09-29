@@ -3,29 +3,38 @@ apiVersion: ai-flow/v1alpha1
 kind: Catalog
 
 models:
-  gemma-local:
+  # Selection hints, not performance claims. All three subscription aliases use the Responses bridge.
+  # context_tokens is a conservative working limit, not the model's full capacity.
+  gpt-6-sol:
     upstream: home
-    model: gemma4-26b
-    size: medium
+    model: gpt-6-sol
+    size: frontier
     context_tokens: 100000
-    tool_use: ok
-    cost: local
-    max_concurrency: 2
-    notes: Gemma 4 26B-A4B on the 3090. Fast. Good for classification, review, and small well-specified edits.
-  qwen-local:
-    upstream: home
-    model: qwen3.8-27b
-    size: medium
-    context_tokens: 160000
     tool_use: good
-    cost: local
+    cost: subscription
     max_concurrency: 2
     reasoning: true
-    notes: Qwen 3.8 27B on the 5090 (LiteLLM falls back to gemma when the desktop GPU is busy). Best local coder.
-    llm:
-      fallbacks: [gemma-local]
-      on_limit:
-        rate_limited: { action: retry, max: 3, backoff: 15s, then: fallback }
+    notes: Default planner. ChatGPT subscription route through home LiteLLM; planner and structured steps stream. LiteLLM owns and refreshes the persistent subscription session.
+  gpt-6-luna:
+    upstream: home
+    model: gpt-6-luna
+    size: frontier
+    context_tokens: 100000
+    tool_use: good
+    cost: subscription
+    max_concurrency: 2
+    reasoning: true
+    notes: Alternate planning/execution model, including independent review. ChatGPT subscription route through home LiteLLM; no local or other-model fallback.
+  gpt-6-astra:
+    upstream: home
+    model: gpt-6-astra
+    size: frontier
+    context_tokens: 100000
+    tool_use: good
+    cost: subscription
+    max_concurrency: 2
+    reasoning: true
+    notes: Additional planning/execution option. ChatGPT subscription route through home LiteLLM; no local or other-model fallback. Sol remains the default planner.
 
 harnesses:
   pi:
@@ -77,7 +86,11 @@ defaults:
     limits: { tokens: 500000, turns: 80 }
 
 presets:
+  # Discovery: gather evidence before choosing a solution.
   triage:
+    category: discovery
+    when_to_use: The task may be ambiguous before repository work starts.
+    requires: [Task description]
     type: llm
     min_size: small
     description: Decide whether the task is clear enough to implement.
@@ -87,7 +100,125 @@ presets:
     outputs: { questions: [string] }
     outcomes: [clear, unclear]
 
+  repo-map:
+    category: discovery
+    when_to_use: Relevant files and project commands are not yet known.
+    requires: [Project repo read access]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Locate task-relevant code, instructions, and verification commands.
+    prompt: |
+      Read repository instructions and trace the task's entry points, modules, and tests without editing files.
+      Report relevant paths with their roles and exact commands documented by the repo; do not guess commands.
+      Include runtime/dependency needs. Return mapped when evidence is sufficient, blocked when it is not.
+    outputs: { files: [string], commands: [string], constraints: [string] }
+    outcomes: [mapped, blocked]
+
+  investigate-bug:
+    category: discovery
+    when_to_use: A failure needs diagnosis before a fix or regression test.
+    requires: [Project repo read access, Reproduction details and required test dependencies]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Reproduce a failure and localize its likely cause without edits.
+    prompt: |
+      Inspect the relevant implementation and run the smallest available reproduction without changing tracked files.
+      Separate observed evidence from hypotheses. Report exact commands, failure evidence, and likely source locations.
+      Return diagnosed only with a supported cause; otherwise inconclusive with the missing evidence.
+    outputs: { cause: string, evidence: [string], files: [string], missing_evidence: [string] }
+    outcomes: [diagnosed, inconclusive]
+
+  dependency-audit:
+    category: discovery
+    when_to_use: A dependency or runtime change needs a repository inventory.
+    requires: [Project repo read access, Manifests or lockfiles]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Inventory dependency versions, usage sites, and compatibility constraints.
+    prompt: |
+      Read manifests, lockfiles, and imports relevant to the task without editing or installing packages.
+      Report current versions, usage sites, and evidence-backed compatibility constraints.
+      This is a repository inventory, not a live vulnerability database scan; label unknown advisories or versions.
+      Return inventoried when the needed facts are available, incomplete otherwise.
+    outputs: { dependencies: [string], usage_sites: [string], constraints: [string], unknowns: [string] }
+    outcomes: [inventoried, incomplete]
+
+  # Planning: structured decisions from supplied context, without tools.
+  acceptance-criteria:
+    category: planning
+    when_to_use: The request needs observable success criteria and scope boundaries.
+    requires: [Task description and any clarification answers]
+    type: llm
+    min_size: small
+    max_visits: 2
+    on_exhausted: $fail
+    description: Extract testable acceptance criteria and explicit non-goals.
+    prompt: |
+      Turn the supplied task into concrete observable acceptance criteria and non-goals.
+      Do not add features or silently resolve conflicting requirements. List blocking questions.
+      Return ready if the criteria can guide implementation, unclear if a blocking question remains.
+    outputs: { criteria: [string], non_goals: [string], questions: [string] }
+    outcomes: [ready, unclear]
+
+  implementation-plan:
+    category: planning
+    when_to_use: Multi-file work needs a small ordered implementation plan.
+    requires: [Repository findings supplied through previous outputs or inputs]
+    type: llm
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Design bounded edits with verification and dependencies between steps.
+    prompt: |
+      Use the task and supplied repository findings to propose the smallest ordered set of edits.
+      For each step identify target files, expected behavior, prerequisites, and a verification command or observation.
+      Do not invent APIs or paths. Return planned when implementable, blocked when repository facts or decisions are missing.
+    outputs: { steps: [string], verification: [string], risks: [string], blockers: [string] }
+    outcomes: [planned, blocked]
+
+  test-plan:
+    category: planning
+    when_to_use: Edge cases and regression coverage need to be chosen before writing tests.
+    requires: [Acceptance criteria and repository test conventions supplied in context]
+    type: llm
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Select focused tests that distinguish correct behavior from regressions.
+    prompt: |
+      Propose a minimal set of regression, boundary, and failure-path tests using supplied project conventions.
+      Give each case its setup, stimulus, and observable assertion, plus known commands to run it.
+      Avoid tests that merely mirror implementation. Return planned, or blocked if necessary conventions are missing.
+    outputs: { cases: [string], commands: [string], blockers: [string] }
+    outcomes: [planned, blocked]
+
+  compare-approaches:
+    category: planning
+    when_to_use: There are materially different solutions with tradeoffs to resolve.
+    requires: [Constraints and repository evidence supplied in context]
+    type: llm
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Compare a few feasible approaches and recommend the simplest fit.
+    prompt: |
+      Compare at most three approaches against the task's constraints using only supplied evidence.
+      State compatibility, implementation cost, verification, and reversibility tradeoffs; recommend one with reasons.
+      Return recommended when evidence supports a choice, needs_info if a missing fact could change it.
+    outputs: { alternatives: [string], recommendation: string, rationale: string, questions: [string] }
+    outcomes: [recommended, needs_info]
+
+  # Implementation: only committed changes survive into another pod.
   implement:
+    category: implementation
+    when_to_use: The requested code change is clear and scoped.
+    requires: [Project repo write grant, Runtime and dependencies for the project, Set max_visits on implementation loops]
     type: agent
     min_size: medium
     description: Make the code change the task asks for.
@@ -98,10 +229,14 @@ presets:
       - Look around first: read the relevant files before editing.
       - Keep the change as small as possible.
       - Run the project's tests with bash if there are any, and fix failures you caused.
+      Return done when implemented, stuck with concrete blockers otherwise. Do not claim unrun checks passed.
     outputs: { summary_of_change: string }
     outcomes: [done, stuck]
 
   write-failing-test:
+    category: implementation
+    when_to_use: A bug needs executable regression coverage before the fix.
+    requires: [Project repo write grant, Reproduction details and runnable test dependencies]
     type: agent
     min_size: medium
     description: Add a test that reproduces a bug, without fixing it.
@@ -110,10 +245,83 @@ presets:
       - Put the test next to the existing tests for that module; add to the existing test file when there is one.
       - Add only the new test case. Never copy or duplicate existing tests.
       Run the test and confirm it fails for the right reason.
+      Return reproduced only for the expected assertion failure, not a missing tool or broken setup; otherwise cannot_reproduce.
     outputs: { test_name: string, evidence: string }
     outcomes: [reproduced, cannot_reproduce]
 
+  fix-tests:
+    category: implementation
+    when_to_use: A deterministic check failed after an implementation step.
+    requires: [Project repo write grant, Failing command and log supplied in context, Matching runtime and dependencies]
+    type: agent
+    min_size: medium
+    skills: [small-diffs]
+    max_visits: 3
+    on_exhausted: $fail
+    description: Repair the cause of a failing check without weakening coverage.
+    prompt: |
+      Reproduce the supplied check failure, find its cause, and make a minimal correction.
+      Preserve the intended assertions; do not skip tests or suppress errors just to make the check pass.
+      Rerun the failing command. Return fixed only if it now passes, stuck with evidence otherwise.
+    outputs: { summary_of_change: string, command: string, evidence: string }
+    outcomes: [fixed, stuck]
+
+  address-review:
+    category: implementation
+    when_to_use: Review findings identify concrete changes to make.
+    requires: [Project repo write grant, Review comments supplied through previous outputs or inputs]
+    type: agent
+    min_size: medium
+    skills: [small-diffs]
+    max_visits: 3
+    on_exhausted: $fail
+    description: Address review findings with focused edits and verification.
+    prompt: |
+      Read the supplied review findings and relevant code. Correct supported findings with minimal edits and focused tests.
+      For an unsupported finding, explain the evidence rather than changing correct behavior.
+      Return addressed when every finding is fixed or rebutted with evidence, stuck when a blocker remains.
+    outputs: { summary_of_change: string, resolutions: [string], verification: [string] }
+    outcomes: [addressed, stuck]
+
+  refactor:
+    category: implementation
+    when_to_use: The task explicitly requests internal simplification without behavior changes.
+    requires: [Project repo write grant, Existing behavior and regression command identified]
+    type: agent
+    min_size: medium
+    skills: [small-diffs]
+    max_visits: 3
+    on_exhausted: $fail
+    description: Perform a scoped behavior-preserving refactor.
+    prompt: |
+      Refactor only the requested area, preserving public interfaces and observable behavior.
+      Establish the relevant test baseline, make small edits, then rerun the same tests.
+      Avoid unrelated cleanup. Return done with before/after evidence, stuck if preservation cannot be established.
+    outputs: { summary_of_change: string, preserved_contracts: [string], verification: [string] }
+    outcomes: [done, stuck]
+
+  update-docs:
+    category: implementation
+    when_to_use: User-facing behavior or setup instructions need documentation changes.
+    requires: [Project repo write grant, Implemented behavior or agreed specification]
+    type: agent
+    min_size: small
+    skills: [small-diffs]
+    max_visits: 3
+    on_exhausted: $fail
+    description: Update repository documentation and examples against actual behavior.
+    prompt: |
+      Read relevant docs and implementation, then update only documentation and examples needed for the task.
+      Verify paths, commands, and option names against the repo. Identify examples that could not be executed.
+      Return done when docs agree with behavior, stuck if required behavior is undecided or unavailable.
+    outputs: { summary_of_change: string, files: [string], verification: [string] }
+    outcomes: [done, stuck]
+
+  # Review: model judgments from context, not a substitute for executable checks.
   code-review:
+    category: review
+    when_to_use: An implementation diff is ready for correctness and scope review.
+    requires: [Branch diff and task context, Supply extra file context if the diff is insufficient]
     type: llm
     min_size: medium
     description: Review the branch diff against the task.
@@ -126,12 +334,249 @@ presets:
     outputs: { comments: [string] }
     outcomes: [approve, changes]
 
+  security-review:
+    category: review
+    when_to_use: Changes touch trust boundaries, credentials, parsing, or permissions.
+    requires: [Branch diff and relevant trust-boundary context supplied as inputs]
+    type: llm
+    min_size: medium
+    max_visits: 3
+    on_exhausted: $fail
+    description: Review supplied code for concrete security regressions.
+    prompt: |
+      Review the supplied diff and context for injection, authorization errors, secret exposure, and unsafe data handling.
+      Report actionable findings with file, scenario, impact, and suggested correction; distinguish assumptions.
+      Return approve with no supported findings, changes for concrete defects, needs_context if missing code prevents judgment.
+      Do not claim to have run a scanner or consulted an advisory database.
+    outputs: { findings: [string], assumptions: [string], missing_context: [string] }
+    outcomes: [approve, changes, needs_context]
+
+  test-review:
+    category: review
+    when_to_use: New tests need scrutiny for regression value and false positives.
+    requires: [Test diff and acceptance criteria supplied in context]
+    type: llm
+    min_size: medium
+    max_visits: 3
+    on_exhausted: $fail
+    description: Review test assertions, failure sensitivity, and important coverage gaps.
+    prompt: |
+      Review supplied tests against the requested behavior. Look for assertions that pass on broken code,
+      over-mocking, copied tests, nondeterminism, and missing meaningful boundary or failure cases.
+      Return approve when sufficient, changes with file-specific fixes, needs_context if the relevant code is absent.
+      Do not claim test execution from reading code.
+    outputs: { comments: [string], missing_cases: [string] }
+    outcomes: [approve, changes, needs_context]
+
+  # Verification: real commands, no implicit package installation or network.
+  go-test:
+    category: verification
+    when_to_use: A Go module needs its test suite run without cached test results.
+    requires: [agent-go runtime with compatible Go version, go.mod at repo root, Dependencies vendored or reachable with permitted network access]
+    type: check
+    runtime: agent-go
+    max_visits: 4
+    on_exhausted: $fail
+    description: Run all Go package tests in the root module.
+    run: go test -count=1 ./...
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  python-unittest:
+    category: verification
+    when_to_use: The project uses standard-library unittest discovery from repo root.
+    requires: [Python 3 in agent-base, Discoverable test*.py modules, Test dependencies available in this pod; override run for custom discovery paths]
+    type: check
+    runtime: agent-base
+    max_visits: 4
+    on_exhausted: $fail
+    description: Discover and run Python unittest tests; fail if no tests are found.
+    run: |
+      python3 - <<'PY'
+      import sys, unittest
+      suite = unittest.defaultTestLoader.discover('.')
+      if suite.countTestCases() == 0:
+          sys.exit('No unittest tests discovered; configure run for this repository')
+      result = unittest.TextTestRunner(verbosity=2).run(suite)
+      sys.exit(0 if result.wasSuccessful() else 1)
+      PY
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  npm-test:
+    category: verification
+    when_to_use: Root package.json declares a non-interactive test script.
+    requires: [Node and npm in agent-base, Explicit scripts.test in root package.json, Dependencies installed in this pod; configure run with setup if needed]
+    type: check
+    runtime: agent-base
+    max_visits: 4
+    on_exhausted: $fail
+    description: Require an explicit npm test script and run it.
+    run: |
+      node -e 'const p=require("./package.json"); if (!p.scripts || typeof p.scripts.test !== "string" || !p.scripts.test.trim()) { console.error("Configure scripts.test or override run"); process.exit(1); }' && npm run test
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  npm-build:
+    category: verification
+    when_to_use: Root package.json declares a build script for compilation or bundling.
+    requires: [Node and npm in agent-base, Explicit scripts.build in root package.json, Dependencies installed in this pod; configure run with setup if needed]
+    type: check
+    runtime: agent-base
+    max_visits: 4
+    on_exhausted: $fail
+    description: Execute the project's npm build script; missing scripts fail.
+    run: npm run build
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  json-check:
+    category: verification
+    when_to_use: Tracked strict JSON files need a lightweight syntax check.
+    requires: [Python 3 and git in agent-base, At least one tracked .json file; JSONC is not supported]
+    type: check
+    runtime: agent-base
+    max_visits: 4
+    on_exhausted: $fail
+    description: Parse every tracked JSON file and reject invalid JSON or an empty selection.
+    run: |
+      python3 - <<'PY'
+      import json, pathlib, subprocess, sys
+      paths = subprocess.check_output(['git', 'ls-files', '-z', '--', '*.json']).decode().split('\0')
+      paths = [p for p in paths if p]
+      if not paths:
+          sys.exit('No tracked JSON files; select a different check')
+      def invalid_constant(value):
+          raise ValueError('Invalid JSON constant: ' + value)
+      for name in paths:
+          print(name, flush=True)
+          json.loads(pathlib.Path(name).read_text(encoding='utf-8'), parse_constant=invalid_constant)
+      PY
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  custom-check:
+    category: verification
+    when_to_use: The repo needs a specific lint, typecheck, build, smoke, or test command.
+    requires: [Configure run explicitly; empty run fails validation, Select a runtime containing the command, Dependencies and any services available in this pod]
+    type: check
+    max_visits: 4
+    on_exhausted: $fail
+    description: Run an explicitly configured repository verification command.
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  # Control: existing gate/switch semantics only, no additional engine policy.
+  human-decision:
+    category: control
+    when_to_use: Task or project guidance calls for a human decision at this point.
+    requires: [Configure prompt with a concrete decision; human available to choose an outcome]
+    type: gate
+    max_visits: 2
+    on_exhausted: $fail
+    description: Optionally pause for a human to approve, request changes, or stop.
+    prompt: Review the task and preceding results. Approve to continue, request changes with feedback, or stop this run.
+    outcomes: [approve, changes, stop]
+
+  has-changes:
+    category: control
+    when_to_use: Delivery should distinguish changed branches from no-change results.
+    requires: [Run diff summary populated by completed repository work]
+    type: switch
+    max_visits: 6
+    on_exhausted: $fail
+    description: Route on whether the cumulative branch diff contains changed files.
+    cases:
+      - { when: 'run.diff.files_changed > 0', outcome: changed }
+    default: unchanged
+    outcomes: [changed, unchanged]
+
+  large-change:
+    category: control
+    when_to_use: Larger diffs should get a different review or verification path.
+    requires: [Run diff summary populated; override cases to tune thresholds]
+    type: switch
+    max_visits: 6
+    on_exhausted: $fail
+    description: Flag diffs exceeding 10 files or 300 changed lines for extra scrutiny.
+    cases:
+      - { when: 'run.diff.files_changed > 10 || run.diff.lines_changed > 300', outcome: large }
+    default: small
+    outcomes: [large, small]
+
+  # Delivery: prepare content separately from actual publication.
+  summarize-change:
+    category: delivery
+    when_to_use: Finished work needs an evidence-based handoff or PR body.
+    requires: [Implementation and check results supplied through context or explicit inputs]
+    type: llm
+    min_size: small
+    max_visits: 2
+    on_exhausted: $fail
+    description: Summarize changes, verification evidence, and remaining limitations.
+    prompt: |
+      Draft a concise handoff from the task, supplied diff, and execution results.
+      Separate checks actually run from suggestions and unverified behavior. Include blockers or caveats without inventing success.
+      Return ready when sufficient evidence is supplied, incomplete when results needed for an accurate handoff are missing.
+    outputs: { title: string, body: string, verification: [string], caveats: [string] }
+    outcomes: [ready, incomplete]
+
+  release-notes:
+    category: delivery
+    when_to_use: A completed change needs a user-facing release note draft.
+    requires: [Implemented behavior and compatibility evidence supplied in context]
+    type: llm
+    min_size: small
+    max_visits: 2
+    on_exhausted: $fail
+    description: Draft user-visible release notes and any evidenced migration steps.
+    prompt: |
+      Draft concise release notes for the supplied change: user impact, compatibility, and migration steps if any.
+      Do not invent a version, release date, deployment, or testing claims. Internal-only changes may have no user-visible note.
+      Return drafted for user-facing changes, not_needed otherwise with an empty body and a reason in the summary.
+    outputs: { body: string, migration_steps: [string] }
+    outcomes: [drafted, not_needed]
+
+  open-pull-request:
+    category: delivery
+    when_to_use: The run branch has changes ready to publish as a PR.
+    requires: [GitHub-backed repo and control-plane GitHub credentials, Pushed run branch with commits, Override complete with map to supply generated body or draft flag]
+    type: action
+    max_visits: 1
+    on_exhausted: $fail
+    description: Open a pull request using the existing control-plane GitHub action.
+    action: open_pull_request
+    with: { title: '${{ task.title }}', body: '${{ task.body }}', draft: false }
+    outputs: { url: string, number: integer }
+    outcomes: [done]
+
+  comment-task:
+    category: delivery
+    when_to_use: A linked source task should receive a run update.
+    requires: [Linked task and configured comment hook; otherwise runtime may no-op, Override with.body to publish a specific summary]
+    type: action
+    max_visits: 1
+    on_exhausted: $fail
+    description: Post a run reference to the linked task through the configured hook.
+    action: comment_task
+    with:
+      body: 'Run ${{ run.id }} on branch ${{ run.branch }}. Pull request: ${{ run.pr_url ?? "not opened" }}'
+    outcomes: [done]
+
 planner:
-  model: gemma-local
+  model: gpt-6-sol
+  stream: true
   max_attempts: 3
   guidance: |
     Break work into the smallest steps that can each be checked.
-    Prefer presets. Use local models for everything.
-    A typical code change: implement (agent) → run the tests (check) → code-review (llm) → open_pull_request (action),
-    with test failures and review changes looping back to implement (max_visits 3 on implement).
-    Skip review for trivial docs-only changes.
+    Prefer reusable presets and the smallest sufficient configured model for each step.
+    Use the configured planner for decomposition and routing; Sol is the default, Luna the alternate.
+    Select only catalog models allowed by the project. Escalate model capability when evidence warrants it.
+    A typical code change: implement → an applicable verification preset → code-review → open-pull-request,
+    with failures routed to fix-tests and review findings to address-review. Set max_visits 3 on implement
+    when looping; the original four presets retain caller-configured visit limits. Preserve bounds on all loops.
+    Choose only steps useful for the task; skip review for trivial docs-only changes. Human gates are optional
+    according to task/project guidance, not required by category or diff size.
+    Read requires hints before selecting a preset. Configure custom-check.run with a real project command;
+    match runtimes and install any needed dependencies within the same check pod using permitted access.
+    Never treat missing tests, missing tools, or an unconfigured check as a passing verification.

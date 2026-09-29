@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mauza/ai-flow/internal/flow"
+	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/protocol"
 )
 
@@ -154,10 +155,12 @@ type upstreamErr struct {
 	message string
 }
 
-// Complete sends one chat completion (non-streaming) through the shim logic.
+// Complete sends one chat completion through the shim logic. It defaults to
+// non-streaming; stream=true collects SSE into the same completion shape.
 // Used by llm nodes, which don't go through a harness.
 func (s *Shim) Complete(ctx context.Context, body map[string]any) (map[string]any, error) {
-	body["stream"] = false
+	stream, _ := body["stream"].(bool)
+	body["stream"] = stream
 	resp, uerr, err := s.do(ctx, body)
 	if err != nil {
 		return nil, err
@@ -166,15 +169,31 @@ func (s *Shim) Complete(ctx context.Context, body map[string]any) (map[string]an
 		return nil, fmt.Errorf("llm %s: %s", uerr.kind, uerr.message)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("llm: bad response: %w", err)
+	if stream {
+		content, usage, err := llm.ReadStream(ctx, resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("llm: %w", err)
+		}
+		out = map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": content}}},
+			// Match json.Unmarshal's number types for recordUsage and callers.
+			"usage": map[string]any{
+				"prompt_tokens": float64(usage.PromptTokens), "completion_tokens": float64(usage.CompletionTokens),
+				"total_tokens": float64(usage.PromptTokens + usage.CompletionTokens),
+			},
+		}
+	} else {
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, fmt.Errorf("llm: bad response: %w", err)
+		}
 	}
 	s.recordUsage(out)
+	s.checkBudget()
 	return out, nil
 }
 

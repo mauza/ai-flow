@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "synthetic-workflow-demo",
+  "provenance": "synthetic",
+  "cases": [
+    {
+      "id": "repair-verifies",
+      "description": "Hand-authored fixture; not a model run or measured benchmark.",
+      "capture": "captures/repair-baseline.json",
+      "flow_name": "fixture-code-review",
+      "flow_version": 1,
+      "task_id": "synthetic-task-repair",
+      "expect": {
+        "status": "succeeded",
+        "max_duration_ms": 30000,
+        "max_cost_usd": 0.05,
+        "max_tokens": 2000,
+        "max_failed_visits": 0,
+        "failure_outcomes": { "verify": ["fail"] },
+        "nodes": [{ "node": "verify", "outcome": "pass", "outputs": { "exit_code": 0 } }]
+      }
+    },
+    {
+      "id": "proposal-rejected",
+      "description": "Expected rejection passes the evaluation while the run has status failed.",
+      "capture": "captures/proposal-rejected.json",
+      "flow_name": "fixture-proposal",
+      "flow_version": 1,
+      "expect": {
+        "status": "failed",
+        "max_human_corrections": 1,
+        "correction_outcomes": { "approve": ["revise"] },
+        "nodes": [{ "node": "approve", "outcome": "reject" }]
+      }
+    }
+  ]
+}

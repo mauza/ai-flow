@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mauza/ai-flow/internal/config"
 )
 
 func pkt(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
@@ -50,5 +55,102 @@ func TestCheckPushGzip(t *testing.T) {
 	zw.Close()
 	if err := checkPush(buf.Bytes(), "gzip", "b"); err == nil || !strings.Contains(err.Error(), "only refs/heads/b") {
 		t.Errorf("gzip body not inspected: %v", err)
+	}
+}
+
+func TestPushRequiresCompleteCommandSection(t *testing.T) {
+	valid := pkt(oldSHA + " " + newSHA + " refs/heads/b\x00report-status\n")
+	for _, body := range []string{valid, valid + "0", valid + "000", valid + "0010short", valid + "0001", valid + "zzzz"} {
+		for _, encoding := range []string{"", "gzip"} {
+			data := []byte(body)
+			if encoding == "gzip" {
+				data = gzipPush(t, data)
+			}
+			if err := checkPush(data, encoding, "b"); err == nil {
+				t.Fatalf("accepted unterminated section %q (%s)", body, encoding)
+			}
+		}
+	}
+	for _, encoding := range []string{"br", "deflate", "gzip, identity", "identity, gzip"} {
+		if err := checkPush([]byte(valid+"0000"), encoding, "b"); err == nil {
+			t.Errorf("accepted unsupported encoding %q", encoding)
+		}
+	}
+	for _, encoding := range []string{"", "identity", "gzip"} {
+		// End an allowed packet exactly at the old decompression limit, then
+		// hide an unauthorized ref beyond it. A partial-packet fixture alone
+		// would not reproduce the old successful-prefix authorization bug.
+		command := pkt(oldSHA + " " + newSHA + " refs/heads/b\n")
+		padding := (maxPushCommandBytes - len(valid)) % len(command)
+		first := pkt(oldSHA + " " + newSHA + " refs/heads/b\x00report-status" + strings.Repeat(" ", padding) + "\n")
+		body := first + strings.Repeat(command, (maxPushCommandBytes-len(first))/len(command))
+		if len(body) != maxPushCommandBytes {
+			t.Fatal("fixture does not align with decompression boundary")
+		}
+		body += pkt(oldSHA+" "+newSHA+" refs/heads/main\n") + "0000"
+		data := []byte(body)
+		if encoding == "gzip" {
+			data = gzipPush(t, data)
+		}
+		if _, _, err := parsePush(data, encoding); err == nil {
+			t.Errorf("accepted over-limit command section (%s)", encoding)
+		}
+	}
+	// Pack bytes aren't part of the command budget.
+	data := gzipPush(t, []byte(valid+"0000PACK"+strings.Repeat("x", 2*maxPushCommandBytes)))
+	if err := checkPush(data, "gzip", "b"); err != nil {
+		t.Fatalf("valid push with large pack: %v", err)
+	}
+	data = gzipPush(t, []byte(valid))
+	if err := checkPush(data[:len(data)-6], "gzip", "b"); err == nil {
+		t.Fatal("accepted incomplete gzip command stream")
+	}
+}
+
+func gzipPush(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w := gzip.NewWriter(&out)
+	if _, err := w.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+type gitTestTransport func(*http.Request) (*http.Response, error)
+
+func (f gitTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGitOnlyForwardsFullyAuthorizedPush(t *testing.T) {
+	b, _, token := runtimeBroker(t)
+	b.cfg.Env.Git.Hosts = map[string]config.GitHost{"example.invalid": {Scheme: "https"}}
+	forwarded := 0
+	b.http = &http.Client{Transport: gitTestTransport(func(*http.Request) (*http.Response, error) {
+		forwarded++
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("upstream"))}, nil
+	})}
+	prefix := pkt(oldSHA + " " + newSHA + " refs/heads/b\x00report-status\n")
+	for _, tc := range []struct {
+		body, encoding string
+		allow          bool
+	}{
+		{prefix + "0000PACK", "", true},
+		{prefix, "", false},
+		{prefix + "000", "", false},
+		{prefix + "0000PACK", "br", false},
+		{prefix + pkt(oldSHA+" "+newSHA+" refs/heads/main\n") + "0000PACK", "", false},
+	} {
+		before := forwarded
+		r := httptest.NewRequest("POST", "/git/example.invalid/o/r.git/git-receive-pack", strings.NewReader(tc.body))
+		r.SetBasicAuth("node", token)
+		r.Header.Set("Content-Encoding", tc.encoding)
+		w := httptest.NewRecorder()
+		b.Handler().ServeHTTP(w, r)
+		if (forwarded == before+1) != tc.allow {
+			t.Fatalf("forwarded=%d status=%d body=%q", forwarded-before, w.Code, tc.body)
+		}
 	}
 }

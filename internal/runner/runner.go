@@ -38,13 +38,9 @@ type Runner struct {
 	work   string // scratch root: repo/, flow/
 	repo   string // repo checkout, "" when the node has no repo
 
-	progressMu   sync.Mutex
-	lastProgress time.Time
-
-	txMu       sync.Mutex // guards txVersion
-	txVersion  int64
-	txUploadMu sync.Mutex // serializes uploads; guards txUploaded
-	txUploaded int64
+	progressMu         sync.Mutex
+	lastProgress       time.Time
+	finalTranscriptKey string // only the synchronous final upload sets this
 }
 
 // Main runs one node and exits. It returns an error only when the result
@@ -97,9 +93,15 @@ func Main(ctx context.Context) error {
 }
 
 func (r *Runner) run(ctx context.Context) (res *protocol.Result) {
+	r.finalTranscriptKey = ""
 	defer func() {
 		if p := recover(); p != nil {
 			res = &protocol.Result{Error: fmt.Sprintf("node-runner panic: %v", p)}
+		}
+		if res != nil {
+			// Agent/LLM output cannot choose an artifact. Bind only the final
+			// upload acknowledged for this execution, including error results.
+			res.TranscriptKey = r.finalTranscriptKey
 		}
 	}()
 	b := r.b
@@ -189,7 +191,9 @@ type httpError struct {
 	body   string
 }
 
-func (e *httpError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.status, strings.TrimSpace(e.body)) }
+func (e *httpError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.status, strings.TrimSpace(e.body))
+}
 
 func (r *Runner) do(req *http.Request, out any) error {
 	resp, err := r.http.Do(req)
@@ -221,16 +225,6 @@ func (r *Runner) post(ctx context.Context, path string, in, out any) error {
 	return r.do(req, out)
 }
 
-func (r *Runner) postRaw(ctx context.Context, path, contentType string, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", r.podURL+path, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", "Bearer "+r.b.Grant)
-	return r.do(req, nil)
-}
-
 // progress reports a one-line status to the UI, at most every 1.5s.
 func (r *Runner) progress(text string) {
 	r.progressMu.Lock()
@@ -247,29 +241,16 @@ func (r *Runner) progress(text string) {
 	}
 }
 
-// uploadTranscript stores the transcript so far. Uploads are versioned so a
-// slow periodic snapshot never overwrites a newer (e.g. the final) one.
+// uploadTranscript performs one bounded, synchronous final upload.
 func (r *Runner) uploadTranscript(data []byte) {
 	if len(data) == 0 {
 		return
 	}
-	r.txMu.Lock()
-	r.txVersion++
-	version := r.txVersion
-	r.txMu.Unlock()
-
-	r.txUploadMu.Lock()
-	defer r.txUploadMu.Unlock()
-	if version < r.txUploaded {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if err := r.postRaw(ctx, "/v1/transcript", "application/x-ndjson", data); err != nil {
+	if err := r.sendTranscript(context.Background(), data, true); err != nil {
 		slog.Warn("upload transcript", "err", err)
 		return
 	}
-	r.txUploaded = version
+	r.finalTranscriptKey = protocol.FinalTranscriptKey(r.b.RunID, r.b.Seq, r.b.Node, data)
 }
 
 func contains(xs []string, x string) bool {

@@ -41,11 +41,11 @@ func TestGoodFlowValidates(t *testing.T) {
 	if fix.Type != flow.TypeAgent || fix.Harness != "pi" || fix.Runtime != "agent-base" {
 		t.Errorf("preset/defaults not applied: %+v", fix.Node)
 	}
-	if fix.Model != "qwen-local" || len(fix.LLM.Fallbacks) != 1 || fix.LLM.Fallbacks[0] != "gemma-local" {
-		t.Errorf("model defaults not applied: %+v", fix.LLM)
+	if fix.Model != cfg.Catalog.Planner.Model || len(fix.LLM.Fallbacks) != 0 {
+		t.Errorf("current catalog model should have no fallbacks: %+v", fix.LLM)
 	}
-	if got := fix.LLM.OnLimit["rate_limited"]; got == nil || got.Then != "fallback" {
-		t.Errorf("model on_limit not inherited: %+v", got)
+	if got := fix.LLM.OnLimit["rate_limited"]; got == nil || got.Action != flow.ActRetry || got.Max != 5 || got.Then != flow.ActFail {
+		t.Errorf("built-in rate limit policy not inherited: %+v", got)
 	}
 	if fix.LLM.Limits == nil || fix.LLM.Limits.Tokens != 400000 {
 		t.Errorf("node limits should win over catalog defaults: %+v", fix.LLM.Limits)
@@ -64,6 +64,35 @@ func TestGoodFlowValidates(t *testing.T) {
 	}
 }
 
+func TestModelDefaultsInherited(t *testing.T) {
+	cfg := loadCfg(t)
+	f := loadFlow(t, "testdata/good.yaml")
+	model, alternate := cfg.Catalog.Planner.Model, f.Spec.Nodes["review"].Model
+	f.Spec.Nodes["fix"].LLM.Model = model
+	// Exercise optional fallback inheritance explicitly; the deployed catalog
+	// intentionally has no fallback policy.
+	cfg.Catalog.Models[model].LLM = &flow.LLMConfig{
+		Fallbacks: []string{alternate},
+		OnLimit: map[string]*flow.OnLimit{
+			flow.LimitRateLimited: {Action: flow.ActRetry, Max: 3, Then: flow.ActFallback},
+		},
+	}
+	r := Resolve(f, cfg)
+	if issues := Validate(r, cfg); len(issues) != 0 {
+		t.Fatalf("fallback fixture should validate: %v", issues)
+	}
+	fix := r.Nodes["fix"].LLM
+	if fix.Model != model || len(fix.Fallbacks) != 1 || fix.Fallbacks[0] != alternate {
+		t.Errorf("model defaults not applied: %+v", fix)
+	}
+	if got := fix.OnLimit[flow.LimitRateLimited]; got == nil || got.Action != flow.ActRetry || got.Max != 3 || got.Then != flow.ActFallback {
+		t.Errorf("model on_limit not inherited: %+v", got)
+	}
+	if got := fix.OnLimit[flow.LimitBudgetExceeded]; got == nil || got.Action != flow.ActOutcome {
+		t.Errorf("node on_limit lost during model inheritance: %+v", got)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cfg := loadCfg(t)
 	base, _ := os.ReadFile("testdata/good.yaml")
@@ -72,7 +101,7 @@ func TestValidationErrors(t *testing.T) {
 	}{
 		{"unknown target", "next: { pass: size_check, fail: fix }", "next: { pass: nowhere, fail: fix }", `unknown node "nowhere"`},
 		{"missing transition", "next: { pass: size_check, fail: fix }", "next: { pass: size_check }", `outcome "fail" has no transition`},
-		{"unknown model", "model: gemma-local\n      grants: [\"repo/ai-flow-sandbox:read\"]", "model: gpt-9\n      grants: [\"repo/ai-flow-sandbox:read\"]", `unknown model "gpt-9"`},
+		{"unknown model", "model: gpt-6-luna\n      grants: [\"repo/ai-flow-sandbox:read\"]", "model: gpt-9\n      grants: [\"repo/ai-flow-sandbox:read\"]", `unknown model "gpt-9"`},
 		{"unbounded loop", "      max_visits: 3\n      on_exhausted: escalate\n", "", "unbounded loop"},
 		{"bad cel", "run.diff.files_changed > 15", "run.diff.files_changed >", "CEL"},
 		{"grant not allowed", `grants: ["repo/ai-flow-sandbox:write"]

@@ -140,12 +140,23 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1) // SQLite: one writer; keeps busy errors away
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping checks that SQLite can execute a query, including after startup.
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	return s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+}
 
 func now() int64 { return time.Now().UnixMilli() }
 
@@ -369,18 +380,23 @@ type Run struct {
 	CreatedAt   int64           `json:"created_at"`
 	StartedAt   int64           `json:"started_at,omitempty"`
 	FinishedAt  int64           `json:"finished_at,omitempty"`
+	Snapshot    json.RawMessage `json:"-"`                     // versioned, non-secret execution settings
+	ResumeSeq   int             `json:"resume_seq,omitempty"`  // last visit before the latest resume
+	Resumes     int             `json:"resumes,omitempty"`     // how many times a human resumed the run
+	ResumeNote  string          `json:"resume_note,omitempty"` // the latest resume's note
 }
 
-const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at`
+const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at, snapshot, resume_seq, resumes, resume_note`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	var r Run
-	var diff string
-	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+	var diff, snapshot string
+	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &snapshot, &r.ResumeSeq, &r.Resumes, &r.ResumeNote)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	r.Diff = json.RawMessage(diff)
+	r.Snapshot = json.RawMessage(snapshot)
 	return &r, err
 }
 
@@ -389,8 +405,8 @@ func (s *Store) CreateRun(ctx context.Context, r *Run) error {
 	if len(r.Diff) == 0 {
 		r.Diff = json.RawMessage("{}")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt, string(r.Snapshot), r.ResumeSeq, r.Resumes, r.ResumeNote)
 	return err
 }
 
@@ -474,6 +490,7 @@ type Visit struct {
 	Error         string          `json:"error,omitempty"`
 	Prompt        string          `json:"prompt,omitempty"`
 	JobName       string          `json:"job_name,omitempty"`
+	LaunchState   string          `json:"-"`
 	Model         string          `json:"model,omitempty"`
 	TokensIn      int64           `json:"tokens_in"`
 	TokensOut     int64           `json:"tokens_out"`
@@ -490,13 +507,13 @@ type Visit struct {
 	FinishedAt    int64           `json:"finished_at,omitempty"`
 }
 
-const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at`
+const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at, launch_state`
 
 func scanVisit(row interface{ Scan(...any) error }) (*Visit, error) {
 	var v Visit
 	var outputs string
 	err := row.Scan(&v.RunID, &v.Seq, &v.Node, &v.Visit, &v.Type, &v.Status, &v.Outcome, &outputs, &v.Summary, &v.Error, &v.Prompt, &v.JobName, &v.Model,
-		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt)
+		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt, &v.LaunchState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -522,6 +539,11 @@ func (s *Store) AddVisit(ctx context.Context, runID, node, typ string) (*Visit, 
 	_, err = tx.ExecContext(ctx, `INSERT INTO visits (run_id, seq, node, visit, type, status, outputs, created_at) VALUES (?,?,?,?,?,?,?,?)`,
 		v.RunID, v.Seq, v.Node, v.Visit, v.Type, v.Status, "{}", v.CreatedAt)
 	if err != nil {
+		return nil, err
+	}
+	// The visit and the run's pointer must become visible together. A pending
+	// visit is durable work for the engine, including after a process crash.
+	if err := update(ctx, tx, "runs", "id = ?", []any{runID}, map[string]any{"current_node": node, "status": RunRunning}, false); err != nil {
 		return nil, err
 	}
 	return v, tx.Commit()
@@ -579,12 +601,24 @@ func (s *Store) AddUsage(ctx context.Context, runID string, seq int, model strin
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE visits SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cost_usd = cost_usd + ?, llm_calls = llm_calls + 1, model = ? WHERE run_id = ? AND seq = ?`,
-		in, out, cost, model, runID, seq); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE visits SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cost_usd = cost_usd + ?, llm_calls = llm_calls + 1, model = ? WHERE run_id = ? AND seq = ?`,
+		in, out, cost, model, runID, seq)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`, in+out, cost, runID); err != nil {
+	if n, err := result.RowsAffected(); err != nil {
 		return err
+	} else if n != 1 {
+		return ErrNotFound
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE runs SET tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`, in+out, cost, runID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrNotFound
 	}
 	return tx.Commit()
 }
@@ -692,6 +726,14 @@ func (s *Store) SetKV(ctx context.Context, key, value string) error {
 // ---- helpers ----
 
 func (s *Store) update(ctx context.Context, table, where string, whereArgs []any, fields map[string]any, touch bool) error {
+	return update(ctx, s.db, table, where, whereArgs, fields, touch)
+}
+
+type executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func update(ctx context.Context, db executor, table, where string, whereArgs []any, fields map[string]any, touch bool) error {
 	if len(fields) == 0 {
 		return nil
 	}
@@ -712,11 +754,15 @@ func (s *Store) update(ctx context.Context, table, where string, whereArgs []any
 		args = append(args, now())
 	}
 	args = append(args, whereArgs...)
-	res, err := s.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET %s WHERE %s", table, strings.Join(sets, ", "), where), args...)
+	res, err := db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET %s WHERE %s", table, strings.Join(sets, ", "), where), args...)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil

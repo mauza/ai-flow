@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/mauza/ai-flow/internal/github"
@@ -19,8 +20,20 @@ func (e *Engine) TemplateContext(ctx context.Context, r *store.Run, res *resolve
 }
 
 func (e *Engine) templateContext(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node) map[string]any {
+	c, err := e.checkedTemplateContext(ctx, r, res, n)
+	if err != nil {
+		slog.Error("template context", "run", r.ID, "err", err)
+	}
+	return c
+}
+
+func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node) (map[string]any, error) {
 	task := map[string]any{"title": res.Flow.Metadata.Name, "body": res.Flow.Spec.Description}
-	if t := e.task(ctx, r); t != nil {
+	t, err := e.optionalTask(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if t != nil {
 		task = map[string]any{"id": t.ID, "title": t.Title, "body": t.Body, "url": t.URL, "identifier": t.Identifier}
 	}
 	var diff map[string]any
@@ -33,9 +46,12 @@ func (e *Engine) templateContext(ctx context.Context, r *store.Run, res *resolve
 			diff[k] = 0.0
 		}
 	}
-	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL}
+	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL, "resumes": r.Resumes, "resume_note": r.ResumeNote}
 	nodes := map[string]any{}
-	visits, _ := e.store.Visits(ctx, r.ID)
+	visits, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return nil, err
+	}
 	var lastDone *store.Visit
 	for _, v := range visits {
 		if v.Status != store.VisitSucceeded {
@@ -59,7 +75,7 @@ func (e *Engine) templateContext(ctx context.Context, r *store.Run, res *resolve
 		}
 	}
 	c["inputs"] = inputs
-	return c
+	return c, nil
 }
 
 // RenderText renders ${{ }} references.
@@ -113,6 +129,9 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		}
 		sb.WriteString("\n")
 	}
+	if r.Resumes > 0 && seq > r.ResumeSeq {
+		writeResume(&sb, r, visits)
+	}
 	if prev != nil {
 		fmt.Fprintf(&sb, "## Previous step: %s → %s\n\n", prev.Node, prev.Outcome)
 		if prev.Summary != "" {
@@ -148,6 +167,29 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	return sb.String()
 }
 
+// writeResume tells steps after a resume why the run stopped and what the
+// human who resumed it said.
+func writeResume(sb *strings.Builder, r *store.Run, visits []*store.Visit) {
+	sb.WriteString("## Resumed\n\nThis run stopped")
+	for i := len(visits) - 1; i >= 0; i-- {
+		v := visits[i]
+		if v.Seq > r.ResumeSeq {
+			continue
+		}
+		if v.Status == store.VisitError || v.Status == store.VisitCanceled {
+			fmt.Fprintf(sb, " at %s#%d (%s)", v.Node, v.Visit, oneLine(v.Error, 300))
+		} else {
+			fmt.Fprintf(sb, " after %s#%d → %s", v.Node, v.Visit, v.Outcome)
+		}
+		break
+	}
+	sb.WriteString(" and a human resumed it.")
+	if r.ResumeNote != "" {
+		fmt.Fprintf(sb, " Their note:\n\n> %s", strings.ReplaceAll(strings.TrimSpace(r.ResumeNote), "\n", "\n> "))
+	}
+	sb.WriteString("\n\n")
+}
+
 func oneLine(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > n {
@@ -164,11 +206,14 @@ func tailStr(s string, n int) string {
 }
 
 func (e *Engine) evalSwitch(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node) (string, string, error) {
-	c := e.templateContext(ctx, r, res, n)
+	c, err := e.checkedTemplateContext(ctx, r, res, n)
+	if err != nil {
+		return "", "", err
+	}
 	for _, cs := range n.Cases {
 		ok, err := resolve.EvalCEL(cs.When, c)
 		if err != nil {
-			return "", "", fmt.Errorf("case %q: %v", cs.When, err)
+			return "", "", rejectf("case %q: %v", cs.When, err)
 		}
 		if ok {
 			return cs.Outcome, fmt.Sprintf("`%s` is true", cs.When), nil
@@ -182,8 +227,15 @@ type actionResult struct {
 	outputs          map[string]any
 }
 
-func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node) (*actionResult, error) {
-	c := e.templateContext(ctx, r, res, n)
+func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node, v *store.Visit) (*actionResult, error) {
+	c, err := e.checkedTemplateContext(ctx, r, res, n)
+	if err != nil {
+		return nil, err
+	}
+	t, err := e.optionalTask(ctx, r)
+	if err != nil {
+		return nil, err
+	}
 	with := map[string]string{}
 	for k, v := range n.With {
 		if s, ok := v.(string); ok {
@@ -192,11 +244,20 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 			with[k] = fmt.Sprint(v)
 		}
 	}
+	// Read dependencies before marking delivery started. A transient database
+	// read failure is retryable and must not make a comment look delivered.
+	fields := map[string]any{"status": store.VisitRunning}
+	if v.StartedAt == 0 {
+		fields["started_at"] = store.Now()
+	}
+	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, fields); err != nil {
+		return nil, err
+	}
+	e.publishVisit(r.ID, v.Seq)
 	switch n.Action {
 	case "open_pull_request":
-		return e.openPR(ctx, r, res, with)
+		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":
-		t := e.task(ctx, r)
 		if t == nil || e.hooks == nil {
 			return &actionResult{outcome: "done", summary: "No linked task to comment on"}, nil
 		}
@@ -204,35 +265,34 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 			Comment(ctx context.Context, t *store.Task, body string) error
 		}); ok {
 			if err := c.Comment(ctx, t, with["body"]); err != nil {
-				return nil, err
+				return nil, rejectf("comment delivery uncertain: %v; inspect the task before retrying manually", err)
 			}
 		}
 		return &actionResult{outcome: "done", summary: "Commented on " + t.Identifier}, nil
 	}
-	return nil, fmt.Errorf("unknown action %q", n.Action)
+	return nil, rejectf("unknown action %q", n.Action)
 }
 
-func (e *Engine) openPR(ctx context.Context, r *store.Run, res *resolve.Resolved, with map[string]string) (*actionResult, error) {
+func (e *Engine) openPR(ctx context.Context, r *store.Run, res *resolve.Resolved, t *store.Task, with map[string]string) (*actionResult, error) {
 	if e.gh == nil {
-		return nil, fmt.Errorf("github is not configured")
+		return nil, rejectf("github is not configured")
 	}
 	g := e.cfg.Catalog.Grants[res.Repo]
 	if g == nil {
-		return nil, fmt.Errorf("flow has no repo")
+		return nil, rejectf("flow has no repo")
 	}
 	repo, err := github.ParseRepoURL(g.URL)
 	if err != nil {
-		return nil, err
+		return nil, rejection{err}
 	}
 	exists, err := e.gh.BranchExists(ctx, repo, r.Branch)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
-		return nil, fmt.Errorf("branch %s has no commits to open a pull request from", r.Branch)
+		return nil, rejectf("branch %s has no commits to open a pull request from", r.Branch)
 	}
 	title := with["title"]
-	t := e.task(ctx, r)
 	if title == "" {
 		if t != nil {
 			title = t.Title
@@ -244,17 +304,23 @@ func (e *Engine) openPR(ctx context.Context, r *store.Run, res *resolve.Resolved
 	if body == "" && t != nil {
 		body = strings.TrimSpace(t.Body)
 	}
-	body += "\n\n" + e.prFooter(ctx, r, t)
+	footer, err := e.prFooter(ctx, r, t)
+	if err != nil {
+		return nil, err
+	}
+	body += "\n\n" + footer
 	pr, err := e.gh.OpenPR(ctx, repo, r.Branch, r.Base, title, strings.TrimSpace(body), with["draft"] == "true")
 	if err != nil {
 		return nil, err
 	}
-	e.store.UpdateRun(ctx, r.ID, map[string]any{"pr_url": pr.HTMLURL})
+	if err := e.store.UpdateRun(ctx, r.ID, map[string]any{"pr_url": pr.HTMLURL}); err != nil {
+		return nil, err
+	}
 	r.PRURL = pr.HTMLURL
 	return &actionResult{outcome: "done", summary: "Opened " + pr.HTMLURL, outputs: map[string]any{"url": pr.HTMLURL, "number": pr.Number}}, nil
 }
 
-func (e *Engine) prFooter(ctx context.Context, r *store.Run, t *store.Task) string {
+func (e *Engine) prFooter(ctx context.Context, r *store.Run, t *store.Task) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	fmt.Fprintf(&sb, "Made by [ai-flow](%s/runs/%s) · flow `%s` v%d", strings.TrimSuffix(e.cfg.Env.Server.PublicURL, "/"), r.ID, r.FlowName, r.FlowVersion)
@@ -262,14 +328,17 @@ func (e *Engine) prFooter(ctx context.Context, r *store.Run, t *store.Task) stri
 		fmt.Fprintf(&sb, " · task [%s](%s)", firstNonEmpty(t.Identifier, t.Title), t.URL)
 	}
 	sb.WriteString("\n\n| Step | Outcome | Summary |\n|---|---|---|\n")
-	visits, _ := e.store.Visits(ctx, r.ID)
+	visits, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
 	for _, v := range visits {
 		if v.Status != store.VisitSucceeded {
 			continue
 		}
 		fmt.Fprintf(&sb, "| %s#%d | %s | %s |\n", v.Node, v.Visit, v.Outcome, strings.ReplaceAll(oneLine(v.Summary, 160), "|", "\\|"))
 	}
-	return sb.String()
+	return sb.String(), nil
 }
 
 func firstNonEmpty(xs ...string) string {

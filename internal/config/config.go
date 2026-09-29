@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ type Environment struct {
 	GitHub      GitHub      `json:"github"`
 	Linear      Linear      `json:"linear"`
 	MCP         MCP         `json:"mcp"`
+	Notify      Notify      `json:"notify"`
 }
 
 type Server struct {
@@ -135,6 +137,34 @@ type MCPServer struct {
 	Description string            `json:"description,omitempty"`
 }
 
+// Notify pushes a message when a run needs a human. Off unless a backend is set.
+type Notify struct {
+	Ntfy *Ntfy `json:"ntfy,omitempty"`
+	// Events to send: gate (a gate opened), stuck (a gate still waits after
+	// stuckAfter), failed, succeeded. Default: gate, stuck, failed.
+	Events     []string      `json:"events,omitempty"`
+	StuckAfter flow.Duration `json:"stuckAfter,omitzero"` // default 4h
+}
+
+type Ntfy struct {
+	URL      string `json:"url"`   // server, e.g. https://ntfy.sh
+	Topic    string `json:"topic"` // a topic the token may publish to
+	TokenEnv string `json:"tokenEnv,omitempty"`
+}
+
+// Notification events.
+const (
+	NotifyGate      = "gate"
+	NotifyStuck     = "stuck"
+	NotifyFailed    = "failed"
+	NotifySucceeded = "succeeded"
+)
+
+// Sends reports whether event is configured to notify.
+func (n Notify) Sends(event string) bool {
+	return n.Ntfy != nil && slices.Contains(n.Events, event)
+}
+
 // ---- Catalog ----
 
 type Catalog struct {
@@ -210,13 +240,18 @@ type Skill struct {
 
 type Preset struct {
 	flow.Node
-	MinSize    string `json:"min_size,omitempty"`
-	PromptFile string `json:"prompt_file,omitempty"`
+	// Discovery metadata only; these hints do not grant capabilities or alter execution.
+	Category   string   `json:"category,omitempty"`
+	WhenToUse  string   `json:"when_to_use,omitempty"`
+	Requires   []string `json:"requires,omitempty"`
+	MinSize    string   `json:"min_size,omitempty"`
+	PromptFile string   `json:"prompt_file,omitempty"`
 }
 
 type Planner struct {
 	Model    string `json:"model"`
 	Guidance string `json:"guidance,omitempty"`
+	Stream   bool   `json:"stream,omitempty"`
 	// Max planner attempts when the draft fails validation.
 	MaxAttempts int `json:"max_attempts,omitempty"`
 }
@@ -401,6 +436,12 @@ func (c *Config) applyDefaults() {
 	if e.Runs.MaxConcurrent == 0 {
 		e.Runs.MaxConcurrent = 3
 	}
+	if e.Notify.Ntfy != nil && e.Notify.Events == nil {
+		e.Notify.Events = []string{NotifyGate, NotifyStuck, NotifyFailed}
+	}
+	if e.Notify.StuckAfter.Duration == 0 {
+		e.Notify.StuckAfter.Duration = 4 * time.Hour
+	}
 	if e.Runs.DefaultTimeout.Duration == 0 {
 		e.Runs.DefaultTimeout.Duration = 30 * time.Minute
 	}
@@ -530,6 +571,14 @@ func (c *Config) check() error {
 		}
 		if p.Spec.Start != "manual" && p.Spec.Start != "auto" {
 			errs = append(errs, fmt.Sprintf("project %s: start must be manual or auto", name))
+		}
+	}
+	if n := c.Env.Notify.Ntfy; n != nil && (n.URL == "" || n.Topic == "") {
+		errs = append(errs, "notify.ntfy: url and topic are required")
+	}
+	for _, ev := range c.Env.Notify.Events {
+		if !slices.Contains([]string{NotifyGate, NotifyStuck, NotifyFailed, NotifySucceeded}, ev) {
+			errs = append(errs, fmt.Sprintf("notify.events: unknown event %q (gate, stuck, failed, succeeded)", ev))
 		}
 	}
 	if len(errs) > 0 {

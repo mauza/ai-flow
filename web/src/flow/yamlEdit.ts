@@ -30,7 +30,8 @@ const nodePath = (id: string) => ["spec", "nodes", id];
 export function setNodeField(text: string, id: string, path: (string | number)[], value: unknown): string {
   const doc = load(text);
   const full = [...nodePath(id), ...path];
-  if (isEmpty(value)) {
+  // An explicit empty list overrides a preset's list; deleting it inherits again.
+  if (isEmpty(value) && !Array.isArray(value)) {
     if (doc.hasIn(full)) doc.deleteIn(full);
   } else {
     doc.setIn(full, scalar(value));
@@ -114,6 +115,17 @@ export function addNode(text: string, id: string, body: Record<string, unknown>)
   doc.setIn(nodePath(id), node);
   if (!doc.getIn(["spec", "start"])) doc.setIn(["spec", "start"], id);
   return doc.toString(toStringOpts);
+}
+
+/** Inherit the preset's behavior, but require explicit access and outcome wiring. */
+export function addPresetNode(text: string, id: string, preset: string, model?: string): string {
+  return addNode(text, id, {
+    uses: `preset/${preset}`,
+    // llm.model takes precedence over a preset/default's model shorthand.
+    ...(model ? { llm: { model } } : {}),
+    grants: [],
+    next: {},
+  });
 }
 
 /** Delete a node and every transition into it (those outcomes become unrouted). */
