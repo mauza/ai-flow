@@ -53,7 +53,7 @@ func TestMigrateOriginalDatabaseAndReopen(t *testing.T) {
 		}
 		var version int
 		check(t, s.db.QueryRow(`PRAGMA user_version`).Scan(&version))
-		if version != 2 {
+		if version != 3 {
 			t.Fatalf("version %d", version)
 		}
 		check(t, s.Ping(ctx))

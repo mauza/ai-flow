@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Clock, Coins, Cpu, FileDiff, GitCommit, Hand, History, ListOrdered, RotateCcw, ScrollText, Square, X } from "lucide-react";
-import { api, type Graph, type Visit } from "../api";
+import { Clock, Coins, Cpu, FileDiff, GitCommit, Hand, History, ListOrdered, Play, RotateCcw, ScrollText, Square, X } from "lucide-react";
+import { api, type Graph, type Run, type Visit } from "../api";
 import { useEvents, useNow, useResource } from "../hooks";
 import { clock, duration, timeAgo, tokens, usd } from "../format";
 import FlowGraph, { type RunOverlay } from "../graph/FlowGraph";
@@ -132,15 +132,7 @@ export default function RunPage() {
       </div>
 
       {waiting && <GateBanner runId={run.id} visit={waiting} graph={data.graph} />}
-      {run.status === "failed" && run.error && (
-        <div className="gate-banner" style={{ borderColor: "color-mix(in srgb, var(--danger) 45%, transparent)", background: "var(--danger-bg)" }}>
-          <X size={16} color="var(--danger)" />
-          <div className="q" style={{ whiteSpace: "pre-wrap" }}>
-            <b>Run failed</b>
-            <span className="small">{run.error}</span>
-          </div>
-        </div>
-      )}
+      {(run.status === "failed" || run.status === "canceled") && <StoppedBanner run={run} visits={visits} graph={data.graph} />}
 
       <div className="split">
         <div className="canvas">
@@ -286,6 +278,83 @@ function buildOverlay(graph: Graph, visits: Visit[], runStatus: string): RunOver
   if (runStatus === "failed" && lastEdge && next.get(lastEdge) === "$fail") terminal = "$fail";
   const live = runStatus === "running";
   return { nodes, takenEdges: taken, lastEdge: live ? lastEdge : undefined, terminal };
+}
+
+// StoppedBanner explains a failed or canceled run and offers to resume it at a
+// node, keeping the branch and earlier steps.
+function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; graph?: Graph }) {
+  const toast = useToast();
+  const last = visits[visits.length - 1];
+  const nodes = (graph?.nodes ?? []).map((n) => n.id).filter((id) => !id.startsWith("$"));
+  const [open, setOpen] = useState(false);
+  const [node, setNode] = useState(last?.node ?? "");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const failed = run.status === "failed";
+  return (
+    <div
+      className="gate-banner"
+      style={failed ? { borderColor: "color-mix(in srgb, var(--danger) 45%, transparent)", background: "var(--danger-bg)" } : { borderColor: "var(--border)", background: "var(--panel)" }}
+    >
+      <X size={16} color={failed ? "var(--danger)" : "var(--muted)"} />
+      <div className="q" style={{ whiteSpace: "pre-wrap" }}>
+        <b>Run {failed ? "failed" : "canceled"}</b>
+        {run.error && run.error !== "canceled" && <span className="small">{run.error}</span>}
+      </div>
+      {!open && nodes.length > 0 && (
+        <button className="btn sm" title="Continue this run on its branch from a step" onClick={() => setOpen(true)}>
+          <Play />
+          Resume
+        </button>
+      )}
+      {open && (
+        <form
+          className="stack"
+          style={{ flexBasis: "100%", gap: 8 }}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              await api.resumeRun(run.id, node, note);
+              toast("ok", `Resumed at ${node}`);
+              setOpen(false);
+              setNote("");
+            } catch (err) {
+              toast("error", (err as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="field">
+            <label htmlFor="resume-node">Resume at</label>
+            <select id="resume-node" className="input mono" value={node} onChange={(e) => setNode(e.target.value)}>
+              {nodes.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                  {id === last?.node ? " (last step)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="resume-note">Note for the next steps (optional)</label>
+            <textarea id="resume-note" className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed, or what to do differently" />
+          </div>
+          <div className="row">
+            <button className="btn primary sm" type="submit" disabled={busy || !node}>
+              {busy ? <Spinner /> : <Play />}
+              Resume
+            </button>
+            <button className="btn sm" type="button" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+            <span className="small muted">Keeps the branch and earlier steps; max_visits counts start over.</span>
+          </div>
+        </form>
+      )}
+    </div>
+  );
 }
 
 function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; graph?: Graph }) {

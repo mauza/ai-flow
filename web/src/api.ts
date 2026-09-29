@@ -94,6 +94,8 @@ export interface Run {
   created_at: number;
   started_at?: number;
   finished_at?: number;
+  resumes?: number;
+  resume_note?: string;
 }
 
 export interface Visit {
@@ -289,6 +291,7 @@ export const api = {
   },
   run: (id: string) => request<RunView>("GET", `/api/runs/${id}`),
   cancelRun: (id: string) => request<void>("POST", `/api/runs/${id}/cancel`),
+  resumeRun: (id: string, node: string, note: string) => request<Run>("POST", `/api/runs/${id}/resume`, { node, note }),
   decide: (id: string, seq: number, outcome: string) => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome }),
   transcript: async (id: string, seq: number): Promise<string> => {
     const res = await fetch(`/api/runs/${id}/visits/${seq}/transcript`);

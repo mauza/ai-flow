@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -19,7 +20,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 3 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -31,6 +32,16 @@ func migrate(db *sql.DB) error {
 	}
 	if version < 2 {
 		if _, err := tx.Exec(`ALTER TABLE visits ADD COLUMN launch_state TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 2;`); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		// A resume re-opens a failed run: visits up to resume_seq no longer count
+		// toward max_visits, so each resume gets one fresh bounded window.
+		if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN resume_seq INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE runs ADD COLUMN resume_note TEXT NOT NULL DEFAULT '';
+		PRAGMA user_version = 3;`); err != nil {
 			return err
 		}
 	}
@@ -98,6 +109,52 @@ func (s *Store) SetRunState(ctx context.Context, r *Run, status, message string,
 		}
 	}
 	return tx.Commit()
+}
+
+// ErrNotResumable means the run is not in a state a resume can re-open.
+var ErrNotResumable = errors.New("only failed or canceled runs can be resumed")
+
+// ResumeRun re-opens a failed or canceled run at node: the run, its task and a
+// new pending visit of node commit together, and the engine picks the visit up
+// like any other pending work. The status guard makes a repeated resume a no-op.
+func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string) (*Visit, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var seq, visit int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0) FROM visits WHERE run_id = ?`, runID).Scan(&seq); err != nil {
+		return nil, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM visits WHERE run_id = ? AND node = ?`, runID, node).Scan(&visit); err != nil {
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, error = '', finished_at = 0, current_node = ?, resume_seq = ?, resumes = resumes + 1, resume_note = ?
+		WHERE id = ? AND status IN (?, ?)`, RunRunning, node, seq, note, runID, RunFailed, RunCanceled)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return nil, err
+	} else if n != 1 {
+		return nil, ErrNotResumable
+	}
+	var taskID string
+	if err := tx.QueryRowContext(ctx, `SELECT task_id FROM runs WHERE id = ?`, runID).Scan(&taskID); err != nil {
+		return nil, err
+	}
+	if taskID != "" {
+		if err := update(ctx, tx, "tasks", "id = ?", []any{taskID}, map[string]any{"status": TaskRunning, "error": ""}, true); err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	v := &Visit{RunID: runID, Seq: seq + 1, Node: node, Visit: visit + 1, Type: typ, Status: VisitPending, Outputs: json.RawMessage("{}"), CreatedAt: now()}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO visits (run_id, seq, node, visit, type, status, outputs, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		v.RunID, v.Seq, v.Node, v.Visit, v.Type, v.Status, "{}", v.CreatedAt); err != nil {
+		return nil, err
+	}
+	return v, tx.Commit()
 }
 
 // ProjectSpend aggregates all runs in the half-open UTC month interval; unlike

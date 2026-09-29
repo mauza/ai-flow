@@ -46,7 +46,7 @@ func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *
 			diff[k] = 0.0
 		}
 	}
-	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL}
+	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL, "resumes": r.Resumes, "resume_note": r.ResumeNote}
 	nodes := map[string]any{}
 	visits, err := e.store.Visits(ctx, r.ID)
 	if err != nil {
@@ -129,6 +129,9 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		}
 		sb.WriteString("\n")
 	}
+	if r.Resumes > 0 && seq > r.ResumeSeq {
+		writeResume(&sb, r, visits)
+	}
 	if prev != nil {
 		fmt.Fprintf(&sb, "## Previous step: %s → %s\n\n", prev.Node, prev.Outcome)
 		if prev.Summary != "" {
@@ -162,6 +165,29 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeResume tells steps after a resume why the run stopped and what the
+// human who resumed it said.
+func writeResume(sb *strings.Builder, r *store.Run, visits []*store.Visit) {
+	sb.WriteString("## Resumed\n\nThis run stopped")
+	for i := len(visits) - 1; i >= 0; i-- {
+		v := visits[i]
+		if v.Seq > r.ResumeSeq {
+			continue
+		}
+		if v.Status == store.VisitError || v.Status == store.VisitCanceled {
+			fmt.Fprintf(sb, " at %s#%d (%s)", v.Node, v.Visit, oneLine(v.Error, 300))
+		} else {
+			fmt.Fprintf(sb, " after %s#%d → %s", v.Node, v.Visit, v.Outcome)
+		}
+		break
+	}
+	sb.WriteString(" and a human resumed it.")
+	if r.ResumeNote != "" {
+		fmt.Fprintf(sb, " Their note:\n\n> %s", strings.ReplaceAll(strings.TrimSpace(r.ResumeNote), "\n", "\n> "))
+	}
+	sb.WriteString("\n\n")
 }
 
 func oneLine(s string, n int) string {

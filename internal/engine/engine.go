@@ -426,7 +426,7 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		return rejectf("unknown node %q", target)
 	}
 	if n.MaxVisits > 0 {
-		count, err := e.visitCount(ctx, r.ID, target)
+		count, err := e.visitCount(ctx, r, target)
 		if err != nil {
 			return err
 		}
@@ -500,14 +500,16 @@ func (e *Engine) execute(ctx context.Context, r *store.Run, res *resolve.Resolve
 	return rejectf("unknown node type %q", n.Type)
 }
 
-func (e *Engine) visitCount(ctx context.Context, runID, node string) (int, error) {
-	vs, err := e.store.Visits(ctx, runID)
+// visitCount counts node's visits toward max_visits. Visits before the latest
+// resume do not count: each resume gets one fresh bounded window.
+func (e *Engine) visitCount(ctx context.Context, r *store.Run, node string) (int, error) {
+	vs, err := e.store.Visits(ctx, r.ID)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, v := range vs {
-		if v.Node == node {
+		if v.Node == node && v.Seq > r.ResumeSeq {
 			n++
 		}
 	}
@@ -733,6 +735,75 @@ func (e *Engine) Cancel(ctx context.Context, runID string) error {
 		e.publishVisit(runID, v.Seq)
 	}
 	return nil
+}
+
+// Resume re-opens a failed or canceled run at node (default: the node of its
+// last visit). The run keeps its branch, pinned settings, visits and spend; the
+// note reaches the steps that follow through their context.
+func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*store.Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if r.Status != store.RunFailed && r.Status != store.RunCanceled {
+		return nil, fmt.Errorf("run is %s: %w", r.Status, store.ErrNotResumable)
+	}
+	res, err := e.Resolved(ctx, r)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resume: %w", err)
+	}
+	if node == "" {
+		last, err := e.store.LastVisit(ctx, runID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			node = res.Flow.Spec.Start
+		case err != nil:
+			return nil, err
+		default:
+			node = last.Node
+		}
+	}
+	n := res.Nodes[node]
+	if n == nil {
+		return nil, fmt.Errorf("%q is not a node of %s v%d", node, r.FlowName, r.FlowVersion)
+	}
+	active, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunRunning, store.RunWaiting}, Limit: -1})
+	if err != nil {
+		return nil, err
+	}
+	if max := e.cfg.Env.Runs.MaxConcurrent; len(active) >= max {
+		return nil, fmt.Errorf("all %d run slots are busy; resume when one frees up", max)
+	}
+	note = strings.TrimSpace(note)
+	v, err := e.store.ResumeRun(ctx, runID, node, n.Type, note)
+	if err != nil {
+		return nil, err
+	}
+	msg := fmt.Sprintf("Resumed at %s#%d", node, v.Visit)
+	if who != "" {
+		msg += " by " + who
+	}
+	if note != "" {
+		msg += ": " + note
+	}
+	e.event(ctx, r, node, "resumed", msg)
+	fresh, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	e.publishRun(fresh)
+	e.publishVisit(runID, v.Seq)
+	if t := e.task(ctx, fresh); t != nil {
+		e.hub.Publish(hub.Event{Type: "task", ID: t.ID})
+		if e.hooks != nil {
+			started := *fresh
+			go e.hooks.RunStarted(context.Background(), t, &started)
+		}
+	}
+	e.Wake()
+	return fresh, nil
 }
 
 func visitDone(s string) bool {

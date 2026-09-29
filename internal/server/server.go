@@ -78,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/runs", s.listRuns)
 	api("GET /api/runs/{id}", s.getRun)
 	api("POST /api/runs/{id}/cancel", s.cancelRun)
+	api("POST /api/runs/{id}/resume", s.resumeRun)
 	api("POST /api/runs/{id}/gates/{seq}", s.decideGate)
 	api("GET /api/runs/{id}/visits/{seq}/transcript", s.transcript)
 
@@ -434,6 +435,31 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Node string `json:"node"` // default: the node of the last visit
+		Note string `json:"note"`
+		By   string `json:"by"`
+	}
+	if r.ContentLength > 0 && !readJSON(w, r, &in) {
+		return
+	}
+	if in.By == "" {
+		in.By = "ui"
+	}
+	run, err := s.app.Engine.Resume(r.Context(), r.PathValue("id"), in.Node, in.Note, in.By)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, 404, "not found")
+	case errors.Is(err, store.ErrNotResumable):
+		writeErr(w, 409, err.Error())
+	case err != nil:
+		writeErr(w, 400, err.Error())
+	default:
+		writeJSON(w, 200, run)
+	}
 }
 
 func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {

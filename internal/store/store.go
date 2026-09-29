@@ -380,15 +380,18 @@ type Run struct {
 	CreatedAt   int64           `json:"created_at"`
 	StartedAt   int64           `json:"started_at,omitempty"`
 	FinishedAt  int64           `json:"finished_at,omitempty"`
-	Snapshot    json.RawMessage `json:"-"` // versioned, non-secret execution settings
+	Snapshot    json.RawMessage `json:"-"`                     // versioned, non-secret execution settings
+	ResumeSeq   int             `json:"resume_seq,omitempty"`  // last visit before the latest resume
+	Resumes     int             `json:"resumes,omitempty"`     // how many times a human resumed the run
+	ResumeNote  string          `json:"resume_note,omitempty"` // the latest resume's note
 }
 
-const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at, snapshot`
+const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at, snapshot, resume_seq, resumes, resume_note`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	var r Run
 	var diff, snapshot string
-	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &snapshot)
+	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &snapshot, &r.ResumeSeq, &r.Resumes, &r.ResumeNote)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -402,8 +405,8 @@ func (s *Store) CreateRun(ctx context.Context, r *Run) error {
 	if len(r.Diff) == 0 {
 		r.Diff = json.RawMessage("{}")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt, string(r.Snapshot))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt, string(r.Snapshot), r.ResumeSeq, r.Resumes, r.ResumeNote)
 	return err
 }
 

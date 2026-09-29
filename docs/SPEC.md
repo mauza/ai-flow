@@ -251,6 +251,16 @@ Transitions happen only on the engine's loop; the broker and API record facts
 (a result arrived, a gate was decided) and wake it. Infra errors (pod crash,
 OOM, timeout) fail the run after Job retries; business failures are outcomes.
 
+**Resume.** A failed or canceled run can be resumed at any node (default: the
+node of its last visit) with an optional note: `POST /api/runs/{id}/resume`
+`{node, note}`, or **Resume** in the run view. The run keeps its branch, pinned
+settings, visits and spend; the run, its task and a new pending visit commit in
+one transaction, so a repeated resume is rejected rather than doubled. Visits
+before the resume stop counting toward `max_visits`, giving each resume one fresh
+bounded window. Steps after the resume get a *Resumed* context section (where it
+stopped, the note) and `run.resumes` / `run.resume_note` in templates. A resume
+needs a free run slot and fails on configuration drift like any pinned run.
+
 ### 7.2 Node pod
 
 Job in the runs namespace: non-root, read-only root filesystem, dropped
