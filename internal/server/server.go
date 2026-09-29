@@ -467,6 +467,7 @@ func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Outcome string `json:"outcome"`
 		By      string `json:"by"`
+		Note    string `json:"note"` // optional: reaches the next step as the gate's outputs.note
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -474,7 +475,7 @@ func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	if in.By == "" {
 		in.By = "ui"
 	}
-	if err := s.app.Engine.Decide(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By); err != nil {
+	if err := s.app.Engine.Decide(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By, in.Note); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}

@@ -360,6 +360,7 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
 function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; graph?: Graph }) {
   const toast = useToast();
   const [busy, setBusy] = useState<string>();
+  const [note, setNote] = useState("");
   const node = graph?.nodes.find((n) => n.id === visit.node);
   const outcomes = (node?.outcomes ?? []).filter((o) => o !== "timeout");
   return (
@@ -373,6 +374,15 @@ function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; grap
           {visit.prompt || node?.prompt}
         </span>
         {visit.deadline ? <div className="small muted">Times out {timeAgo(visit.deadline).replace(" ago", "") === "just now" ? "now" : new Date(visit.deadline).toLocaleString()}</div> : null}
+        <textarea
+          className="input"
+          rows={2}
+          style={{ marginTop: 8 }}
+          aria-label="Note for the next step"
+          placeholder="Optional note — the next step sees it (e.g. what to change)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
       </div>
       <div className="row wrap">
         {outcomes.map((o, i) => (
@@ -383,7 +393,7 @@ function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; grap
             onClick={async () => {
               setBusy(o);
               try {
-                await api.decide(runId, visit.seq, o);
+                await api.decide(runId, visit.seq, o, note);
                 toast("ok", `Decided: ${o}`);
               } catch (e) {
                 toast("error", (e as Error).message);

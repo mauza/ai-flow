@@ -117,7 +117,7 @@ func TestDeletedTaskDoesNotPreventRunLifecycleOrTemplates(t *testing.T) {
 				must(t, h.e.Cancel(h.ctx, r.ID))
 				want = store.RunCanceled
 			} else {
-				must(t, h.e.Decide(h.ctx, r.ID, v.Seq, "done", "test"))
+				must(t, h.e.Decide(h.ctx, r.ID, v.Seq, "done", "test", ""))
 			}
 			if got := h.run(r.ID); got.Status != want {
 				t.Fatalf("deleted task blocked completion: %+v", got)

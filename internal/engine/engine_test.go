@@ -199,10 +199,10 @@ func TestMaxVisitsExhausted(t *testing.T) {
 		t.Fatalf("want waiting at escalate, got %s at %s (%s)", r.Status, r.CurrentNode, h.path(id))
 	}
 	v, _ := h.st.LastVisit(h.ctx, id)
-	if err := h.e.Decide(h.ctx, id, v.Seq, "nope", "t"); err == nil {
+	if err := h.e.Decide(h.ctx, id, v.Seq, "nope", "t", ""); err == nil {
 		t.Error("deciding an unknown outcome should fail")
 	}
-	if err := h.e.Decide(h.ctx, id, v.Seq, "give_up", "tester"); err != nil {
+	if err := h.e.Decide(h.ctx, id, v.Seq, "give_up", "tester", ""); err != nil {
 		t.Fatal(err)
 	}
 	r = h.run(id)

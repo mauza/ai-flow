@@ -207,7 +207,7 @@ func decideLoopGate(h *harness, id, outcome string) {
 		h.e.Tick(h.ctx)
 		return
 	}
-	if err := h.e.Decide(h.ctx, id, v.Seq, outcome, "loop-test"); err != nil {
+	if err := h.e.Decide(h.ctx, id, v.Seq, outcome, "loop-test", ""); err != nil {
 		h.t.Fatal(err)
 	}
 }

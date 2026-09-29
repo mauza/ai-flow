@@ -289,7 +289,7 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 			e.publishRun(r)
 		}
 		if v.Deadline > 0 && store.Now() > v.Deadline {
-			return e.decide(ctx, r, v, flow.OutcomeTimeout, "timeout")
+			return e.decide(ctx, r, v, flow.OutcomeTimeout, "timeout", "")
 		}
 		return nil
 	case store.VisitPending, store.VisitRunning:
@@ -653,8 +653,9 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 
 // ---- API entry points ----
 
-// Decide records a human's gate decision.
-func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who string) error {
+// Decide records a human's gate decision and optional note. The note becomes the
+// gate's outputs.note, so the next step sees it and later ones can reference it.
+func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who, note string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.store.GetRun(ctx, runID)
@@ -686,18 +687,27 @@ func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who
 	if n == nil || !contains(n.Outcomes, outcome) {
 		return fmt.Errorf("%q is not an outcome of %s", outcome, v.Node)
 	}
-	return e.decide(ctx, r, v, outcome, who)
+	return e.decide(ctx, r, v, outcome, who, note)
 }
 
-func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outcome, who string) error {
+func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outcome, who, note string) error {
 	summary := fmt.Sprintf("Decided %q", outcome)
 	if who == "timeout" {
 		summary = "Nobody decided before the timeout"
 	} else if who != "" {
 		summary += " by " + who
 	}
+	outputs := "{}"
+	if note = strings.TrimSpace(note); note != "" {
+		summary += ": " + note
+		b, err := json.Marshal(map[string]string{"note": note})
+		if err != nil {
+			return err
+		}
+		outputs = string(b)
+	}
 	if err := e.store.Transition(ctx, r.ID, v.Seq, map[string]any{
-		"status": store.VisitSucceeded, "outcome": outcome, "decided_by": who, "summary": summary, "finished_at": store.Now(),
+		"status": store.VisitSucceeded, "outcome": outcome, "decided_by": who, "summary": summary, "outputs": outputs, "finished_at": store.Now(),
 	}, map[string]any{"status": store.RunRunning}); err != nil {
 		return err
 	}

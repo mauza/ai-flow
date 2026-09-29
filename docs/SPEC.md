@@ -127,7 +127,7 @@ spec:
 | `llm` | pod | One chat completion with a JSON-schema response format (`{outcome, summary, outputs}`); the branch diff is included. |
 | `agent` | pod | pi session in the repo; ends with the `flow_finish` tool. One nudge if the agent forgets. |
 | `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`. |
-| `gate` | control plane | A human picks an outcome in the UI; optional timeout. |
+| `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
 | `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
 
