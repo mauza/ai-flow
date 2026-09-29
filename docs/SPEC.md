@@ -236,6 +236,9 @@ no stray `next` keys, targets exist, reachability, every node can reach a
 terminal, every cycle bounded (`max_visits` or a gate), models/runtimes/harnesses/
 skills/presets/actions exist, grants and models allowed by the project, CEL
 compiles, template references resolve, output types valid, budget ≤ project cap.
+Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
+an llm node, `thinking` on a non-reasoning model, `spec.budget.wall`, …) produce
+a *declared but not enforced* warning rather than silently looking like they work.
 
 ## 7. Execution
 

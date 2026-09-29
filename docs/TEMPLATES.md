@@ -77,9 +77,10 @@ templates were format-validated, not executed against models or real repositorie
    tools. For Go, exit 1 alone cannot distinguish those causes. Arrange dependency
    availability in the runtime or explicitly granted environment; CI validation
    of these templates does not execute their shell commands.
-7. **Budgets and gates.** Tune USD/token/turn/wall limits, timeouts and bounded
-   visits to the task and project cap. The proposal flow's 26-hour wall budget
-   includes its 24-hour gate wait. Gate outcomes are `approve`, `revise`, `reject`;
+7. **Budgets and gates.** Tune USD/token/turn limits, timeouts and bounded
+   visits to the task and project cap. There is no whole-run deadline
+   (`budget.wall` is not enforced and the validator warns about it); the
+   proposal flow bounds its 24-hour gate wait with the gate's own timeout. Gate outcomes are `approve`, `revise`, `reject`;
    automatic timeout fails. A revision records a decision and repeats the
    investigation; the current gate API does not attach arbitrary reviewer prose.
    Supply detailed new requirements through the task/flow editing workflow.

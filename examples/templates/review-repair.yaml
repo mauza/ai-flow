@@ -7,7 +7,7 @@ metadata:
 spec:
   description: Replace with the review scope; set repo.base to the branch to review.
   repo: { grant: repo/template, base: main }
-  budget: { usd: 2, wall: 1h }
+  budget: { usd: 2 }
   defaults:
     runtime: fixture-go
     harness: pi

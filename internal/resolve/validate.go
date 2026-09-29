@@ -95,6 +95,9 @@ func Validate(r *Resolved, cfg *config.Config) []Issue {
 		v.errf("", "spec.start", "unknown node %q", f.Spec.Start)
 	}
 	v.checkRepo()
+	if b := f.Spec.Budget; b != nil && b.Wall.Duration > 0 {
+		v.warnf("", "spec.budget.wall", "declared but not enforced: the engine has no whole-run deadline; use node and gate timeouts")
+	}
 	if b := f.Spec.Budget; b != nil && r.Project != nil && r.Project.Spec.Budget != nil {
 		if max := r.Project.Spec.Budget.USDPerRun; max > 0 && b.USD > max {
 			v.errf("", "spec.budget.usd", "$%.2f exceeds the project cap of $%.2f per run", b.USD, max)
@@ -242,10 +245,70 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 	if !flow.PodType(n.Type) && len(raw.Grants) > 0 {
 		v.warnf(id, "grants", "%s nodes run in the control plane; grants are ignored", n.Type)
 	}
+	v.checkIgnored(n, raw)
 	if flow.PodType(n.Type) {
 		v.checkGrants(n)
 	}
 	v.checkTemplates(n)
+}
+
+// consumers lists the node types whose runtime reads each field. A field set on
+// any other type parses but does nothing, so it gets a warning instead of
+// silently looking like it works.
+var consumers = map[string][]string{
+	"model":      {flow.TypeLLM, flow.TypeAgent},
+	"llm":        {flow.TypeLLM, flow.TypeAgent},
+	"harness":    {flow.TypeAgent},
+	"skills":     {flow.TypeAgent},
+	"runtime":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
+	"retry":      {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
+	"timeout":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate},
+	"prompt":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate},
+	"inputs":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate, flow.TypeSwitch, flow.TypeAction},
+	"outputs":    {flow.TypeLLM, flow.TypeAgent},
+	"run":        {flow.TypeCheck},
+	"exit_codes": {flow.TypeCheck},
+	"cases":      {flow.TypeSwitch},
+	"default":    {flow.TypeSwitch},
+	"action":     {flow.TypeAction},
+	"with":       {flow.TypeAction},
+}
+
+// checkIgnored warns about fields the author set that nothing enforces. It
+// reads the raw node so preset and default values never trigger it.
+func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
+	set := map[string]bool{
+		"model": raw.Model != "", "llm": raw.LLM != nil, "harness": raw.Harness != "",
+		"skills": len(raw.Skills) > 0, "runtime": raw.Runtime != "", "retry": raw.Retry != nil,
+		"timeout": raw.Timeout.Duration > 0, "prompt": raw.Prompt != "", "inputs": len(raw.Inputs) > 0,
+		"outputs": len(raw.Outputs) > 0, "run": raw.Run != "", "exit_codes": len(raw.ExitCodes) > 0,
+		"cases": len(raw.Cases) > 0, "default": raw.Default != "", "action": raw.Action != "", "with": len(raw.With) > 0,
+	}
+	for _, field := range sortedKeys(consumers) {
+		if set[field] && !contains(consumers[field], n.Type) {
+			v.warnf(n.ID, field, "declared but not enforced: %s nodes ignore %s", n.Type, field)
+		}
+	}
+	if raw.LLM == nil || raw.LLM.Thinking == "" {
+		return
+	}
+	switch n.Type {
+	case flow.TypeLLM:
+		v.warnf(n.ID, "llm.thinking", "declared but not enforced: llm nodes ignore thinking (only agent nodes pass it to the harness)")
+	case flow.TypeAgent:
+		if m := v.cfg.Catalog.Models[n.LLM.Model]; m != nil && !m.Reasoning {
+			v.warnf(n.ID, "llm.thinking", "declared but not enforced: model %q is not marked reasoning: true", n.LLM.Model)
+		}
+	}
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (v *validator) checkTarget(node, field, t string) {

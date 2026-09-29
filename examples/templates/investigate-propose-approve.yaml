@@ -7,7 +7,7 @@ metadata:
 spec:
   description: Replace with the investigation question and decision criteria.
   repo: { grant: repo/template, base: main }
-  budget: { usd: 2, wall: 26h }
+  budget: { usd: 2 }
   defaults:
     runtime: fixture-go
     harness: pi

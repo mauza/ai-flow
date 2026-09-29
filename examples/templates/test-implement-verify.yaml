@@ -8,7 +8,7 @@ metadata:
 spec:
   description: Replace with the task and acceptance criteria before running.
   repo: { grant: repo/template, base: main }
-  budget: { usd: 2, wall: 45m }
+  budget: { usd: 2 }
   defaults:
     runtime: fixture-go
     harness: pi
