@@ -604,6 +604,17 @@ spec:
 - switch: routes on a CEL expression over run.diff.files_changed, run.diff.lines_changed, nodes.<id>.outputs.<field>, nodes.<id>.outcome.
 - action: open_pull_request or comment_task, run by ai-flow itself.
 
+# Choosing rigor
+
+Match rigor to how a wrong plan would fail, not to how important the task sounds:
+
+- Light: implement → check → open a PR. For small, reversible, well-understood changes.
+- Test-first (the default for behavior changes): a failing test → implement → check → review.
+- Investigate first: when the plan depends on an unknown only research can settle (unfamiliar code, unclear root cause, a feasibility question), start with a read-only agent that explores and reports findings as outputs. It proposes; it does not edit. Feed its outputs into the implementation prompt.
+- Independent review: when a plausible, self-consistent change could still be wrong in ways its author would not notice (concurrency, security, migrations, data loss, shared interfaces), add a review by a node that did not write the code. When more than one suitable model is allowed, review with a different model than the implementer's.
+
+Escalate only for those reasons: an unresolved unknown earns an investigation, and an author-blind failure mode earns an independent review. Importance alone earns neither. Name the level you chose, and why, in your explanation.
+
 # Rules
 
 - Every node needs outcomes and a next entry for each outcome.

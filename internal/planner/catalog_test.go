@@ -109,7 +109,7 @@ func TestCatalogPlanningGuidanceAndExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := New(cfg, nil, nil).systemPrompt(cfg.Projects["sandbox"])
-	for _, cue := range []string{"configured planner for decomposition", "smallest sufficient configured model", "Gates are optional", "bash -o pipefail -c", "fresh checkout", "replaced, not merged"} {
+	for _, cue := range []string{"configured planner for decomposition", "smallest sufficient configured model", "Gates are optional", "bash -o pipefail -c", "fresh checkout", "replaced, not merged", "# Choosing rigor", "Importance alone earns neither"} {
 		if !strings.Contains(prompt, cue) {
 			t.Errorf("missing planning constraint %q", cue)
 		}

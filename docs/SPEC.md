@@ -223,6 +223,14 @@ local-model premise is historical, not the current model policy.
 No gate is mandatory. The guidance text decides when the planner adds gates, and
 it must justify them in the gate's `description`.
 
+The planner also picks a rigor level and names it in its explanation: light
+(implement → check → PR), test-first (the default for behavior changes),
+investigate-first (a read-only exploration step when the plan hinges on an
+unknown), or independent review (a non-author review, on a different model when
+one is allowed, when a plausible change could fail in ways its author would not
+see). Importance alone never escalates; an open unknown or an author-blind
+failure mode does. The rungs follow openrig's planning dial.
+
 Validation (planner, UI, CLI, engine): schema, ids, start, every outcome routed,
 no stray `next` keys, targets exist, reachability, every node can reach a
 terminal, every cycle bounded (`max_visits` or a gate), models/runtimes/harnesses/
