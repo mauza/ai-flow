@@ -29,7 +29,7 @@ func (r *Runner) runCheck(ctx context.Context) *protocol.Result {
 	r.progress("$ " + firstLine(c.Run))
 	cmd := exec.CommandContext(ctx, "bash", "-o", "pipefail", "-c", c.Run)
 	cmd.Dir = dir
-	cmd.Env = append(cleanEnv(), "HOME="+filepath.Join(r.work, "flow", "home"), "CI=true", "NO_COLOR=1")
+	cmd.Env = append(cleanEnv(r.b.SecretEnv...), "HOME="+filepath.Join(r.work, "flow", "home"), "CI=true", "NO_COLOR=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
@@ -37,14 +37,19 @@ func (r *Runner) runCheck(ctx context.Context) *protocol.Result {
 	cmd.Stdout, cmd.Stderr = out, out
 	start := time.Now()
 	err := cmd.Run()
+	ctxErr := ctx.Err()
+	output := out.String()
+	r.uploadTranscript([]byte(output))
+	// A killed process usually returns ExitError (-1). Cancellation must win
+	// over both an explicit -1 mapping and the default business outcome.
+	if ctxErr != nil {
+		return &protocol.Result{Error: "check interrupted: " + ctxErr.Error(), LogTail: tail(output, 8000)}
+	}
 	code := 0
 	if err != nil {
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) {
-			if ctx.Err() != nil {
-				return &protocol.Result{Error: "check timed out", LogTail: tail(out.String(), 8000)}
-			}
-			return &protocol.Result{Error: err.Error(), LogTail: tail(out.String(), 8000)}
+			return &protocol.Result{Error: err.Error(), LogTail: tail(output, 8000)}
 		}
 		code = ee.ExitCode()
 	}
@@ -52,8 +57,7 @@ func (r *Runner) runCheck(ctx context.Context) *protocol.Result {
 	if !ok {
 		outcome = c.ExitCodes["default"]
 	}
-	logTail := tail(out.String(), 8000)
-	r.uploadTranscript([]byte(out.String()))
+	logTail := tail(output, 8000)
 	what := "`" + firstLine(c.Run) + "`"
 	if strings.Contains(strings.TrimSpace(c.Run), "\n") {
 		what = "script"
@@ -61,27 +65,31 @@ func (r *Runner) runCheck(ctx context.Context) *protocol.Result {
 	return &protocol.Result{
 		Outcome: outcome,
 		Summary: fmt.Sprintf("%s exited %d after %s", what, code, time.Since(start).Round(time.Second)),
-		Outputs: map[string]any{"exit_code": code, "log_tail": tail(out.String(), 4000)},
+		Outputs: map[string]any{"exit_code": code, "log_tail": tail(output, 4000)},
 		LogTail: logTail,
 	}
 }
 
 type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+	mu      sync.Mutex
+	b       bytes.Buffer
+	dropped int64
 }
 
 func (l *lockedBuffer) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.b.Len() > 4<<20 { // cap captured output at 4 MiB
-		return len(p), nil
-	}
-	return l.b.Write(p)
+	n := min(len(p), maxCapturedTranscript-256-l.b.Len())
+	l.b.Write(p[:n])
+	l.dropped += int64(len(p) - n)
+	return len(p), nil
 }
 
 func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.dropped > 0 {
+		return l.b.String() + fmt.Sprintf("\n[transcript truncated: limit_bytes=%d dropped_bytes=%d]\n", maxCapturedTranscript, l.dropped)
+	}
 	return l.b.String()
 }

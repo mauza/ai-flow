@@ -26,7 +26,7 @@ func (f *fakeLauncher) Launch(_ context.Context, s engine.LaunchSpec) (string, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.launched = append(f.launched, s)
-	name := s.Node + "-" + string(rune('0'+s.Seq))
+	name := engine.JobName(s)
 	f.state[name] = engine.JobRunning
 	return name, nil
 }
@@ -49,11 +49,13 @@ func (f *fakeLauncher) Kill(_ context.Context, name string) error {
 }
 
 type harness struct {
-	t   *testing.T
-	ctx context.Context
-	st  *store.Store
-	e   *engine.Engine
-	l   *fakeLauncher
+	t      *testing.T
+	ctx    context.Context
+	st     *store.Store
+	e      *engine.Engine
+	l      *fakeLauncher
+	cfg    *config.Config
+	dbPath string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -62,15 +64,17 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	dbPath := filepath.Join(t.TempDir(), "t.db")
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
 	l := &fakeLauncher{state: map[string]engine.JobState{}}
 	e := engine.New(cfg, st, l, hub.New(), nil)
 	e.OrphanGrace = 0
-	return &harness{t: t, ctx: context.Background(), st: st, e: e, l: l}
+	h := &harness{t: t, ctx: context.Background(), st: st, e: e, l: l, cfg: cfg, dbPath: dbPath}
+	t.Cleanup(func() { h.st.Close() })
+	return h
 }
 
 func (h *harness) flow(yaml string) string {
@@ -121,6 +125,8 @@ func (h *harness) path(id string) string {
 	return strings.Join(p, " ")
 }
 
+const testModel = "gpt-6-sol"
+
 const header = `apiVersion: ai-flow/v1alpha1
 kind: Flow
 metadata: { name: f, project: sandbox }
@@ -133,7 +139,7 @@ func TestHappyPathAndLoop(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       max_visits: 3
@@ -168,7 +174,7 @@ func TestMaxVisitsExhausted(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       max_visits: 2
@@ -211,7 +217,7 @@ func TestExhaustedToFailExplains(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       max_visits: 1
@@ -235,7 +241,7 @@ func TestSwitchUsesRunDiffAndOutputs(t *testing.T) {
   nodes:
     size:
       type: llm
-      model: gemma-local
+      model: ` + testModel + `
       prompt: estimate
       outputs: { files: number }
       outcomes: [done]
@@ -260,7 +266,7 @@ func TestCrashedPodFailsRun(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       next: { done: $success }
@@ -282,7 +288,7 @@ func TestCancel(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       next: { done: $success }
@@ -318,7 +324,7 @@ func TestConcurrencyLimit(t *testing.T) {
   nodes:
     fix:
       type: agent
-      model: gemma-local
+      model: ` + testModel + `
       prompt: fix it
       outcomes: [done]
       next: { done: $success }

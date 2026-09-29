@@ -1,12 +1,9 @@
 package runner
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -93,7 +90,7 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	if t := b.LLM.Config.Thinking; t != "" && b.LLM.Models[0].Reasoning {
 		baseArgs = append(baseArgs, "--thinking", t)
 	}
-	env := append(cleanEnv(),
+	env := append(cleanEnv(b.SecretEnv...),
 		"PI_CODING_AGENT_DIR="+piDir,
 		"PI_OFFLINE=1",
 		"PI_TELEMETRY=0",
@@ -104,7 +101,9 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		"AI_FLOW_GRANT="+b.Grant,
 	)
 
-	var transcript bytes.Buffer
+	transcript := &transcriptCapture{}
+	finishUploads := r.startTranscriptUploads(transcript, transcriptUploadInterval)
+	defer finishUploads()
 	stop := shim.StopInfo
 
 	prompt := b.Prompt
@@ -117,12 +116,11 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 			r.progress("Asking the agent to finish")
 		}
 		args = append(args, prompt)
-		runErr = r.runPi(ctx, args, env, &transcript, shim)
+		runErr = r.runPi(ctx, args, env, transcript, shim)
 		if _, err := os.Stat(resultPath); err == nil || stop() != nil || ctx.Err() != nil {
 			break
 		}
 	}
-	r.uploadTranscript(transcript.Bytes())
 
 	if st := stop(); st != nil {
 		if st.Action == flow.ActOutcome {
@@ -145,11 +143,13 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	return res
 }
 
-func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *bytes.Buffer, shim *Shim) error {
+func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *transcriptCapture, shim *Shim) error {
 	pi := envOr("AI_FLOW_PI", "pi")
 	cctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
 	go func() {
+		defer close(done)
 		select {
 		case <-cctx.Done():
 		case <-shim.Done():
@@ -165,18 +165,18 @@ func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *byte
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	var stderr bytes.Buffer
+	events := &piEventWriter{r: r, transcript: transcript}
+	cmd.Stdout = events
+	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start pi: %w", err)
 	}
 	r.progress("Agent started")
-	r.followPiEvents(stdout, transcript)
-	err = cmd.Wait()
+	err := cmd.Wait()
+	if events.size > 0 {
+		events.finishLine()
+	}
 	if err != nil && ctx.Err() == nil && cctx.Err() == nil {
 		slog.Warn("pi exited", "err", err, "stderr", tail(stderr.String(), 2000))
 		return fmt.Errorf("pi: %v: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
@@ -184,47 +184,32 @@ func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *byte
 	return nil
 }
 
-// followPiEvents copies pi's JSON event stream into the transcript and turns
-// tool calls and assistant text into progress lines.
-func (r *Runner) followPiEvents(rd io.Reader, transcript *bytes.Buffer) {
-	sc := bufio.NewScanner(rd)
-	sc.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	lastUpload := time.Now()
-	for sc.Scan() {
-		line := sc.Bytes()
-		transcript.Write(line)
-		transcript.WriteByte('\n')
-		// Ship the transcript so far every 15s so the UI can follow along.
-		if time.Since(lastUpload) > 15*time.Second {
-			lastUpload = time.Now()
-			snapshot := append([]byte(nil), transcript.Bytes()...)
-			go r.uploadTranscript(snapshot)
-		}
-		var ev struct {
-			Type     string          `json:"type"`
-			ToolName string          `json:"toolName"`
-			Args     json.RawMessage `json:"args"`
-			Message  *struct {
-				Role    string `json:"role"`
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(line, &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "tool_execution_start":
-			r.progress(describeToolCall(ev.ToolName, ev.Args))
-		case "message_end":
-			if ev.Message != nil && ev.Message.Role == "assistant" {
-				for _, c := range ev.Message.Content {
-					if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
-						r.progress(firstLine(c.Text))
-						break
-					}
+// piProgress turns tool calls and assistant text into progress lines.
+func (r *Runner) piProgress(line []byte) {
+	var ev struct {
+		Type     string          `json:"type"`
+		ToolName string          `json:"toolName"`
+		Args     json.RawMessage `json:"args"`
+		Message  *struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	switch ev.Type {
+	case "tool_execution_start":
+		r.progress(describeToolCall(ev.ToolName, ev.Args))
+	case "message_end":
+		if ev.Message != nil && ev.Message.Role == "assistant" {
+			for _, c := range ev.Message.Content {
+				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+					r.progress(firstLine(c.Text))
+					break
 				}
 			}
 		}
@@ -345,7 +330,7 @@ func writeSkills(root string, skills map[string]protocol.SkillDir) ([]string, er
 	for _, name := range names {
 		dir := filepath.Join(root, name)
 		for rel, content := range skills[name].Files {
-			p := filepath.Join(dir, filepath.Clean("/" + rel))
+			p := filepath.Join(dir, filepath.Clean("/"+rel))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return nil, err
 			}
@@ -392,13 +377,17 @@ func MCPToolName(server, tool string) string {
 }
 
 // cleanEnv passes through only what a harness needs from the pod environment.
-func cleanEnv() []string {
+func cleanEnv(approved ...string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
 		case "PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_PATH", "GOPATH", "GOCACHE", "GOMODCACHE", "PYTHONPATH":
 			out = append(out, kv)
+		default:
+			if contains(approved, k) {
+				out = append(out, kv)
+			}
 		}
 	}
 	return out

@@ -1,0 +1,73 @@
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: repeat-until-goal
+  project: sandbox
+  start: manual
+spec:
+  description: Implement the task's acceptance criteria with regression tests; repeat until tests pass and review finds the goal met.
+  start: work
+  nodes:
+    work:
+      uses: preset/implement
+      model: gpt-6-sol
+      grants: [repo/ai-flow-sandbox:write]
+      inputs:
+        remaining: '${{ nodes.assess.outputs.remaining ?? "First pass: follow the task acceptance criteria." }}'
+        check_log: '${{ nodes.verify.outputs.log_tail ?? "No check has run yet." }}'
+      prompt: |
+        Implement the task's acceptance criteria with focused regression tests.
+        On later visits, address the remaining findings and check log in inputs.
+        Inspect relevant code before editing; preserve meaningful assertions.
+        Return done with summary_of_change, or stuck with the concrete blocker.
+      max_visits: 3
+      on_exhausted: exhausted
+      next: { done: verify, stuck: exhausted }
+    verify:
+      uses: preset/python-unittest
+      # Override run/runtime for repos not using root unittest discovery.
+      max_visits: 3
+      on_exhausted: exhausted
+      next: { pass: assess, fail: assess }
+    assess:
+      uses: preset/code-review
+      model: gpt-6-luna
+      inputs:
+        check_outcome: '${{ nodes.verify.outcome }}'
+        check_log: '${{ nodes.verify.outputs.log_tail }}'
+        change: '${{ nodes.work.outputs.summary_of_change }}'
+      prompt: |
+        Review the task acceptance criteria against the supplied diff and current
+        verification evidence. Do not claim to have run tools yourself.
+        Set goal_met true only when this visit's check passed and every criterion
+        is supported by evidence. Otherwise set it false and list concrete remaining
+        fixes or missing evidence. Missing tools/tests are not successful verification.
+        Return assessed with goal_met (a boolean, not a string) and remaining.
+      outputs: { goal_met: bool, remaining: [string] }
+      outcomes: [assessed]
+      max_visits: 3
+      on_exhausted: exhausted
+      next: { assessed: condition }
+    condition:
+      type: switch
+      description: Require both current executable evidence and the structured review decision.
+      cases:
+        - when: 'nodes.verify.outcome == "pass" && nodes.assess.outputs.goal_met == true'
+          outcome: complete
+      default: repeat
+      outcomes: [complete, repeat]
+      max_visits: 3
+      on_exhausted: exhausted
+      next: { complete: $success, repeat: work }
+    exhausted:
+      uses: preset/human-decision
+      description: Optional handoff after blocked work or exhausted visits; this does not waive the goal.
+      prompt: |
+        This run could not establish the goal within its visit limits, or work was blocked.
+        Inspect the recorded evidence and revise the task/flow for a new run if needed.
+        Choose stop to acknowledge this unsuccessful run. No further work is launched here.
+      outcomes: [stop]
+      max_visits: 1
+      on_exhausted: $fail
+      timeout: 24h
+      next: { stop: $fail, timeout: $fail }

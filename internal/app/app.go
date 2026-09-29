@@ -33,8 +33,9 @@ type App struct {
 	Planner *planner.Planner
 	Hub     *hub.Hub
 
-	notifiers []Notifier
-	planning  sync.Map // task id → struct{}
+	notifiers  []Notifier
+	planning   sync.Map   // task id → struct{}
+	planningMu sync.Mutex // serialize starting a planner with manual status repair
 }
 
 func (a *App) AddNotifier(n Notifier) { a.notifiers = append(a.notifiers, n) }
@@ -70,6 +71,8 @@ func (a *App) CreateTask(ctx context.Context, t *store.Task, plan bool) error {
 
 // PlanTask drafts a flow for a task in the background.
 func (a *App) PlanTask(taskID string) {
+	a.planningMu.Lock()
+	defer a.planningMu.Unlock()
 	if _, busy := a.planning.LoadOrStore(taskID, struct{}{}); busy {
 		return
 	}
@@ -99,6 +102,23 @@ func (a *App) Planning(taskID string) bool {
 	return ok
 }
 
+const TaskPlanInterrupted = "plan_interrupted"
+
+// TaskState returns a task snapshot with process-local planning ownership
+// applied. After a restart there are no owned planners, so any persisted
+// "planning" task is explicitly interrupted until the user replans or saves a
+// repaired flow. This covers all tasks without a capped startup scan, database
+// rewrites, automatic provider calls, or recovery goroutines.
+func (a *App) TaskState(t *store.Task) (*store.Task, bool) {
+	planning := a.Planning(t.ID)
+	state := *t
+	if state.Status == store.TaskPlanning && !planning {
+		state.Status = TaskPlanInterrupted
+		state.Error = "Planning was interrupted; request planning again or repair the saved flow."
+	}
+	return &state, planning
+}
+
 func (a *App) planTask(ctx context.Context, taskID string) error {
 	t, err := a.Store.GetTask(ctx, taskID)
 	if err != nil {
@@ -111,7 +131,9 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 			return err
 		}
 	}
-	a.Store.UpdateTask(ctx, t.ID, map[string]any{"status": store.TaskPlanning, "flow_name": name, "error": ""})
+	if err := a.Store.UpdateTask(ctx, t.ID, map[string]any{"status": store.TaskPlanning, "flow_name": name, "error": ""}); err != nil {
+		return err
+	}
 	a.Store.AddEvent(ctx, &store.Event{TaskID: t.ID, FlowName: name, Kind: "plan", Message: "Planning started"})
 	a.Hub.Publish(hub.Event{Type: "task", ID: t.ID})
 	for _, n := range a.notifiers {
@@ -218,7 +240,7 @@ func (a *App) SaveFlow(ctx context.Context, name, src, who, note string) (*store
 	if err == nil {
 		taskID = prev.TaskID
 		if strings.TrimSpace(prev.YAML) == strings.TrimSpace(src) {
-			return prev, issues, nil
+			return prev, issues, a.updateTaskFlowStatus(ctx, taskID, issues)
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, nil, err
@@ -227,19 +249,43 @@ func (a *App) SaveFlow(ctx context.Context, name, src, who, note string) (*store
 	if _, err := a.Store.SaveFlow(ctx, fv); err != nil {
 		return nil, nil, err
 	}
-	if taskID != "" {
-		st := store.TaskFlowReady
-		if resolve.HasErrors(issues) {
-			st = store.TaskPlanFailed
-		}
-		if t, _ := a.Store.GetTask(ctx, taskID); t != nil && (t.Status == store.TaskFlowReady || t.Status == store.TaskPlanFailed) {
-			a.Store.UpdateTask(ctx, taskID, map[string]any{"status": st, "error": issuesText(issues)})
-			a.Hub.Publish(hub.Event{Type: "task", ID: taskID})
-		}
+	if err := a.updateTaskFlowStatus(ctx, taskID, issues); err != nil {
+		return fv, issues, err
 	}
 	a.Store.AddEvent(ctx, &store.Event{FlowName: name, TaskID: taskID, Kind: "flow", Message: fmt.Sprintf("Saved v%d (%s)", fv.Version, firstNonEmpty(note, who))})
 	a.Hub.Publish(hub.Event{Type: "flow", ID: name})
 	return fv, issues, nil
+}
+
+func (a *App) updateTaskFlowStatus(ctx context.Context, taskID string, issues []resolve.Issue) error {
+	if taskID == "" {
+		return nil
+	}
+	a.planningMu.Lock()
+	defer a.planningMu.Unlock()
+	if a.Planning(taskID) {
+		return nil
+	}
+	t, err := a.Store.GetTask(ctx, taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // The flow can outlive its task.
+	}
+	if err != nil {
+		return err
+	}
+	state, _ := a.TaskState(t)
+	if state.Status != store.TaskFlowReady && state.Status != store.TaskPlanFailed && state.Status != TaskPlanInterrupted {
+		return nil
+	}
+	status := store.TaskFlowReady
+	if resolve.HasErrors(issues) {
+		status = store.TaskPlanFailed
+	}
+	if err := a.Store.UpdateTask(ctx, taskID, map[string]any{"status": status, "error": issuesText(issues)}); err != nil {
+		return err
+	}
+	a.Hub.Publish(hub.Event{Type: "task", ID: taskID})
+	return nil
 }
 
 // Revise asks the planner to change a flow; nothing is saved.

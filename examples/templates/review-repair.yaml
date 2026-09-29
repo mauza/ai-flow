@@ -1,0 +1,56 @@
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: review-repair
+  project: template-project
+  start: manual
+spec:
+  description: Replace with the review scope; set repo.base to the branch to review.
+  repo: { grant: repo/template, base: main }
+  budget: { usd: 2, wall: 1h }
+  defaults:
+    runtime: fixture-go
+    harness: pi
+    timeout: 10m
+    llm:
+      limits: { tokens: 60000, turns: 20 }
+  start: review
+  nodes:
+    review:
+      # Agent can inspect the checked-out branch, including on the first visit
+      # when this run has no diff. An llm node cannot browse the repository.
+      type: agent
+      model: gpt-6-luna
+      grants: ["repo/template:read"]
+      prompt: |
+        Review the checked-out branch for ${{ task.title }}: ${{ task.body }}
+        Read relevant code and tests. Report actionable defects with file/line
+        references and acceptance criteria. Do not modify files. On later visits,
+        check repairs against earlier findings and report remaining defects.
+      outputs: { findings: [string] }
+      outcomes: [approve, changes, blocked]
+      max_visits: 4
+      on_exhausted: $fail
+      next: { approve: verify, changes: repair, blocked: $fail }
+    repair:
+      type: agent
+      model: gpt-6-sol
+      grants: ["repo/template:write"]
+      prompt: |
+        Repair only the review findings: ${{ nodes.review.outputs.findings }}
+        Also address the previous check's failures if routed here from verify.
+        Add focused regression coverage and keep tests meaningful.
+      outputs: { summary_of_change: string }
+      outcomes: [done, blocked]
+      max_visits: 3
+      on_exhausted: $fail
+      next: { done: review, blocked: $fail }
+    verify:
+      type: check
+      runtime: fixture-go
+      grants: ["repo/template:read"]
+      # Replace with your repository's deterministic verification command.
+      run: go test ./...
+      outcomes: [pass, fail]
+      exit_codes: { "0": pass, default: fail }
+      next: { pass: $success, fail: repair }

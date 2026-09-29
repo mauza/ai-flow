@@ -9,7 +9,7 @@ spec:
   nodes:
     reproduce:
       uses: preset/write-failing-test
-      model: gemma-local
+      model: gpt-6-sol
       grants: ["repo/ai-flow-sandbox:write"]
       max_visits: 2
       next: { reproduced: fix, cannot_reproduce: ask_human }
@@ -22,7 +22,7 @@ spec:
     fix:
       uses: preset/implement
       llm:
-        model: qwen-local
+        model: gpt-6-sol
         limits: { tokens: 400000 }
         on_limit:
           budget_exceeded: { action: outcome }
@@ -46,7 +46,7 @@ spec:
       next: { too_big: escalate, ok: review }
     review:
       uses: preset/code-review
-      model: gemma-local
+      model: gpt-6-luna
       grants: ["repo/ai-flow-sandbox:read"]
       next: { approve: open_pr, changes: fix }
     escalate:

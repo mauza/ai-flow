@@ -48,21 +48,17 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 		{"role": "user", "content": user.String()},
 	}
 	useSchema := true
-	var transcript []map[string]any
+	transcript := &transcriptCapture{}
 	defer func() {
-		var lines []string
-		for _, m := range transcript {
-			raw, _ := json.Marshal(m)
-			lines = append(lines, string(raw))
-		}
-		r.uploadTranscript([]byte(strings.Join(lines, "\n")))
+		data, _ := transcript.snapshot(0)
+		r.uploadTranscript(data)
 	}()
-	transcript = append(transcript, map[string]any{"type": "llm_request", "messages": messages})
+	transcript.event(map[string]any{"type": "llm_request", "messages": messages})
 
 	var lastErr string
 	for attempt := 0; attempt < 3; attempt++ {
 		r.progress(fmt.Sprintf("Asking %s", shim.CurrentModel()))
-		body := map[string]any{"messages": messages, "temperature": 0.2}
+		body := map[string]any{"messages": messages, "temperature": 0.2, "stream": true}
 		if useSchema {
 			body["response_format"] = map[string]any{
 				"type":        "json_schema",
@@ -84,7 +80,7 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 			return &protocol.Result{Error: err.Error()}
 		}
 		content := messageContent(resp)
-		transcript = append(transcript, map[string]any{"type": "llm_response", "model": shim.CurrentModel(), "content": content, "usage": resp["usage"]})
+		transcript.event(map[string]any{"type": "llm_response", "model": shim.CurrentModel(), "content": content, "usage": resp["usage"]})
 		res, verr := parseResult(content, b.Outcomes)
 		if verr == nil {
 			return res

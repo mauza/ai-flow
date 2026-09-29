@@ -1,0 +1,64 @@
+# Copy and specialize project, runtime and grants; model aliases match deploy/config.
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: test-implement-verify
+  project: template-project
+  start: manual
+spec:
+  description: Replace with the task and acceptance criteria before running.
+  repo: { grant: repo/template, base: main }
+  budget: { usd: 2, wall: 45m }
+  defaults:
+    runtime: fixture-go
+    harness: pi
+    timeout: 10m
+    llm:
+      limits: { tokens: 60000, turns: 20 }
+  start: write_test
+  nodes:
+    write_test:
+      type: agent
+      model: gpt-6-sol
+      grants: ["repo/template:write"]
+      prompt: |
+        Task: ${{ task.title }}
+        ${{ task.body }}
+        Add a focused regression test without implementing the fix. Confirm
+        it fails for the intended reason, not a tool or dependency error.
+        Report the test name and observed failure; stop if not reproducible.
+      outputs: { test_name: string, evidence: string }
+      outcomes: [reproduced, blocked]
+      next: { reproduced: confirm_red, blocked: $fail }
+    confirm_red:
+      type: check
+      runtime: fixture-go
+      grants: ["repo/template:read"]
+      # Replace BOTH commands with the same focused test for your repository.
+      # A nonzero exit alone is not proof of the intended failure: inspect evidence.
+      run: go test ./...
+      exit_codes: { "0": unexpected_pass, "1": red, default: blocked }
+      outcomes: [unexpected_pass, red, blocked]
+      next: { unexpected_pass: $fail, red: implement, blocked: $fail }
+    implement:
+      type: agent
+      model: gpt-6-sol
+      grants: ["repo/template:write"]
+      prompt: |
+        Implement the task with the smallest correct change. Preserve the
+        regression test ${{ nodes.write_test.outputs.test_name }}.
+        Reproduction evidence: ${{ nodes.write_test.outputs.evidence }}
+        Use the previous check's logs when retrying. Do not weaken tests.
+      outputs: { summary_of_change: string }
+      outcomes: [done, blocked]
+      max_visits: 3
+      on_exhausted: $fail
+      next: { done: verify, blocked: $fail }
+    verify:
+      type: check
+      runtime: fixture-go
+      grants: ["repo/template:read"]
+      run: go test ./...
+      outcomes: [pass, fail]
+      exit_codes: { "0": pass, default: fail }
+      next: { pass: $success, fail: implement }

@@ -43,6 +43,7 @@ export const taskStatusLabel: Record<string, string> = {
   new: "New",
   planning: "Planning",
   plan_failed: "Needs attention",
+  plan_interrupted: "Planning interrupted",
   flow_ready: "Flow ready",
   running: "Running",
   succeeded: "Done",

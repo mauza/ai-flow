@@ -26,7 +26,9 @@ import (
 	"github.com/mauza/ai-flow/internal/store"
 )
 
-// Launcher starts and watches node pods (or local processes).
+// Launcher starts and watches node pods (or local processes). Launch must use
+// JobName(spec) as its identity; a repeated Kubernetes launch must reconcile
+// the existing Job rather than create another one.
 type Launcher interface {
 	Launch(ctx context.Context, spec LaunchSpec) (string, error)
 	Status(ctx context.Context, name string) (JobStatus, error)
@@ -123,28 +125,65 @@ func (e *Engine) Loop(ctx context.Context) {
 func (e *Engine) tick(ctx context.Context) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	active, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunRunning, store.RunWaiting}})
+	active, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunRunning, store.RunWaiting}, Limit: -1})
 	if err != nil {
 		slog.Error("list runs", "err", err)
 		return
 	}
+	occupied := 0
 	for _, r := range active {
 		if err := e.step(ctx, r); err != nil {
-			slog.Error("run step", "run", r.ID, "err", err)
-			e.finish(ctx, r, store.RunFailed, "internal: "+err.Error())
+			e.handleError(ctx, r, err)
+		}
+		if r.Status == store.RunRunning || r.Status == store.RunWaiting {
+			occupied++
 		}
 	}
-	queued, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunQueued}})
+	queued, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunQueued}, Limit: -1})
 	if err != nil {
+		slog.Error("list queued runs", "err", err)
 		return
 	}
-	slots := e.cfg.Env.Runs.MaxConcurrent - len(active)
+	slots := e.cfg.Env.Runs.MaxConcurrent - occupied
 	for i := len(queued) - 1; i >= 0 && slots > 0; i-- { // oldest first
 		r := queued[i]
-		slots--
 		if err := e.begin(ctx, r); err != nil {
-			slog.Error("start run", "run", r.ID, "err", err)
-			e.finish(ctx, r, store.RunFailed, err.Error())
+			e.handleError(ctx, r, err)
+		}
+		// Validation failures and runs that finish synchronously consume no
+		// slot. A transient failure after entering running still occupies one.
+		if r.Status == store.RunRunning || r.Status == store.RunWaiting {
+			slots--
+		}
+	}
+}
+
+// Mark deterministic flow/configuration failures at their source. Unmarked
+// store/transport errors remain retryable; they must not discard durable work.
+type rejection struct{ error }
+
+func rejectf(format string, args ...any) error { return rejection{fmt.Errorf(format, args...)} }
+
+func permanent(err error) bool {
+	var rejected rejection
+	if errors.As(err, &rejected) {
+		return true
+	}
+	var api *github.APIError
+	if errors.As(err, &api) {
+		if api.Status == 403 && strings.Contains(strings.ToLower(api.Body), "rate limit") {
+			return false
+		}
+		return api.Status >= 400 && api.Status < 500 && api.Status != 408 && api.Status != 429
+	}
+	return false
+}
+
+func (e *Engine) handleError(ctx context.Context, r *store.Run, err error) {
+	slog.Error("reconcile run", "run", r.ID, "err", err)
+	if permanent(err) {
+		if finishErr := e.finish(ctx, r, store.RunFailed, err.Error()); finishErr != nil {
+			slog.Error("persist run failure", "run", r.ID, "err", finishErr)
 		}
 	}
 }
@@ -178,6 +217,10 @@ func (e *Engine) CreateRun(ctx context.Context, flowName string, version int, ta
 		ID: id, FlowName: fv.Name, FlowVersion: fv.Version, TaskID: taskID, Project: res.Flow.Metadata.Project,
 		Status: store.RunQueued, Branch: "ai-flow/" + ids.Slug(fv.Name, 40) + "-" + strings.TrimPrefix(id, "r-")[:6], Base: res.Base,
 	}
+	r.Snapshot, err = e.snapshot(res)
+	if err != nil {
+		return nil, err
+	}
 	if err := e.store.CreateRun(ctx, r); err != nil {
 		return nil, err
 	}
@@ -190,18 +233,9 @@ func (e *Engine) CreateRun(ctx context.Context, flowName string, version int, ta
 func (e *Engine) resolve(fv *store.FlowVersion) (*resolve.Resolved, error) {
 	f, err := flow.Parse([]byte(fv.YAML))
 	if err != nil {
-		return nil, err
+		return nil, rejection{err}
 	}
 	return resolve.Resolve(f, e.cfg), nil
-}
-
-// Resolved loads the pinned flow of a run.
-func (e *Engine) Resolved(ctx context.Context, r *store.Run) (*resolve.Resolved, error) {
-	fv, err := e.store.GetFlow(ctx, r.FlowName, r.FlowVersion)
-	if err != nil {
-		return nil, err
-	}
-	return e.resolve(fv)
 }
 
 func (e *Engine) begin(ctx context.Context, r *store.Run) error {
@@ -209,16 +243,17 @@ func (e *Engine) begin(ctx context.Context, r *store.Run) error {
 	if err != nil {
 		return err
 	}
-	r.Status, r.StartedAt = store.RunRunning, store.Now()
-	if err := e.store.UpdateRun(ctx, r.ID, map[string]any{"status": r.Status, "started_at": r.StartedAt}); err != nil {
+	stamp := store.Now()
+	if err := e.store.SetRunState(ctx, r, store.RunRunning, "", stamp); err != nil {
 		return err
 	}
+	r.Status, r.StartedAt = store.RunRunning, stamp
 	e.event(ctx, r, "", "started", "Run started")
 	if t := e.task(ctx, r); t != nil {
-		e.store.UpdateTask(ctx, t.ID, map[string]any{"status": store.TaskRunning})
 		e.hub.Publish(hub.Event{Type: "task", ID: t.ID})
 		if e.hooks != nil {
-			go e.hooks.RunStarted(context.Background(), t, r)
+			started := *r
+			go e.hooks.RunStarted(context.Background(), t, &started)
 		}
 	}
 	return e.enter(ctx, r, res, res.Flow.Spec.Start, 0)
@@ -229,7 +264,11 @@ func (e *Engine) begin(ctx context.Context, r *store.Run) error {
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	v, err := e.store.LastVisit(ctx, r.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("running run has no visits")
+		res, err := e.Resolved(ctx, r)
+		if err != nil {
+			return err
+		}
+		return e.enter(ctx, r, res, res.Flow.Spec.Start, 0)
 	}
 	if err != nil {
 		return err
@@ -237,17 +276,46 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	switch v.Status {
 	case store.VisitSucceeded, store.VisitError:
 		return e.advance(ctx, r, v)
+	case store.VisitCanceled:
+		// Older versions committed visit cancellation separately from the run.
+		return e.finish(ctx, r, store.RunCanceled, "canceled")
 	case store.VisitWaiting:
+		// Repair pre-migration crashes between gate entry and the run update.
+		if r.Status != store.RunWaiting {
+			if err := e.store.UpdateRun(ctx, r.ID, map[string]any{"status": store.RunWaiting, "current_node": v.Node}); err != nil {
+				return err
+			}
+			r.Status = store.RunWaiting
+			e.publishRun(r)
+		}
 		if v.Deadline > 0 && store.Now() > v.Deadline {
 			return e.decide(ctx, r, v, flow.OutcomeTimeout, "timeout")
 		}
 		return nil
 	case store.VisitPending, store.VisitRunning:
 		if !flow.PodType(v.Type) {
-			return nil
+			res, err := e.Resolved(ctx, r)
+			if err != nil {
+				return err
+			}
+			n := res.Nodes[v.Node]
+			if n == nil {
+				return rejectf("node %q not in snapshot", v.Node)
+			}
+			return e.execute(ctx, r, res, n, v)
+		}
+		if v.JobName == "" || v.LaunchState == "pending" {
+			res, err := e.Resolved(ctx, r)
+			if err != nil {
+				return err
+			}
+			n := res.Nodes[v.Node]
+			if n == nil {
+				return rejectf("node %q not in snapshot", v.Node)
+			}
+			return e.launch(ctx, r, res, n, v)
 		}
 		if v.Deadline > 0 && store.Now() > v.Deadline+60_000 {
-			e.launcher.Kill(ctx, v.JobName)
 			return e.visitError(ctx, r, v, "node exceeded its timeout")
 		}
 		st, err := e.launcher.Status(ctx, v.JobName)
@@ -290,9 +358,13 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 }
 
 func (e *Engine) visitError(ctx context.Context, r *store.Run, v *store.Visit, msg string) error {
-	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitError, "error": msg, "finished_at": store.Now()}); err != nil {
+	updated, err := e.store.UpdateVisitIf(ctx, r.ID, v.Seq, []string{store.VisitPending, store.VisitRunning}, map[string]any{"status": store.VisitError, "error": msg, "finished_at": store.Now()})
+	if err != nil {
 		return err
 	}
+	if !updated {
+		return nil
+	} // a broker result won the race; reconcile next tick
 	v.Status, v.Error = store.VisitError, msg
 	return e.advance(ctx, r, v)
 }
@@ -302,8 +374,7 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 	e.publishVisit(r.ID, v.Seq)
 	if v.Status == store.VisitError {
 		e.event(ctx, r, v.Node, "error", fmt.Sprintf("%s#%d failed: %s", v.Node, v.Visit, v.Error))
-		e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: %s", v.Node, v.Error))
-		return nil
+		return e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: %s", v.Node, v.Error))
 	}
 	res, err := e.Resolved(ctx, r)
 	if err != nil {
@@ -311,12 +382,11 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 	}
 	n := res.Nodes[v.Node]
 	if n == nil {
-		return fmt.Errorf("node %q not in flow", v.Node)
+		return rejectf("node %q not in flow", v.Node)
 	}
 	target, ok := n.Next[v.Outcome]
 	if !ok {
-		e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: outcome %q has no transition", v.Node, v.Outcome))
-		return nil
+		return e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: outcome %q has no transition", v.Node, v.Outcome))
 	}
 	e.event(ctx, r, v.Node, "outcome", fmt.Sprintf("%s#%d → %s", v.Node, v.Visit, v.Outcome))
 	return e.enter(ctx, r, res, target, 0)
@@ -329,14 +399,16 @@ func (e *Engine) enter(ctx context.Context, r *store.Run, res *resolve.Resolved,
 // enterWhy moves the run to target; why explains an on_exhausted jump.
 func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolved, target string, depth int, why string) error {
 	if depth > 20 {
-		return fmt.Errorf("too many chained transitions (on_exhausted cycle?)")
+		return rejectf("too many chained transitions (on_exhausted cycle?)")
 	}
 	switch target {
 	case flow.Success:
-		e.finish(ctx, r, store.RunSucceeded, "")
-		return nil
+		return e.finish(ctx, r, store.RunSucceeded, "")
 	case flow.Fail:
-		last, _ := e.store.LastVisit(ctx, r.ID)
+		last, err := e.store.LastVisit(ctx, r.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
 		msg := "flow ended in $fail"
 		if last != nil {
 			msg = fmt.Sprintf("%s → %s", last.Node, last.Outcome)
@@ -347,12 +419,11 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		if why != "" {
 			msg = why + " (last step: " + msg + ")"
 		}
-		e.finish(ctx, r, store.RunFailed, msg)
-		return nil
+		return e.finish(ctx, r, store.RunFailed, msg)
 	}
 	n := res.Nodes[target]
 	if n == nil {
-		return fmt.Errorf("unknown node %q", target)
+		return rejectf("unknown node %q", target)
 	}
 	if n.MaxVisits > 0 {
 		count, err := e.visitCount(ctx, r.ID, target)
@@ -369,10 +440,13 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 	if err != nil {
 		return err
 	}
-	e.store.UpdateRun(ctx, r.ID, map[string]any{"current_node": target, "status": store.RunRunning})
 	r.CurrentNode, r.Status = target, store.RunRunning
 	e.publishRun(r)
+	return e.execute(ctx, r, res, n, v)
+}
 
+// execute resumes the same durable visit; it never appends a second visit.
+func (e *Engine) execute(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node, v *store.Visit) error {
 	switch n.Type {
 	case flow.TypeLLM, flow.TypeAgent, flow.TypeCheck:
 		return e.launch(ctx, r, res, n, v)
@@ -381,36 +455,49 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		if n.Timeout.Duration > 0 {
 			fields["deadline"] = time.Now().Add(n.Timeout.Duration).UnixMilli()
 		}
-		prompt, _ := RenderText(n.Prompt, e.templateContext(ctx, r, res, n))
+		tc, err := e.checkedTemplateContext(ctx, r, res, n)
+		if err != nil {
+			return err
+		}
+		prompt, _ := RenderText(n.Prompt, tc)
 		fields["prompt"] = prompt
-		e.store.UpdateVisit(ctx, r.ID, v.Seq, fields)
-		e.store.UpdateRun(ctx, r.ID, map[string]any{"status": store.RunWaiting})
+		if err := e.store.Transition(ctx, r.ID, v.Seq, fields, map[string]any{"status": store.RunWaiting}); err != nil {
+			return err
+		}
 		r.Status = store.RunWaiting
-		e.event(ctx, r, target, "waiting", fmt.Sprintf("%s is waiting for a decision", target))
+		e.event(ctx, r, n.ID, "waiting", fmt.Sprintf("%s is waiting for a decision", n.ID))
 		e.publishRun(r)
 		e.publishVisit(r.ID, v.Seq)
 		return nil
 	case flow.TypeSwitch:
 		outcome, why, err := e.evalSwitch(ctx, r, res, n)
 		if err != nil {
-			return e.visitError(ctx, r, v, err.Error())
+			return err
 		}
-		e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": outcome, "summary": why, "started_at": store.Now(), "finished_at": store.Now()})
+		if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": outcome, "summary": why, "started_at": store.Now(), "finished_at": store.Now()}); err != nil {
+			return err
+		}
 		v.Status, v.Outcome = store.VisitSucceeded, outcome
 		return e.advance(ctx, r, v)
 	case flow.TypeAction:
-		e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitRunning, "started_at": store.Now()})
-		e.publishVisit(r.ID, v.Seq)
-		out, err := e.runAction(ctx, r, res, n)
-		if err != nil {
-			return e.visitError(ctx, r, v, err.Error())
+		if n.Action == "comment_task" && v.Status == store.VisitRunning {
+			return e.visitError(ctx, r, v, "comment delivery uncertain after interruption; inspect the task before retrying manually")
 		}
-		outputs, _ := json.Marshal(out.outputs)
-		e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": out.outcome, "summary": out.summary, "outputs": string(outputs), "finished_at": store.Now()})
+		out, err := e.runAction(ctx, r, res, n, v)
+		if err != nil {
+			return err
+		}
+		outputs, err := json.Marshal(out.outputs)
+		if err != nil {
+			return err
+		}
+		if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": out.outcome, "summary": out.summary, "outputs": string(outputs), "finished_at": store.Now()}); err != nil {
+			return err
+		}
 		v.Status, v.Outcome = store.VisitSucceeded, out.outcome
 		return e.advance(ctx, r, v)
 	}
-	return fmt.Errorf("unknown node type %q", n.Type)
+	return rejectf("unknown node type %q", n.Type)
 }
 
 func (e *Engine) visitCount(ctx context.Context, runID, node string) (int, error) {
@@ -428,11 +515,15 @@ func (e *Engine) visitCount(ctx context.Context, runID, node string) (int, error
 }
 
 func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node, v *store.Visit) error {
-	rt, ok := e.cfg.Catalog.Runtimes[n.Runtime]
-	if !ok {
+	snap, err := e.loadSnapshot(ctx, r)
+	if err != nil {
+		return err
+	}
+	image, ok := snap.Images[n.Runtime]
+	if !ok || image == "" {
 		return e.visitError(ctx, r, v, fmt.Sprintf("unknown runtime %q", n.Runtime))
 	}
-	spec := LaunchSpec{RunID: r.ID, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type, Image: rt.Image, Timeout: n.Timeout.Duration}
+	spec := LaunchSpec{RunID: r.ID, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type, Image: image, Timeout: n.Timeout.Duration}
 	if n.Retry != nil {
 		spec.Retries = n.Retry.Limit
 	}
@@ -444,17 +535,44 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 		}
 		switch grant.Kind {
 		case config.GrantSecret:
+			if grant.SecretRef == nil {
+				return rejectf("secret grant %s has no reference", name)
+			}
 			spec.Secrets = append(spec.Secrets, SecretMount{SecretName: grant.SecretRef.Name, Key: grant.SecretRef.Key, Env: grant.Env, File: grant.File})
 		case config.GrantEgress:
 			spec.Internet = spec.Internet || grant.Allow == "internet"
 		}
 	}
-	name, err := e.launcher.Launch(ctx, spec)
-	if err != nil {
-		return e.visitError(ctx, r, v, "launch: "+err.Error())
+	// Write intent before the external call. The Kubernetes launcher uses the
+	// same deterministic name and treats AlreadyExists as success.
+	name := JobName(spec)
+	if v.LaunchState == "pending" {
+		st, err := e.launcher.Status(ctx, name)
+		if err != nil {
+			return err
+		}
+		if st.State != JobMissing {
+			return e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"job_name": name, "launch_state": "launched"})
+		}
+		if e.cfg.Env.Runs.Local {
+			return e.visitError(ctx, r, v, "local launch delivery uncertain after interruption; refusing to start a duplicate process")
+		}
 	}
-	deadline := time.Now().Add(n.Timeout.Duration + 2*time.Minute).UnixMilli()
-	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"job_name": name, "deadline": deadline}); err != nil {
+	deadline := v.Deadline
+	if deadline == 0 {
+		deadline = time.Now().Add(n.Timeout.Duration + 2*time.Minute).UnixMilli()
+	}
+	if store.Now() > deadline {
+		return e.visitError(ctx, r, v, "job launch exceeded its deadline")
+	}
+	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"job_name": name, "launch_state": "pending", "deadline": deadline}); err != nil {
+		return err
+	}
+	name, err = e.launcher.Launch(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("launch (will reconcile): %w", err)
+	}
+	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"job_name": name, "launch_state": "launched"}); err != nil {
 		return err
 	}
 	e.event(ctx, r, n.ID, "launched", fmt.Sprintf("%s#%d started (%s)", n.ID, v.Visit, n.Type))
@@ -462,12 +580,52 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 	return nil
 }
 
-func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) {
-	if store.RunDone(r.Status) {
-		return
+// JobName is the deterministic launcher identity, persisted before submission.
+// Keep compatible with launcher.JobName (the launcher imports engine).
+func JobName(s LaunchSpec) string {
+	node := strings.ReplaceAll(s.Node, "_", "-")
+	name := fmt.Sprintf("af-%s-%d-%s", strings.TrimPrefix(s.RunID, "r-"), s.Seq, node)
+	if len(name) > 52 {
+		name = strings.TrimRight(name[:52], "-")
 	}
-	r.Status, r.Error, r.FinishedAt = status, msg, store.Now()
-	e.store.UpdateRun(ctx, r.ID, map[string]any{"status": status, "error": msg, "finished_at": r.FinishedAt})
+	return name
+}
+
+func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) error {
+	if store.RunDone(r.Status) {
+		return nil
+	}
+	if status == store.RunFailed {
+		v, err := e.store.LastVisit(ctx, r.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if v != nil && flow.PodType(v.Type) && v.JobName != "" && v.Status != store.VisitSucceeded {
+			// Cleanup uses the persisted identity, never current authorization.
+			// Record failure first so a failed Kill remains cleanup work after
+			// restart, even if configuration is repaired or a result arrives.
+			if !visitDone(v.Status) {
+				updated, err := e.store.UpdateVisitIf(ctx, r.ID, v.Seq,
+					[]string{store.VisitPending, store.VisitRunning, store.VisitWaiting},
+					map[string]any{"status": store.VisitError, "error": msg, "finished_at": store.Now()})
+				if err != nil {
+					return err
+				}
+				if !updated {
+					return nil // a result won the race; reconcile it on the next tick
+				}
+				e.publishVisit(r.ID, v.Seq)
+			}
+			if err := e.launcher.Kill(ctx, v.JobName); err != nil {
+				return fmt.Errorf("stop job %s before failing run: %w", v.JobName, err)
+			}
+		}
+	}
+	stamp := store.Now()
+	if err := e.store.SetRunState(ctx, r, status, msg, stamp); err != nil {
+		return err
+	}
+	r.Status, r.Error, r.FinishedAt = status, msg, stamp
 	switch status {
 	case store.RunSucceeded:
 		e.event(ctx, r, "", "finished", "Run succeeded")
@@ -478,11 +636,6 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) {
 	}
 	e.publishRun(r)
 	if t := e.task(ctx, r); t != nil {
-		ts := store.TaskFailed
-		if status == store.RunSucceeded {
-			ts = store.TaskSucceeded
-		}
-		e.store.UpdateTask(ctx, t.ID, map[string]any{"status": ts, "error": msg})
 		e.hub.Publish(hub.Event{Type: "task", ID: t.ID})
 		if e.hooks != nil {
 			fresh, _ := e.store.GetRun(ctx, r.ID)
@@ -493,6 +646,7 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) {
 		}
 	}
 	e.Wake() // a slot freed up
+	return nil
 }
 
 // ---- API entry points ----
@@ -505,12 +659,22 @@ func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who
 	if err != nil {
 		return err
 	}
+	if store.RunDone(r.Status) {
+		return fmt.Errorf("run is %s", r.Status)
+	}
 	v, err := e.store.GetVisit(ctx, runID, seq)
 	if err != nil {
 		return err
 	}
 	if v.Status != store.VisitWaiting {
 		return fmt.Errorf("%s#%d is not waiting for a decision", v.Node, v.Visit)
+	}
+	last, err := e.store.LastVisit(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if last.Seq != seq {
+		return fmt.Errorf("visit %d is no longer current", seq)
 	}
 	res, err := e.Resolved(ctx, r)
 	if err != nil {
@@ -530,12 +694,11 @@ func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outco
 	} else if who != "" {
 		summary += " by " + who
 	}
-	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{
+	if err := e.store.Transition(ctx, r.ID, v.Seq, map[string]any{
 		"status": store.VisitSucceeded, "outcome": outcome, "decided_by": who, "summary": summary, "finished_at": store.Now(),
-	}); err != nil {
+	}, map[string]any{"status": store.RunRunning}); err != nil {
 		return err
 	}
-	e.store.UpdateRun(ctx, r.ID, map[string]any{"status": store.RunRunning})
 	r.Status = store.RunRunning
 	v.Status, v.Outcome = store.VisitSucceeded, outcome
 	return e.advance(ctx, r, v)
@@ -552,14 +715,23 @@ func (e *Engine) Cancel(ctx context.Context, runID string) error {
 	if store.RunDone(r.Status) {
 		return nil
 	}
-	if v, err := e.store.LastVisit(ctx, runID); err == nil && !visitDone(v.Status) {
+	v, err := e.store.LastVisit(ctx, runID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if err == nil && !visitDone(v.Status) {
 		if v.JobName != "" {
-			e.launcher.Kill(ctx, v.JobName)
+			if err := e.launcher.Kill(ctx, v.JobName); err != nil {
+				return err
+			}
 		}
-		e.store.UpdateVisit(ctx, runID, v.Seq, map[string]any{"status": store.VisitCanceled, "finished_at": store.Now()})
+	}
+	if err := e.finish(ctx, r, store.RunCanceled, "canceled"); err != nil {
+		return err
+	}
+	if v != nil {
 		e.publishVisit(runID, v.Seq)
 	}
-	e.finish(ctx, r, store.RunCanceled, "canceled")
 	return nil
 }
 
@@ -570,18 +742,31 @@ func visitDone(s string) bool {
 // ---- helpers ----
 
 func (e *Engine) task(ctx context.Context, r *store.Run) *store.Task {
-	if r.TaskID == "" {
-		return nil
-	}
-	t, err := e.store.GetTask(ctx, r.TaskID)
+	t, err := e.optionalTask(ctx, r)
 	if err != nil {
-		return nil
+		slog.Error("read linked task", "run", r.ID, "err", err)
 	}
 	return t
 }
 
+func (e *Engine) optionalTask(ctx context.Context, r *store.Run) (*store.Task, error) {
+	if r.TaskID == "" {
+		return nil, nil
+	}
+	t, err := e.store.GetTask(ctx, r.TaskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
 func (e *Engine) event(ctx context.Context, r *store.Run, node, kind, msg string) {
-	e.store.AddEvent(ctx, &store.Event{RunID: r.ID, TaskID: r.TaskID, FlowName: r.FlowName, Node: node, Kind: kind, Message: msg})
+	if err := e.store.AddEvent(ctx, &store.Event{RunID: r.ID, TaskID: r.TaskID, FlowName: r.FlowName, Node: node, Kind: kind, Message: msg}); err != nil {
+		slog.Error("record event", "run", r.ID, "kind", kind, "err", err)
+	}
 }
 
 func (e *Engine) publishRun(r *store.Run) {

@@ -165,12 +165,15 @@ export interface RunView {
 }
 
 export interface Overview {
+  projectless: { allowed_models: string[]; allowed_grants: string[] };
   projects: {
     name: string;
     description?: string;
     repo: string;
     base: string;
     start: string;
+    allowed_models: string[];
+    allowed_grants: string[];
     guidance?: string;
     linear?: { team: string; label: string; states: string[] };
   }[];
@@ -187,12 +190,41 @@ export interface Overview {
   runtimes: { name: string; image: string; description?: string }[];
   grants: { name: string; description?: string; kind: string }[];
   skills: { name: string; description?: string }[];
-  presets: { name: string; type: string; description?: string; outcomes?: string[]; min_size?: string }[];
+  presets: {
+    name: string;
+    type: string;
+    description?: string;
+    outcomes?: string[];
+    min_size?: string;
+    category?: string;
+    when_to_use?: string;
+    requires?: string[];
+    outputs?: Record<string, unknown>;
+    definition?: Record<string, unknown>;
+  }[];
   planner: { model: string; guidance?: string };
   actions: string[];
   node_types: string[];
   linear: boolean;
   local: boolean;
+  operations: {
+    as_of: number;
+    active: number;
+    waiting: number;
+    queued: number;
+    oldest_queued_age_ms: number;
+    nodes: {
+      project: string;
+      flow_name: string;
+      node: string;
+      type: string;
+      visits: number;
+      duration_samples: number;
+      duration_total_ms: number;
+      duration_max_ms: number;
+      failures: Partial<Record<"error" | "timeout" | "canceled" | "fail_outcome", number>>;
+    }[];
+  };
 }
 
 export interface ChatResult {

@@ -210,13 +210,18 @@ type Skill struct {
 
 type Preset struct {
 	flow.Node
-	MinSize    string `json:"min_size,omitempty"`
-	PromptFile string `json:"prompt_file,omitempty"`
+	// Discovery metadata only; these hints do not grant capabilities or alter execution.
+	Category   string   `json:"category,omitempty"`
+	WhenToUse  string   `json:"when_to_use,omitempty"`
+	Requires   []string `json:"requires,omitempty"`
+	MinSize    string   `json:"min_size,omitempty"`
+	PromptFile string   `json:"prompt_file,omitempty"`
 }
 
 type Planner struct {
 	Model    string `json:"model"`
 	Guidance string `json:"guidance,omitempty"`
+	Stream   bool   `json:"stream,omitempty"`
 	// Max planner attempts when the draft fails validation.
 	MaxAttempts int `json:"max_attempts,omitempty"`
 }

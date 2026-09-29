@@ -1,0 +1,19 @@
+{
+  "fixture_note": "SYNTHETIC regression: imagine flow v2 incorrectly routing verify.fail to $success. No model was run.",
+  "run": {
+    "id": "synthetic-repair-candidate",
+    "flow_name": "fixture-code-review",
+    "flow_version": 2,
+    "task_id": "synthetic-task-repair",
+    "status": "succeeded",
+    "started_at": 1000,
+    "finished_at": 21000,
+    "cost_usd": 0.02,
+    "tokens": 1500
+  },
+  "visits": [
+    { "run_id": "synthetic-repair-candidate", "seq": 1, "node": "repair", "type": "agent", "status": "error", "error": "Synthetic runner error before retry", "outputs": {} },
+    { "run_id": "synthetic-repair-candidate", "seq": 2, "node": "repair", "type": "agent", "status": "succeeded", "outcome": "done", "outputs": {} },
+    { "run_id": "synthetic-repair-candidate", "seq": 3, "node": "verify", "type": "check", "status": "succeeded", "outcome": "fail", "outputs": { "exit_code": 1 } }
+  ]
+}

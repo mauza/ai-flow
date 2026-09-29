@@ -1,0 +1,18 @@
+{
+  "fixture_note": "SYNTHETIC: manually authored API-shaped data. No model was run.",
+  "run": {
+    "id": "synthetic-repair-baseline",
+    "flow_name": "fixture-code-review",
+    "flow_version": 1,
+    "task_id": "synthetic-task-repair",
+    "status": "succeeded",
+    "started_at": 1000,
+    "finished_at": 11000,
+    "cost_usd": 0.01,
+    "tokens": 1000
+  },
+  "visits": [
+    { "run_id": "synthetic-repair-baseline", "seq": 1, "node": "repair", "type": "agent", "status": "succeeded", "outcome": "done", "outputs": { "summary_of_change": "Synthetic fix" } },
+    { "run_id": "synthetic-repair-baseline", "seq": 2, "node": "verify", "type": "check", "status": "succeeded", "outcome": "pass", "outputs": { "exit_code": 0 } }
+  ]
+}

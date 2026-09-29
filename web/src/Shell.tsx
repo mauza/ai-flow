@@ -20,15 +20,15 @@ export default function Shell() {
             <small>flows as state machines</small>
           </div>
         </div>
-        <NavLink to="/" end className="nav-link">
+        <NavLink to="/" end className="nav-link" aria-label="Board">
           <KanbanSquare />
           <span className="lbl">Board</span>
         </NavLink>
-        <NavLink to="/flows" className="nav-link">
+        <NavLink to="/flows" className="nav-link" aria-label="Flows">
           <Workflow />
           <span className="lbl">Flows</span>
         </NavLink>
-        <NavLink to="/runs" className="nav-link">
+        <NavLink to="/runs" className="nav-link" aria-label="Runs">
           <Play />
           <span className="lbl">Runs</span>
           {active > 0 && (
@@ -37,7 +37,7 @@ export default function Shell() {
             </span>
           )}
         </NavLink>
-        <NavLink to="/catalog" className="nav-link">
+        <NavLink to="/catalog" className="nav-link" aria-label="Catalog">
           <Library />
           <span className="lbl">Catalog</span>
         </NavLink>

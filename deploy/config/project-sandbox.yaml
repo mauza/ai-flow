@@ -23,7 +23,7 @@ spec:
     comments: { flow: true, result: true }
   allow:
     grants: ["repo/ai-flow-sandbox:*", "mcp/word-stats"]
-    models: [gemma-local, qwen-local]
+    models: [gpt-6-sol, gpt-6-luna, gpt-6-astra]
   budget: { usd_per_run: 5 }
   planner:
     guidance: |

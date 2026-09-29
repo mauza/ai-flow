@@ -1,0 +1,56 @@
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: investigate-propose-approve
+  project: template-project
+  start: manual
+spec:
+  description: Replace with the investigation question and decision criteria.
+  repo: { grant: repo/template, base: main }
+  budget: { usd: 2, wall: 26h }
+  defaults:
+    runtime: fixture-go
+    harness: pi
+    timeout: 10m
+    llm:
+      limits: { tokens: 60000, turns: 20 }
+  start: investigate
+  nodes:
+    investigate:
+      type: agent
+      model: gpt-6-sol
+      grants: ["repo/template:read"]
+      prompt: |
+        Investigate ${{ task.title }}: ${{ task.body }}
+        Gather concrete file references and reproduction evidence. Make no
+        repository edits. Separate observations from hypotheses. If this is
+        a revision, incorporate the preceding gate decision and proposal.
+      outputs: { evidence: string, unknowns: [string] }
+      outcomes: [ready, blocked]
+      max_visits: 3
+      on_exhausted: $fail
+      next: { ready: propose, blocked: $fail }
+    propose:
+      type: llm
+      model: gpt-6-luna
+      inputs:
+        evidence: ${{ nodes.investigate.outputs.evidence }}
+        unknowns: ${{ nodes.investigate.outputs.unknowns }}
+      prompt: |
+        Propose a bounded change based on this evidence: ${{ inputs.evidence }}
+        Unknowns: ${{ inputs.unknowns }}
+        Include alternatives, validation and rollback. Do not claim execution.
+      outputs: { proposal: string, validation: string, risks: [string] }
+      outcomes: [proposed]
+      next: { proposed: approve }
+    approve:
+      type: gate
+      timeout: 24h
+      prompt: |
+        Approve this proposal, request a revision, or reject it.
+        Proposal: ${{ nodes.propose.outputs.proposal }}
+        Validation: ${{ nodes.propose.outputs.validation }}
+        Risks: ${{ nodes.propose.outputs.risks }}
+        Approval ends this planning flow; it does not implement the proposal.
+      outcomes: [approve, revise, reject]
+      next: { approve: $success, revise: investigate, reject: $fail, timeout: $fail }

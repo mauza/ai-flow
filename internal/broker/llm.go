@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/grant"
-	"github.com/mauza/ai-flow/internal/store"
 )
 
 func (b *Broker) llmModels(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
@@ -37,7 +37,7 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		return
 	}
 	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil || body == nil {
 		httpErr(w, 400, "body must be JSON")
 		return
 	}
@@ -47,12 +47,23 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		return
 	}
 	model := b.cfg.Catalog.Models[name]
+	if model == nil {
+		httpErr(w, 503, "model "+name+" is unavailable")
+		return
+	}
 	up, ok := b.cfg.Env.LLM.Upstreams[model.Upstream]
-	if model == nil || !ok {
+	if !ok {
 		httpErr(w, 500, "model "+name+" has no upstream")
 		return
 	}
-	if msg := b.overBudget(ctx, c); msg != "" {
+	msg, err := b.overBudget(ctx, c)
+	if err != nil {
+		slog.Warn("budget lookup", "run", c.Run, "err", err)
+		w.Header().Set("Retry-After", "3")
+		limitErr(w, 503, "budget_unavailable", "budget accounting unavailable; retry shortly")
+		return
+	}
+	if msg != "" {
 		limitErr(w, 429, flow.LimitBudgetExceeded, msg)
 		return
 	}
@@ -127,6 +138,8 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 }
 
 func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, m *config.Model, usage any, headerCost float64) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	u, _ := usage.(map[string]any)
 	in, _ := u["prompt_tokens"].(float64)
 	out, _ := u["completion_tokens"].(float64)
@@ -140,50 +153,47 @@ func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, 
 }
 
 // overBudget checks the node's USD limit, the flow budget and the project's per-run cap.
-func (b *Broker) overBudget(ctx context.Context, c *grant.Claims) string {
+func (b *Broker) overBudget(ctx context.Context, c *grant.Claims) (string, error) {
 	run, err := b.store.GetRun(ctx, c.Run)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	v, err := b.store.GetVisit(ctx, c.Run, c.Seq)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	res, err := b.engine.Resolved(ctx, run)
 	if err != nil {
-		return ""
+		return "", err
+	}
+	if v.Node != c.Node || res.Nodes[c.Node] == nil {
+		return "", fmt.Errorf("budget visit/node mismatch")
 	}
 	if n := res.Nodes[c.Node]; n != nil && n.LLM != nil && n.LLM.Limits != nil && n.LLM.Limits.USD > 0 && v.CostUSD >= n.LLM.Limits.USD {
-		return fmt.Sprintf("node budget of $%.2f is used up", n.LLM.Limits.USD)
+		return fmt.Sprintf("node budget of $%.2f is used up", n.LLM.Limits.USD), nil
 	}
 	if bd := res.Flow.Spec.Budget; bd != nil && bd.USD > 0 && run.CostUSD >= bd.USD {
-		return fmt.Sprintf("flow budget of $%.2f is used up", bd.USD)
+		return fmt.Sprintf("flow budget of $%.2f is used up", bd.USD), nil
 	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerRun > 0 && run.CostUSD >= p.Spec.Budget.USDPerRun {
-		return fmt.Sprintf("project cap of $%.2f per run is used up", p.Spec.Budget.USDPerRun)
+		return fmt.Sprintf("project cap of $%.2f per run is used up", p.Spec.Budget.USDPerRun), nil
 	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerMonth > 0 {
 		spent, err := b.monthSpend(ctx, p.Metadata.Name)
-		if err == nil && spent >= p.Spec.Budget.USDPerMonth {
-			return fmt.Sprintf("project monthly cap of $%.2f is used up", p.Spec.Budget.USDPerMonth)
+		if err != nil {
+			return "", err
+		}
+		if spent >= p.Spec.Budget.USDPerMonth {
+			return fmt.Sprintf("project monthly cap of $%.2f is used up", p.Spec.Budget.USDPerMonth), nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (b *Broker) monthSpend(ctx context.Context, project string) (float64, error) {
-	runs, err := b.store.ListRuns(ctx, store.RunFilter{Limit: 2000})
-	if err != nil {
-		return 0, err
-	}
-	var total float64
-	cutoff := monthStart()
-	for _, r := range runs {
-		if r.Project == project && r.CreatedAt >= cutoff {
-			total += r.CostUSD
-		}
-	}
-	return total, nil
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return b.store.ProjectSpend(ctx, project, start.UnixMilli(), start.AddDate(0, 1, 0).UnixMilli())
 }
 
 func limitErr(w http.ResponseWriter, status int, typ, msg string) {

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
@@ -49,6 +50,9 @@ type Broker struct {
 	pods   PodIdentifier
 	mcp    *mcpx.Pool
 	http   *http.Client
+
+	transcriptMu     sync.Mutex
+	transcriptWrites map[string]*transcriptWrite
 }
 
 func New(cfg *config.Config, st *store.Store, e *engine.Engine, s *grant.Signer, obj objstore.Store, h *hub.Hub, pods PodIdentifier, mcp *mcpx.Pool) *Broker {
@@ -60,9 +64,9 @@ func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("POST /v1/exchange", b.exchange)
-	mux.HandleFunc("POST /v1/result", b.withGrant(b.result))
+	mux.HandleFunc("POST /v1/result", b.withDeliveryGrant(b.result))
 	mux.HandleFunc("POST /v1/progress", b.withGrant(b.progress))
-	mux.HandleFunc("POST /v1/transcript", b.withGrant(b.transcript))
+	mux.HandleFunc("POST /v1/transcript", b.withDeliveryGrant(b.transcript))
 	mux.HandleFunc("POST /v1/mcp/call", b.withGrant(b.mcpCall))
 	mux.HandleFunc("GET /llm/v1/models", b.withGrant(b.llmModels))
 	mux.HandleFunc("POST /llm/v1/chat/completions", b.withGrant(b.llmChat))
@@ -73,6 +77,16 @@ func (b *Broker) Handler() http.Handler {
 type grantHandler func(w http.ResponseWriter, r *http.Request, c *grant.Claims)
 
 func (b *Broker) withGrant(h grantHandler) http.HandlerFunc {
+	return b.authorizeGrant(h, false)
+}
+
+// Only delivery endpoints may use a terminal visit's grant. Results remain
+// idempotent; transcripts can arrive after completion. Token expiry still applies.
+func (b *Broker) withDeliveryGrant(h grantHandler) http.HandlerFunc {
+	return b.authorizeGrant(h, true)
+}
+
+func (b *Broker) authorizeGrant(h grantHandler, delivery bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		c, err := b.signer.Verify(tok, "grant")
@@ -80,8 +94,80 @@ func (b *Broker) withGrant(h grantHandler) http.HandlerFunc {
 			httpErr(w, 401, "invalid grant: "+err.Error())
 			return
 		}
+		if err := b.checkGrantVisit(r.Context(), c, delivery); err != nil {
+			httpErr(w, 403, err.Error())
+			return
+		}
 		h(w, r, c)
 	}
+}
+
+func (b *Broker) checkGrantVisit(ctx context.Context, c *grant.Claims, delivery bool) error {
+	run, err := b.store.GetRun(ctx, c.Run)
+	if err != nil {
+		return fmt.Errorf("grant run: %w", err)
+	}
+	v, err := b.store.GetVisit(ctx, c.Run, c.Seq)
+	if err != nil {
+		return fmt.Errorf("grant visit: %w", err)
+	}
+	if c.Node != v.Node {
+		return fmt.Errorf("grant node does not match visit")
+	}
+	if delivery {
+		return b.checkDeliveryVisit(ctx, run, v)
+	}
+	return b.checkActiveVisit(ctx, run, v)
+}
+
+func (b *Broker) checkActiveVisit(ctx context.Context, run *store.Run, v *store.Visit) error {
+	if err := b.checkCurrentVisit(ctx, run, v); err != nil {
+		return err
+	}
+	if v.Deadline > 0 && v.Deadline <= store.Now() {
+		return fmt.Errorf("visit %d deadline exceeded", v.Seq)
+	}
+	return nil
+}
+
+// Match the engine's deadline + 60s reconciliation grace, without extending
+// any execution capability. Terminal delivery remains scoped to this visit.
+const deliveryGrace = time.Minute
+
+func (b *Broker) checkDeliveryVisit(ctx context.Context, run *store.Run, v *store.Visit) error {
+	if !flow.PodType(v.Type) {
+		return fmt.Errorf("visit %d is not a pod node", v.Seq)
+	}
+	if v.Status == store.VisitSucceeded || v.Status == store.VisitError || v.Status == store.VisitCanceled {
+		return nil
+	}
+	if err := b.checkCurrentVisit(ctx, run, v); err != nil {
+		return err
+	}
+	if v.Deadline > 0 && store.Now() > v.Deadline+deliveryGrace.Milliseconds() {
+		return fmt.Errorf("visit %d delivery grace exceeded", v.Seq)
+	}
+	return nil
+}
+
+func (b *Broker) checkCurrentVisit(ctx context.Context, run *store.Run, v *store.Visit) error {
+	if run.Status != store.RunRunning {
+		return fmt.Errorf("run %s is %s", run.ID, run.Status)
+	}
+	if v.Status != store.VisitPending && v.Status != store.VisitRunning {
+		return fmt.Errorf("visit %d is %s", v.Seq, v.Status)
+	}
+	if v.Type != flow.TypeAgent && v.Type != flow.TypeLLM && v.Type != flow.TypeCheck {
+		return fmt.Errorf("visit %d is not a pod node", v.Seq)
+	}
+	latest, err := b.store.LastVisit(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if latest.Seq != v.Seq || run.CurrentNode != v.Node {
+		return fmt.Errorf("visit %d is not current", v.Seq)
+	}
+	return nil
 }
 
 // ---- exchange ----
@@ -123,15 +209,12 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	if err != nil {
 		return nil, fmt.Errorf("run %s: %w", runID, err)
 	}
-	if store.RunDone(run.Status) {
-		return nil, fmt.Errorf("run %s is %s", runID, run.Status)
-	}
 	v, err := b.store.GetVisit(ctx, runID, seq)
 	if err != nil {
 		return nil, fmt.Errorf("visit %d: %w", seq, err)
 	}
-	if v.Status != store.VisitPending && v.Status != store.VisitRunning {
-		return nil, fmt.Errorf("%s#%d is %s", v.Node, v.Visit, v.Status)
+	if err := b.checkActiveVisit(ctx, run, v); err != nil {
+		return nil, err
 	}
 	res, err := b.engine.Resolved(ctx, run)
 	if err != nil {
@@ -151,6 +234,12 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 		ResultSchema:   resolve.ResultSchema(n),
 		Harness:        n.Harness,
 		TimeoutSeconds: int(n.Timeout.Duration.Seconds()),
+	}
+	for _, gr := range n.Grants {
+		name, _, _ := strings.Cut(gr, ":")
+		if g := b.cfg.Catalog.Grants[name]; g != nil && g.Kind == config.GrantSecret && g.Env != "" && !contains(bundle.SecretEnv, g.Env) {
+			bundle.SecretEnv = append(bundle.SecretEnv, g.Env)
+		}
 	}
 	tc := b.engine.TemplateContext(ctx, run, res, n)
 	if task, ok := tc["task"].(map[string]any); ok {
@@ -238,7 +327,16 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	if len(claims.Models) > 0 {
 		fields["model"] = claims.Models[0]
 	}
-	b.store.UpdateVisit(ctx, run.ID, v.Seq, fields)
+	if err := b.checkGrantVisit(ctx, &claims, false); err != nil {
+		return nil, err
+	}
+	ok, err := b.store.UpdateVisitIf(ctx, run.ID, v.Seq, []string{store.VisitPending, store.VisitRunning}, fields)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("visit finished during exchange")
+	}
 	b.hub.Publish(hub.Event{Type: "visit", ID: run.ID, Seq: v.Seq})
 	return bundle, nil
 }
@@ -252,10 +350,50 @@ func (b *Broker) result(w http.ResponseWriter, r *http.Request, c *grant.Claims)
 		return
 	}
 	ctx := r.Context()
+	unlock, err := b.lockTranscript(ctx, transcriptPrefix(c))
+	if err != nil {
+		httpErr(w, http.StatusRequestTimeout, err.Error())
+		return
+	}
+	defer unlock()
+	if err := b.checkGrantVisit(ctx, c, true); err != nil {
+		httpErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	v, err := b.store.GetVisit(ctx, c.Run, c.Seq)
+	if err != nil {
+		httpErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if v.Status != store.VisitPending && v.Status != store.VisitRunning {
+		// Retried delivery is a no-op even if its artifact has since gone away.
+		writeJSON(w, http.StatusOK, map[string]any{"accepted": false})
+		return
+	}
+	if res.TranscriptKey != "" {
+		if !validResultTranscriptKey(c, res.TranscriptKey) {
+			httpErr(w, http.StatusBadRequest, "transcript_key must name a final upload for this visit")
+			return
+		}
+		data, err := b.obj.Get(ctx, res.TranscriptKey)
+		if errors.Is(err, objstore.ErrNotFound) {
+			httpErr(w, http.StatusBadRequest, "final transcript was not uploaded")
+			return
+		}
+		if err != nil {
+			httpErr(w, http.StatusBadGateway, "read final transcript: "+err.Error())
+			return
+		}
+		if protocol.FinalTranscriptKey(c.Run, c.Seq, c.Node, data) != res.TranscriptKey {
+			httpErr(w, http.StatusBadRequest, "final transcript content does not match its key")
+			return
+		}
+	}
 	outputs, _ := json.Marshal(res.Outputs)
 	fields := map[string]any{
 		"outcome": res.Outcome, "outputs": string(outputs), "summary": res.Summary, "error": res.Error,
 		"commit_sha": res.Commit, "log_tail": res.LogTail, "finished_at": store.Now(), "progress": "",
+		"transcript_key": res.TranscriptKey,
 	}
 	if res.Error != "" {
 		fields["status"] = store.VisitError
@@ -287,23 +425,14 @@ func (b *Broker) progress(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		httpErr(w, 400, err.Error())
 		return
 	}
-	b.store.UpdateVisitIf(r.Context(), c.Run, c.Seq, []string{store.VisitPending, store.VisitRunning}, map[string]any{"progress": p.Text})
-	b.hub.Publish(hub.Event{Type: "progress", ID: c.Run, Seq: c.Seq, Text: p.Text})
-	w.WriteHeader(204)
-}
-
-func (b *Broker) transcript(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
-	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	ok, err := b.store.UpdateVisitIf(r.Context(), c.Run, c.Seq, []string{store.VisitPending, store.VisitRunning}, map[string]any{"progress": p.Text})
 	if err != nil {
-		httpErr(w, 400, err.Error())
-		return
-	}
-	key := fmt.Sprintf("runs/%s/%03d-%s.jsonl", c.Run, c.Seq, c.Node)
-	if err := b.obj.Put(r.Context(), key, data, "application/x-ndjson"); err != nil {
 		httpErr(w, 500, err.Error())
 		return
 	}
-	b.store.UpdateVisit(r.Context(), c.Run, c.Seq, map[string]any{"transcript_key": key})
+	if ok {
+		b.hub.Publish(hub.Event{Type: "progress", ID: c.Run, Seq: c.Seq, Text: p.Text})
+	}
 	w.WriteHeader(204)
 }
 
