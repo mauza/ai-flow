@@ -22,6 +22,7 @@ import (
 	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/ids"
+	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
 )
@@ -80,6 +81,7 @@ type Engine struct {
 	hub      *hub.Hub
 	gh       *github.Client
 	hooks    Hooks
+	notifier notify.Sender
 
 	wake    chan struct{}
 	mu      sync.Mutex // serializes transitions (loop + synchronous API calls)
@@ -98,6 +100,9 @@ func New(cfg *config.Config, st *store.Store, l Launcher, h *hub.Hub, gh *github
 func (e *Engine) Tick(ctx context.Context) { e.tick(ctx) }
 
 func (e *Engine) SetHooks(h Hooks) { e.hooks = h }
+
+// SetNotifier enables push notifications for the configured events.
+func (e *Engine) SetNotifier(n notify.Sender) { e.notifier = n }
 
 // Wake asks the loop to look at runs now.
 func (e *Engine) Wake() {
@@ -291,7 +296,7 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		if v.Deadline > 0 && store.Now() > v.Deadline {
 			return e.decide(ctx, r, v, flow.OutcomeTimeout, "timeout", "")
 		}
-		return nil
+		return e.alertStuck(ctx, r, v)
 	case store.VisitPending, store.VisitRunning:
 		if !flow.PodType(v.Type) {
 			res, err := e.Resolved(ctx, r)
@@ -468,6 +473,7 @@ func (e *Engine) execute(ctx context.Context, r *store.Run, res *resolve.Resolve
 		e.event(ctx, r, n.ID, "waiting", fmt.Sprintf("%s is waiting for a decision", n.ID))
 		e.publishRun(r)
 		e.publishVisit(r.ID, v.Seq)
+		e.alert(ctx, config.NotifyGate, r, n.ID+" needs a decision", prompt, 4, "raised_hand")
 		return nil
 	case flow.TypeSwitch:
 		outcome, why, err := e.evalSwitch(ctx, r, res, n)
@@ -631,10 +637,12 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 	switch status {
 	case store.RunSucceeded:
 		e.event(ctx, r, "", "finished", "Run succeeded")
+		e.alert(ctx, config.NotifySucceeded, r, "succeeded", r.PRURL, 3, "white_check_mark")
 	case store.RunCanceled:
 		e.event(ctx, r, "", "finished", "Run canceled")
 	default:
 		e.event(ctx, r, "", "finished", "Run failed: "+msg)
+		e.alert(ctx, config.NotifyFailed, r, "failed", msg, 4, "x")
 	}
 	e.publishRun(r)
 	if t := e.task(ctx, r); t != nil {
@@ -865,4 +873,60 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// ---- notifications ----
+
+// alert pushes a notification about r in the background. Delivery is best
+// effort: a failed push is logged and never affects the run.
+func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, body string, priority int, tags ...string) {
+	if e.notifier == nil || !e.cfg.Env.Notify.Sends(event) {
+		return
+	}
+	label := r.FlowName
+	if t := e.task(ctx, r); t != nil {
+		label = firstNonEmpty(t.Identifier, t.Title)
+	}
+	m := notify.Message{Title: label + ": " + what, Body: tailStr(strings.TrimSpace(body), 1000), Priority: priority, Tags: tags}
+	if m.Body == "" {
+		m.Body = fmt.Sprintf("Run %s of %s v%d", r.ID, r.FlowName, r.FlowVersion)
+	}
+	if base := strings.TrimSuffix(e.cfg.Env.Server.PublicURL, "/"); base != "" {
+		m.Click = base + "/runs/" + r.ID
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := e.notifier.Send(ctx, m); err != nil {
+			slog.Warn("notify", "event", event, "run", r.ID, "err", err)
+		}
+	}()
+}
+
+// shortDuration renders 4h0m0s as 4h and 1h30m0s as 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.Round(time.Minute).String()
+	s = strings.TrimSuffix(s, "0s")
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
+// alertStuck sends one reminder per gate visit that has waited longer than
+// notify.stuckAfter. The kv marker keeps restarts from repeating it.
+func (e *Engine) alertStuck(ctx context.Context, r *store.Run, v *store.Visit) error {
+	after := e.cfg.Env.Notify.StuckAfter.Duration
+	if e.notifier == nil || !e.cfg.Env.Notify.Sends(config.NotifyStuck) || v.StartedAt == 0 || store.Now()-v.StartedAt < after.Milliseconds() {
+		return nil
+	}
+	key := fmt.Sprintf("notify/stuck/%s/%d", r.ID, v.Seq)
+	if _, err := e.store.GetKV(ctx, key); !errors.Is(err, store.ErrNotFound) {
+		return err // already sent, or a read error to retry next tick
+	}
+	if err := e.store.SetKV(ctx, key, fmt.Sprint(store.Now())); err != nil {
+		return err
+	}
+	e.alert(ctx, config.NotifyStuck, r, fmt.Sprintf("%s still waiting after %s", v.Node, shortDuration(after)), v.Prompt, 4, "hourglass")
+	return nil
 }

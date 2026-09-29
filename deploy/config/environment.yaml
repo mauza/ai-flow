@@ -41,3 +41,8 @@ linear:
   enabled: true
   mode: poll
   pollInterval: 30s
+# Push a message when a run needs a human (off without a backend):
+# notify:
+#   ntfy: { url: https://ntfy.sh, topic: my-ai-flow, tokenEnv: NTFY_TOKEN }
+#   events: [gate, stuck, failed]   # default; also: succeeded
+#   stuckAfter: 4h                  # remind once when a gate waits this long

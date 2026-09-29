@@ -184,7 +184,8 @@ Secrets are env vars named by `*Env` fields, never inlined.
 - **Environment** — where things run: listen ports, public URL, pod URL, runs
   namespace, concurrency, LLM upstreams (`baseUrl`, `apiKeyEnv`), object store
   (`garage` | `s3` | `local`), git host tokens, GitHub API, Linear connection,
-  MCP servers (URL + headers).
+  MCP servers (URL + headers), notifications (`notify`: ntfy server, topic,
+  token, events, `stuckAfter`).
 - **Catalog** — models (upstream + model id + planner metadata + default `llm`),
   harnesses, runtimes, grants, skills (inline files or a directory), presets,
   node defaults, planner (model, stream, guidance, attempts).
@@ -330,6 +331,14 @@ state with the trigger label becomes a task and is planned. ai-flow moves the
 issue through the mapped states (planning → flow ready → running → succeeded /
 failed) and comments with the flow link, then the PR link or the failure reason.
 Moving a failed issue back to a trigger state re-plans it.
+
+## 9a. Notifications
+
+With `notify.ntfy` set, the engine pushes a short message (title, the gate
+question or failure, a link to the run) when a gate opens, when a gate is
+still waiting after `stuckAfter` (once per gate visit, remembered across
+restarts), and when a run fails; `succeeded` is opt-in. Delivery is best
+effort and never affects the run.
 
 ## 10. UI
 
