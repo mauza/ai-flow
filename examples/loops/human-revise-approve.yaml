@@ -14,12 +14,13 @@ spec:
       grants: [repo/ai-flow-sandbox:write]
       inputs:
         human_decision: '${{ nodes.review_gate.outcome ?? "No human decision yet." }}'
+        human_note: '${{ nodes.review_gate.outputs.note ?? "No note." }}'
         check_log: '${{ nodes.verify.outputs.log_tail ?? "No check has run yet." }}'
       prompt: |
         Implement the task's acceptance criteria and add focused regression coverage.
-        If the latest human decision is revise, re-inspect the current branch for
-        unmet criteria and improve it. The gate supplies a decision, not new prose
-        feedback; do not invent additional human requirements.
+        If the latest human decision is revise, address the human's note and
+        re-inspect the current branch for unmet criteria. Do not invent
+        requirements beyond the task and the note.
         Address any check failures in inputs. Return done with summary_of_change,
         or stuck with a concrete blocker if no supported correction is possible.
       max_visits: 3
