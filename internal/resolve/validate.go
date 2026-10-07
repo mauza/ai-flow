@@ -202,6 +202,14 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			v.errf(id, "run", "check nodes need a command to run")
 		}
 		v.checkRuntime(n)
+		for name, typ := range n.Outputs {
+			if name == "outcome" {
+				v.errf(id, "outputs", "\"outcome\" is reserved")
+			}
+			if _, err := OutputSchema(typ); err != nil {
+				v.errf(id, "outputs."+name, "%v", err)
+			}
+		}
 		for code, o := range CheckExitCodes(&n.Node) {
 			if code != "default" {
 				if _, err := strconv.Atoi(code); err != nil {
@@ -265,7 +273,7 @@ var consumers = map[string][]string{
 	"timeout":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate},
 	"prompt":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate},
 	"inputs":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate, flow.TypeSwitch, flow.TypeAction},
-	"outputs":    {flow.TypeLLM, flow.TypeAgent},
+	"outputs":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"run":        {flow.TypeCheck},
 	"exit_codes": {flow.TypeCheck},
 	"cases":      {flow.TypeSwitch},
@@ -475,7 +483,8 @@ func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 		case "outcome", "summary", "visit", "history":
 		case "outputs":
 			if len(ref.Path) >= 4 && other.Outputs != nil {
-				if _, ok := other.Outputs[ref.Path[3]]; !ok && other.Type != flow.TypeCheck {
+				f := ref.Path[3]
+				if _, ok := other.Outputs[f]; !ok && !(other.Type == flow.TypeCheck && (f == "exit_code" || f == "log_tail")) {
 					v.warnf(n.ID, field, "%s: node %q declares no output %q", ref.Raw, other.ID, ref.Path[3])
 				}
 			}

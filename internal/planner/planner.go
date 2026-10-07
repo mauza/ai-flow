@@ -599,7 +599,7 @@ spec:
 
 - llm: one structured model call, no tools. Classify, review a diff (the branch diff is included automatically), extract, decide.
 - agent: a coding agent in the repo with read/edit/write/bash. Use for changes and investigation. Give it one focused job.
-- check: runs bash -o pipefail -c in a fresh repo checkout, with CI=true. No implicit errexit: use && or set -e for multiple commands. Use for tests, linters, builds. Outputs are exit_code (integer), log_tail (string).
+- check: runs bash -o pipefail -c in a fresh repo checkout, with CI=true. No implicit errexit: use && or set -e for multiple commands. Use for tests, linters, builds. Outputs are exit_code (integer), log_tail (string). For structured results (counts, coverage, failing names), declare outputs and have the command write one JSON object with those fields to "$AI_FLOW_OUTPUTS"; a switch can then route on them. Undeclared or mistyped fields fail the step.
 - gate: waits for a human to pick an outcome. Only when the guidance below calls for it.
 - switch: routes on a CEL expression over run.diff.files_changed, run.diff.lines_changed, nodes.<id>.outputs.<field>, nodes.<id>.outcome.
 - action: open_pull_request or comment_task, run by ai-flow itself.

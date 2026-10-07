@@ -51,7 +51,13 @@ Output types use the existing shorthand (`string`, `integer`, `number`, `bool`,
 `[string]`) or supported JSON Schema maps. Model results contain `outcome`,
 `summary`, and `outputs`; all declared output fields belong in `outputs`, including
 empty arrays/strings when appropriate. Checks actually emit `exit_code: integer`
-and `log_tail: string`. PR creation emits `url: string` and `number: integer`.
+and `log_tail: string`. A check may also declare
+`outputs` and write them as one JSON object to the file named by `$AI_FLOW_OUTPUTS`,
+e.g. `go test -json ./... | ./summarize > "$AI_FLOW_OUTPUTS"` producing
+`{"failed": 2, "failing": ["TestSlug"]}`. Fields are type-checked against the
+declaration; an undeclared field, a wrong type or a file that is not a JSON object
+fails the step. No file means no structured outputs, so a command that fails early
+still routes by its exit code. PR creation emits `url: string` and `number: integer`.
 Gates, switches, and task comments declare no extra output payload.
 
 The planner menu includes category, when-to-use, requirements, output types,
