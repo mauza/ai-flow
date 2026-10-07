@@ -2,6 +2,9 @@
 bin/
 .data/
 web/node_modules/
+web/test-results/
+web/playwright-report/
+scripts/__pycache__/
 .env
 *.db
 *.db-wal

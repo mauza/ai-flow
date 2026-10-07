@@ -1,0 +1,47 @@
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: human-revise-approve
+  project: sandbox
+  start: manual
+spec:
+  description: Implement and verify the task; a human may approve or request another pass against the same acceptance criteria.
+  start: work
+  nodes:
+    work:
+      uses: preset/implement
+      model: gpt-6-sol
+      grants: [repo/ai-flow-sandbox:write]
+      inputs:
+        human_decision: '${{ nodes.review_gate.outcome ?? "No human decision yet." }}'
+        check_log: '${{ nodes.verify.outputs.log_tail ?? "No check has run yet." }}'
+      prompt: |
+        Implement the task's acceptance criteria and add focused regression coverage.
+        If the latest human decision is revise, re-inspect the current branch for
+        unmet criteria and improve it. The gate supplies a decision, not new prose
+        feedback; do not invent additional human requirements.
+        Address any check failures in inputs. Return done with summary_of_change,
+        or stuck with a concrete blocker if no supported correction is possible.
+      max_visits: 3
+      on_exhausted: $fail
+      next: { done: verify, stuck: $fail }
+    verify:
+      uses: preset/python-unittest
+      max_visits: 3
+      on_exhausted: $fail
+      next: { pass: review_gate, fail: work }
+    review_gate:
+      uses: preset/human-decision
+      description: Use this optional gate when task or project guidance asks for human acceptance.
+      prompt: |
+        Check the current branch against the task's acceptance criteria.
+        Latest change: ${{ nodes.work.outputs.summary_of_change }}
+        Verification: ${{ nodes.verify.outcome }}
+        ${{ nodes.verify.outputs.log_tail }}
+        Approve to finish, revise for another pass against the same criteria, or stop.
+        Revise does not reset visit counts: there are at most three work visits in this run.
+      outcomes: [approve, revise, stop]
+      max_visits: 3
+      on_exhausted: $fail
+      timeout: 24h
+      next: { approve: $success, revise: work, stop: $fail, timeout: $fail }

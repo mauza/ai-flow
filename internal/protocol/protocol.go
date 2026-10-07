@@ -3,8 +3,24 @@
 package protocol
 
 import (
+	"crypto/sha256"
+	"fmt"
+
 	"github.com/mauza/ai-flow/internal/flow"
 )
+
+const MaxTranscriptBytes = 64 << 20
+
+// TranscriptFinalHeader marks an immutable final snapshot from one runner.
+// It does not seal the visit: only acceptance of Result selects its artifact.
+// Requests without it are periodic snapshots (also accepted from older runners).
+const TranscriptFinalHeader = "X-AI-Flow-Transcript-Final"
+
+// FinalTranscriptKey identifies immutable content within one visit. Retries
+// with identical content share a key; different Job attempts can coexist.
+func FinalTranscriptKey(runID string, seq int, node string, data []byte) string {
+	return fmt.Sprintf("runs/%s/%03d-%s.final-%x.jsonl", runID, seq, node, sha256.Sum256(data))
+}
 
 // Bundle is everything a node pod receives from the token exchange. It is the
 // only way configuration reaches a pod: nothing in it is broader than the
@@ -26,13 +42,14 @@ type Bundle struct {
 	Outputs      map[string]any `json:"outputs,omitempty"`
 	ResultSchema map[string]any `json:"result_schema"`
 
-	Repo    *RepoAccess         `json:"repo,omitempty"`
-	LLM     *LLMAccess          `json:"llm,omitempty"`
-	Harness string              `json:"harness,omitempty"`
-	Tools   []string            `json:"tools,omitempty"` // built-in harness tools allowed
-	MCP     []MCPTool           `json:"mcp,omitempty"`
-	Skills  map[string]SkillDir `json:"skills,omitempty"`
-	Check   *CheckSpec          `json:"check,omitempty"`
+	Repo      *RepoAccess         `json:"repo,omitempty"`
+	LLM       *LLMAccess          `json:"llm,omitempty"`
+	Harness   string              `json:"harness,omitempty"`
+	Tools     []string            `json:"tools,omitempty"` // built-in harness tools allowed
+	MCP       []MCPTool           `json:"mcp,omitempty"`
+	Skills    map[string]SkillDir `json:"skills,omitempty"`
+	Check     *CheckSpec          `json:"check,omitempty"`
+	SecretEnv []string            `json:"secret_env,omitempty"` // approved names only; values are injected by the launcher
 
 	TimeoutSeconds int `json:"timeout_seconds"`
 }
@@ -92,6 +109,9 @@ type Result struct {
 	Commit  string    `json:"commit,omitempty"`
 	Diff    *DiffStat `json:"diff,omitempty"`
 	LogTail string    `json:"log_tail,omitempty"`
+	// Selected atomically with the accepted result, never inferred from the
+	// latest upload. Empty selects no artifact (e.g. a failed final upload).
+	TranscriptKey string `json:"transcript_key,omitempty"`
 }
 
 type DiffStat struct {

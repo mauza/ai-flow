@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AlertCircle, Code2, History, ListTree, MessageSquare, Play, RotateCcw, Save, Sparkles } from "lucide-react";
-import { api, type Graph, type Issue } from "../api";
+import { api, type FlowView, type Graph, type Issue } from "../api";
 import { useResource } from "../hooks";
 import { timeAgo } from "../format";
 import FlowGraph from "../graph/FlowGraph";
@@ -16,6 +16,10 @@ type Tab = "node" | "yaml" | "chat" | "runs";
 
 export default function FlowPage() {
   const { name = "" } = useParams();
+  return <FlowEditor key={name} name={name} />;
+}
+
+function FlowEditor({ name }: { name: string }) {
   const [params, setParams] = useSearchParams();
   const version = Number(params.get("v")) || undefined;
   const navigate = useNavigate();
@@ -27,65 +31,105 @@ export default function FlowPage() {
 
   const [yaml, setYaml] = useState("");
   const [saved, setSaved] = useState("");
-  const [analysis, setAnalysis] = useState<{ graph: Graph; issues: Issue[] } | null>(null);
+  const [analysis, setAnalysis] = useState<{ yaml: string; graph: Graph; issues: Issue[] } | null>(null);
+  const [baseVersion, setBaseVersion] = useState(0);
+  const [remote, setRemote] = useState<FlowView | null>(null);
+  const [validationError, setValidationError] = useState<{ yaml: string; message: string } | null>(null);
+  const [validationRetry, setValidationRetry] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("node");
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const loadedKey = useRef("");
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const latest = view.data?.versions[0]?.version ?? 0;
-  const current = view.data?.flow.version ?? 0;
+  const current = baseVersion;
   const isOld = !!version && version !== latest;
   const dirty = yaml !== saved;
+  const validationFailed = validationError?.yaml === yaml;
+  const validating = analysis?.yaml !== yaml && !validationFailed;
+  const validated = analysis?.yaml === yaml && !validationFailed;
+
+  const adopt = (data: FlowView) => {
+    loadedKey.current = `${data.flow.name}@${data.flow.version}`;
+    setBaseVersion(data.flow.version);
+    setYaml(data.flow.yaml);
+    setSaved(data.flow.yaml);
+    setAnalysis({ yaml: data.flow.yaml, graph: data.graph, issues: data.issues });
+    setValidationError(null);
+    setRemote(null);
+  };
 
   // Adopt server content when it changes, unless the user has unsaved edits.
   useEffect(() => {
     const f = view.data?.flow;
     if (!f) return;
     const key = `${f.name}@${f.version}`;
-    if (key === loadedKey.current) return;
-    if (loadedKey.current.startsWith(f.name + "@") && yaml !== saved) {
-      toast("error", `v${f.version} was saved elsewhere; your unsaved edits are kept. Revert to load it.`);
-      loadedKey.current = key;
+    if (key === loadedKey.current) {
+      // The same YAML can resolve differently after a configuration change.
+      if (yaml === f.yaml) {
+        setAnalysis({ yaml: f.yaml, graph: view.data!.graph, issues: view.data!.issues });
+        setValidationError(null);
+      }
       return;
     }
-    loadedKey.current = key;
-    setYaml(f.yaml);
-    setSaved(f.yaml);
-    setAnalysis({ graph: view.data!.graph, issues: view.data!.issues });
+    // A refresh that started before our save must not roll the editor backward.
+    if (!version && loadedKey.current && f.version < baseVersion) return;
+    if (loadedKey.current.startsWith(f.name + "@") && yaml !== saved) {
+      setRemote(view.data!);
+      return;
+    }
+    adopt(view.data!);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.data]);
 
   // Re-validate as the YAML changes.
   useEffect(() => {
-    if (!yaml || (view.data && yaml === view.data.flow.yaml && analysis)) return;
+    if (analysis?.yaml === yaml && !validationRetry) return;
+    let canceled = false;
+    setValidationError(null);
     const t = window.setTimeout(() => {
       api
         .validate(yaml)
-        .then(setAnalysis)
-        .catch(() => {});
+        .then((result) => {
+          if (!canceled) setAnalysis({ ...result, yaml });
+        })
+        .catch((e: Error) => {
+          if (!canceled) setValidationError({ yaml, message: e.message });
+        });
     }, 250);
-    return () => window.clearTimeout(t);
+    return () => {
+      canceled = true;
+      window.clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yaml]);
+  }, [yaml, validationRetry]);
 
   const save = useCallback(async () => {
-    if (!dirty || saving) return;
+    if (!dirty || saving || starting) return;
     setSaving(true);
     try {
       const res = await api.saveFlow(name, yaml, isOld ? `Restored from v${version}` : "Edited in the UI");
+      if (!mounted.current) return;
       setSaved(yaml);
+      setAnalysis((previous) => previous?.yaml === yaml ? { ...previous, issues: res.issues } : previous);
       loadedKey.current = `${name}@${res.flow.version}`;
+      setBaseVersion(res.flow.version);
+      setRemote(null);
       toast("ok", `Saved v${res.flow.version}${res.issues.some((i) => i.severity === "error") ? " (with errors)" : ""}`);
       if (version) setParams({});
       view.reload();
     } catch (e) {
-      toast("error", (e as Error).message);
+      if (mounted.current) toast("error", (e as Error).message);
     } finally {
       setSaving(false);
     }
-  }, [dirty, saving, name, yaml, isOld, version, toast, setParams, view]);
+  }, [dirty, saving, starting, name, yaml, isOld, version, toast, setParams, view]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -108,18 +152,27 @@ export default function FlowPage() {
 
   const errors = analysis?.issues.filter((i) => i.severity === "error") ?? [];
   const graph = analysis?.graph;
+  const displayedIssues: Issue[] = validated ? analysis.issues : [{ severity: "warning", message: validationFailed ? "Validation unavailable; retry before running." : "Validating current edits…" }];
 
   const run = async () => {
+    if (!validated || errors.length || starting || saving || !baseVersion) return;
     setStarting(true);
     try {
+      let runVersion = baseVersion;
       if (dirty) {
-        await api.saveFlow(name, yaml, "Saved before running");
+        const res = await api.saveFlow(name, yaml, "Saved before running");
+        if (!mounted.current) return;
+        runVersion = res.flow.version;
+        loadedKey.current = `${name}@${runVersion}`;
+        setBaseVersion(runVersion);
         setSaved(yaml);
+        setRemote(null);
+        if (res.issues.some((i) => i.severity === "error")) throw new Error("Saved flow has validation errors; fix them before running.");
       }
-      const r = await api.startRun(name);
-      navigate(`/runs/${r.id}`);
+      const r = await api.startRun(name, runVersion);
+      if (mounted.current) navigate(`/runs/${r.id}`);
     } catch (e) {
-      toast("error", (e as Error).message);
+      if (mounted.current) toast("error", (e as Error).message);
     } finally {
       setStarting(false);
     }
@@ -181,11 +234,18 @@ export default function FlowPage() {
         <select
           className="input"
           style={{ width: "auto", maxWidth: 190, height: 30, padding: "0 8px", flex: "none" }}
-          value={version ?? latest}
+          value={current}
+          disabled={saving || starting}
           onChange={(e) => {
             const v = Number(e.target.value);
             if (dirty && !window.confirm("Discard unsaved changes?")) return;
+            if (remote && v === remote.flow.version) {
+              adopt(remote);
+              setParams(v === latest ? {} : { v: String(v) });
+              return;
+            }
             loadedKey.current = "";
+            setRemote(null);
             setParams(v === latest ? {} : { v: String(v) });
           }}
           title="Version"
@@ -197,8 +257,8 @@ export default function FlowPage() {
             </option>
           ))}
         </select>
-        {errors.length ? <Pill status="invalid" label={`${errors.length} error${errors.length > 1 ? "s" : ""}`} /> : <Pill status="valid" label="valid" />}
-        {dirty && (
+        {validationFailed ? <Pill status="invalid" label="validation unavailable" /> : validating ? <Pill status="pending" label="validating" /> : errors.length ? <Pill status="invalid" label={`${errors.length} error${errors.length > 1 ? "s" : ""}`} /> : <Pill status="valid" label="valid" />}
+        {(dirty || remote) && (
           <span className="small muted row" style={{ gap: 6 }}>
             <span className="dirty-dot" /> unsaved
           </span>
@@ -219,8 +279,10 @@ export default function FlowPage() {
         {dirty && (
           <button
             className="btn ghost"
+            disabled={saving || starting}
             onClick={() => {
-              setYaml(saved);
+              if (remote) adopt(remote);
+              else setYaml(saved);
             }}
             title="Discard unsaved changes"
           >
@@ -228,16 +290,19 @@ export default function FlowPage() {
             Revert
           </button>
         )}
-        <button className="btn" disabled={!dirty || saving} onClick={save} title="Save a new version (Ctrl+S)">
+        <button className="btn" disabled={!dirty || saving || starting} onClick={save} title="Save a new version (Ctrl+S)">
           {saving ? <Spinner /> : <Save />}
           {isOld ? "Restore" : "Save"}
         </button>
-        <button className="btn primary" disabled={errors.length > 0 || starting || isOld} onClick={run} title={errors.length ? "Fix validation errors first" : dirty ? "Save and run" : "Run this flow"}>
+        <button className="btn primary" disabled={!validated || errors.length > 0 || starting || saving || isOld} onClick={run} title={errors.length ? "Fix validation errors first" : dirty ? "Save and run" : "Run this flow"}>
           {starting ? <Spinner /> : <Play />}
           {dirty ? "Save & run" : "Run"}
         </button>
         </div>
       </div>
+
+      {remote && <div className="warn-box" role="status">v{remote.flow.version} was saved elsewhere. You are editing v{baseVersion}. Revert loads v{remote.flow.version}; Save keeps your edits as a new version.</div>}
+      {validationFailed && <div className="warn-box" role="status">Validation unavailable: {validationError.message} <button className="btn sm" onClick={() => setValidationRetry((n) => n + 1)}>Retry validation</button></div>}
 
       {view.data.planning && (
         <div className="gate-banner" style={{ borderColor: "var(--accent)", background: "var(--accent-bg)" }}>
@@ -254,7 +319,7 @@ export default function FlowPage() {
           <div className="q">
             Viewing v{current}. Edits here are saved as a new version (Restore).
           </div>
-          <button className="btn sm" onClick={() => setParams({})}>
+          <button className="btn sm" disabled={saving || starting} onClick={() => setParams({})}>
             Back to latest
           </button>
         </div>
@@ -273,7 +338,7 @@ export default function FlowPage() {
           ) : (
             <FlowGraph
               graph={graph}
-              issues={analysis?.issues}
+              issues={displayedIssues}
               selected={selected}
               onSelect={onSelect}
               editable={!isOld}
@@ -304,9 +369,9 @@ export default function FlowPage() {
             ))}
           </div>
           <div className="side-body">
-            {tab === "node" && <Inspector yaml={yaml} graph={graph} issues={analysis?.issues ?? []} overview={overview.data} selected={selected} onSelect={onSelect} onChange={setYaml} />}
-            {tab === "yaml" && <YamlEditor value={yaml} onChange={setYaml} issues={analysis?.issues ?? []} fileName={name} />}
-            {tab === "chat" && <Chat name={name} yaml={yaml} onApply={setYaml} />}
+            {tab === "node" && <Inspector yaml={yaml} graph={graph} issues={displayedIssues} overview={overview.data} selected={selected} onSelect={onSelect} onChange={setYaml} />}
+            {tab === "yaml" && <YamlEditor value={yaml} onChange={setYaml} issues={displayedIssues} fileName={name} />}
+            <div hidden={tab !== "chat"} style={{ height: "100%" }}><Chat name={name} yaml={yaml} onApply={setYaml} /></div>
             {tab === "runs" && (
               <div className="side-pad">
                 <RunsTable runs={view.data.runs} compact />

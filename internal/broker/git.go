@@ -29,6 +29,10 @@ func (b *Broker) git(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 401)
 		return
 	}
+	if err := b.checkGrantVisit(r.Context(), claims, false); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/git/")
 	i := strings.Index(path, ".git/")
 	if i < 0 {
@@ -61,14 +65,15 @@ func (b *Broker) git(w http.ResponseWriter, r *http.Request) {
 
 	var body io.Reader = r.Body
 	if rest == "git-receive-pack" {
-		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512<<20))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		if err := checkPush(data, r.Header.Get("Content-Encoding"), claims.Branch); err != nil {
+		encoding := strings.Join(r.Header.Values("Content-Encoding"), ",")
+		if err := checkPush(data, encoding, claims.Branch); err != nil {
 			slog.Warn("push refused", "run", claims.Run, "node", claims.Node, "err", err)
-			cmds, caps, perr := parsePush(data, r.Header.Get("Content-Encoding"))
+			cmds, caps, perr := parsePush(data, encoding)
 			if perr != nil || len(cmds) == 0 {
 				http.Error(w, "push refused: "+err.Error(), 403)
 				return
@@ -143,41 +148,58 @@ func (b *Broker) gitClaims(r *http.Request) (*grant.Claims, error) {
 // pushCmd is one ref update: old sha, new sha, ref name.
 type pushCmd struct{ old, new, ref string }
 
+const maxPushCommandBytes = 1 << 20
+
 // parsePush reads the ref-update commands at the start of a receive-pack
 // request: "<old> <new> <ref>\x00<caps>" pkt-lines until a flush packet.
 func parsePush(data []byte, encoding string) ([]pushCmd, string, error) {
-	raw := data
-	if strings.EqualFold(encoding, "gzip") {
+	var rd io.Reader = bytes.NewReader(data)
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+	case "gzip":
 		zr, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
 			return nil, "", err
 		}
-		raw, err = io.ReadAll(io.LimitReader(zr, 1<<20)) // commands are at the front
-		if err != nil && err != io.ErrUnexpectedEOF {
-			return nil, "", err
-		}
+		defer zr.Close()
+		rd = zr
+	default:
+		return nil, "", fmt.Errorf("unsupported content encoding %q", encoding)
 	}
+	// Limit the command section, not the pack. A flush must be fully read
+	// within this budget; a valid prefix is never sufficient authorization.
+	rd = io.LimitReader(rd, maxPushCommandBytes)
 	var cmds []pushCmd
 	caps := ""
-	for len(raw) >= 4 {
-		n, err := strconv.ParseUint(string(raw[:4]), 16, 16)
+	for {
+		var header [4]byte
+		if _, err := io.ReadFull(rd, header[:]); err != nil {
+			return nil, "", fmt.Errorf("missing command flush (incomplete or over limit): %w", err)
+		}
+		n, err := strconv.ParseUint(string(header[:]), 16, 16)
 		if err != nil {
 			return nil, "", fmt.Errorf("bad pkt-line")
 		}
 		if n == 0 {
-			break // flush: end of commands
+			return cmds, caps, nil
 		}
-		if int(n) > len(raw) || n < 4 {
+		if n < 4 || n > 65520 {
 			return nil, "", fmt.Errorf("truncated pkt-line")
 		}
-		line := string(raw[4:n])
-		raw = raw[n:]
+		payload := make([]byte, int(n)-4)
+		if _, err := io.ReadFull(rd, payload); err != nil {
+			return nil, "", fmt.Errorf("incomplete or over-limit pkt-line: %w", err)
+		}
+		line := string(payload)
 		line, c, hasCaps := strings.Cut(line, "\x00")
-		if hasCaps && caps == "" {
+		if hasCaps {
+			if len(cmds) != 0 || strings.ContainsRune(c, '\x00') {
+				return nil, "", fmt.Errorf("unexpected capabilities")
+			}
 			caps = strings.TrimSpace(c)
 		}
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "shallow ") || strings.HasPrefix(line, "push-cert") {
+		if strings.HasPrefix(line, "shallow ") && !hasCaps && len(cmds) == 0 {
 			continue
 		}
 		f := strings.Fields(line)
@@ -186,7 +208,6 @@ func parsePush(data []byte, encoding string) ([]pushCmd, string, error) {
 		}
 		cmds = append(cmds, pushCmd{f[0], f[1], f[2]})
 	}
-	return cmds, caps, nil
 }
 
 // checkPush allows only non-deleting updates of the run branch.

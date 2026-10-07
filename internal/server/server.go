@@ -20,16 +20,18 @@ import (
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/objstore"
+	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
 )
 
 type Server struct {
-	app    *app.App
-	obj    objstore.Store
-	ui     fs.FS
-	token  string
-	extras map[string]http.Handler
+	app         *app.App
+	obj         objstore.Store
+	ui          fs.FS
+	token       string
+	extras      map[string]http.Handler
+	brokerReady func() bool
 }
 
 // Mount adds a route outside the API auth (e.g. a signed webhook). Call before Handler.
@@ -54,6 +56,7 @@ func New(a *app.App, obj objstore.Store, ui fs.FS) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /readyz", s.ready)
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(h)) }
 
 	api("GET /api/overview", s.overview)
@@ -75,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/runs", s.listRuns)
 	api("GET /api/runs/{id}", s.getRun)
 	api("POST /api/runs/{id}/cancel", s.cancelRun)
+	api("POST /api/runs/{id}/resume", s.resumeRun)
 	api("POST /api/runs/{id}/gates/{seq}", s.decideGate)
 	api("GET /api/runs/{id}/visits/{seq}/transcript", s.transcript)
 
@@ -105,6 +109,11 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 // ---- overview & catalog ----
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
+	operations, err := s.operations(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "operational summary unavailable")
+		return
+	}
 	cfg := s.app.Cfg
 	cat := cfg.Catalog
 	type named struct {
@@ -116,6 +125,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	for _, name := range sortedKeys(cfg.Projects) {
 		p := cfg.Projects[name]
 		m := map[string]any{"name": name, "description": p.Spec.Description, "repo": p.Spec.Repo, "base": p.Spec.Base, "start": p.Spec.Start, "guidance": p.Spec.Planner.Guidance}
+		eligibility := planner.ProjectEligibility(cfg, p)
+		m["allowed_models"], m["allowed_grants"] = eligibility.AllowedModels, eligibility.AllowedGrants
 		if p.Spec.Linear != nil {
 			m["linear"] = map[string]any{"team": p.Spec.Linear.Team, "label": p.Spec.Linear.Trigger.Label, "states": p.Spec.Linear.Trigger.States}
 		}
@@ -133,7 +144,11 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	var presets []map[string]any
 	for _, name := range sortedKeys(cat.Presets) {
 		p := cat.Presets[name]
-		presets = append(presets, map[string]any{"name": name, "type": p.Type, "description": p.Description, "outcomes": p.Outcomes, "min_size": p.MinSize})
+		presets = append(presets, map[string]any{
+			"name": name, "type": p.Type, "description": p.Description, "outcomes": p.Outcomes, "min_size": p.MinSize,
+			"category": p.Category, "when_to_use": p.WhenToUse, "requires": nonNil(p.Requires),
+			"outputs": p.Outputs, "definition": p.Node,
+		})
 	}
 	var models []map[string]any
 	for _, name := range sortedKeys(cat.Models) {
@@ -148,7 +163,9 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"projects": projects, "models": models, "runtimes": runtimes, "grants": grants, "skills": skills, "presets": presets,
 		"planner": map[string]any{"model": cat.Planner.Model, "guidance": cat.Planner.Guidance},
 		"actions": cat.Actions, "node_types": flow.NodeTypes,
-		"linear":  cfg.Env.Linear.Enabled, "local": cfg.Env.Runs.Local,
+		"linear": cfg.Env.Linear.Enabled, "local": cfg.Env.Runs.Local,
+		"operations":  operations,
+		"projectless": planner.ProjectEligibility(cfg, nil),
 	})
 }
 
@@ -156,7 +173,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 
 type taskView struct {
 	*store.Task
-	Planning bool        `json:"planning"`
+	Planning bool         `json:"planning"`
 	Runs     []*store.Run `json:"runs,omitempty"`
 }
 
@@ -175,7 +192,8 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []taskView{}
 	for _, t := range tasks {
-		out = append(out, taskView{Task: t, Planning: s.app.Planning(t.ID), Runs: byTask[t.ID]})
+		state, planning := s.app.TaskState(t)
+		out = append(out, taskView{Task: state, Planning: planning, Runs: byTask[t.ID]})
 	}
 	writeJSON(w, 200, out)
 }
@@ -208,7 +226,8 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	runs, _ := s.app.Store.ListRuns(ctx, store.RunFilter{TaskID: t.ID, Limit: 50})
 	events, _ := s.app.Store.Events(ctx, "task_id", t.ID, 100)
-	writeJSON(w, 200, map[string]any{"task": taskView{Task: t, Planning: s.app.Planning(t.ID)}, "runs": nonNil(runs), "events": nonNil(events)})
+	state, planning := s.app.TaskState(t)
+	writeJSON(w, 200, map[string]any{"task": taskView{Task: state, Planning: planning}, "runs": nonNil(runs), "events": nonNil(events)})
 }
 
 func (s *Server) planTask(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +281,9 @@ func (s *Server) flowView(ctx context.Context, name string, version int) (*flowV
 	v.Graph, v.Issues = s.analyze(fv.YAML)
 	if fv.TaskID != "" {
 		v.Task, _ = s.app.Store.GetTask(ctx, fv.TaskID)
-		v.Planning = s.app.Planning(fv.TaskID)
+		if v.Task != nil {
+			v.Task, v.Planning = s.app.TaskState(v.Task)
+		}
 	}
 	return v, nil
 }
@@ -354,8 +375,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err.Error())
 		return
 	}
-	g, issues := s.analyze(res.YAML)
-	writeJSON(w, 200, map[string]any{"yaml": res.YAML, "explanation": res.Explanation, "valid": res.Valid, "issues": issues, "graph": g, "attempts": res.Attempts})
+	g, _ := s.analyze(res.YAML)
+	writeJSON(w, 200, map[string]any{"yaml": res.YAML, "explanation": res.Explanation, "valid": res.Valid, "issues": nonNil(res.Issues), "graph": g, "attempts": res.Attempts})
 }
 
 func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
@@ -416,11 +437,37 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Node string `json:"node"` // default: the node of the last visit
+		Note string `json:"note"`
+		By   string `json:"by"`
+	}
+	if r.ContentLength > 0 && !readJSON(w, r, &in) {
+		return
+	}
+	if in.By == "" {
+		in.By = "ui"
+	}
+	run, err := s.app.Engine.Resume(r.Context(), r.PathValue("id"), in.Node, in.Note, in.By)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, 404, "not found")
+	case errors.Is(err, store.ErrNotResumable):
+		writeErr(w, 409, err.Error())
+	case err != nil:
+		writeErr(w, 400, err.Error())
+	default:
+		writeJSON(w, 200, run)
+	}
+}
+
 func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	seq, _ := strconv.Atoi(r.PathValue("seq"))
 	var in struct {
 		Outcome string `json:"outcome"`
 		By      string `json:"by"`
+		Note    string `json:"note"` // optional: reaches the next step as the gate's outputs.note
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -428,7 +475,7 @@ func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	if in.By == "" {
 		in.By = "ui"
 	}
-	if err := s.app.Engine.Decide(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By); err != nil {
+	if err := s.app.Engine.Decide(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By, in.Note); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}

@@ -7,7 +7,8 @@ Status: implemented (v2) · 2026-09-25
 Every task gets its own small state machine — a **flow**. A model (the planner)
 drafts the flow; each node is one narrow step: a single LLM call, a coding-agent
 session (pi), a deterministic check, a human gate, a CEL switch, or a built-in
-action. Steps are small enough that local models run most of them. Flows are
+action. Steps are focused and verifiable, using the smallest sufficient configured
+model. The current menu contains only GPT-6 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
 YAML; the UI shows them as a graph you can edit by hand or by chatting with the
 planner. Runs execute each pod step as a Kubernetes Job with exactly the tools,
 skills, MCP tools, models and repo access that step declares — and no raw
@@ -126,7 +127,7 @@ spec:
 | `llm` | pod | One chat completion with a JSON-schema response format (`{outcome, summary, outputs}`); the branch diff is included. |
 | `agent` | pod | pi session in the repo; ends with the `flow_finish` tool. One nudge if the agent forgets. |
 | `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`. |
-| `gate` | control plane | A human picks an outcome in the UI; optional timeout. |
+| `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
 | `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
 
@@ -149,16 +150,19 @@ and the branch diff stats.
 
 ```yaml
 llm:
-  model: qwen-local
-  fallbacks: [gemma-local]
+  model: gpt-6-sol
   thinking: medium
   limits: { tokens: 400000, usd: 0.50, turns: 80 }
   on_limit:
-    rate_limited:     { action: retry, max: 5, backoff: 20s, then: fallback }
-    quota_exhausted:  { action: wait, max_wait: 2h, then: fallback }
-    context_exceeded: { action: fallback }
+    rate_limited:     { action: retry, max: 5, backoff: 20s, then: fail }
+    quota_exhausted:  { action: wait, max_wait: 2h, then: fail }
+    context_exceeded: { action: fail }
     budget_exceeded:  { action: outcome }     # emits `limit`; route it in next
 ```
+
+The checked-in catalog has no model fallback. A flow may explicitly opt into
+`fallbacks: [gpt-6-luna]` and a corresponding `fallback` limit action if its project
+allows Luna; this is a per-flow policy, not an automatic catalog default.
 
 Actions: `retry` (exponential backoff, honours `Retry-After`), `wait` (until the
 upstream's reset time, capped by `max_wait`), `fallback` (next model), `outcome`
@@ -180,16 +184,27 @@ Secrets are env vars named by `*Env` fields, never inlined.
 - **Environment** — where things run: listen ports, public URL, pod URL, runs
   namespace, concurrency, LLM upstreams (`baseUrl`, `apiKeyEnv`), object store
   (`garage` | `s3` | `local`), git host tokens, GitHub API, Linear connection,
-  MCP servers (URL + headers).
+  MCP servers (URL + headers), notifications (`notify`: ntfy server, topic,
+  token, events, `stuckAfter`).
 - **Catalog** — models (upstream + model id + planner metadata + default `llm`),
   harnesses, runtimes, grants, skills (inline files or a directory), presets,
-  node defaults, planner (model, guidance, attempts).
+  node defaults, planner (model, stream, guidance, attempts).
 - **Project** — repo grant, base branch, `start: manual|auto`, allow-lists for
   grants and models (glob patterns), budgets, planner guidance, Linear link:
   team, optional project filter, trigger label + states, state mapping, comments.
 
 The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
+
+The checked-in model menu is `gpt-6-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
+existing `home` upstream with matching upstream aliases. Sol remains the default
+planner with `planner.stream: true`; Luna and Astra are additional choices. All three use `size: frontier`,
+`reasoning: true`, `tool_use: good`, and `cost: subscription` as selection metadata
+without performance claims. `context_tokens: 100000` is a conservative working limit,
+not a full-capacity claim. The Sol and Luna gateway aliases were verified with existing
+OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for access
+synchronization and the separate ai-flow application rollout. The original
+local-model premise is historical, not the current model policy.
 
 ## 6. Planning
 
@@ -209,11 +224,22 @@ local-process mode on top.
 No gate is mandatory. The guidance text decides when the planner adds gates, and
 it must justify them in the gate's `description`.
 
+The planner also picks a rigor level and names it in its explanation: light
+(implement → check → PR), test-first (the default for behavior changes),
+investigate-first (a read-only exploration step when the plan hinges on an
+unknown), or independent review (a non-author review, on a different model when
+one is allowed, when a plausible change could fail in ways its author would not
+see). Importance alone never escalates; an open unknown or an author-blind
+failure mode does. The rungs follow openrig's planning dial.
+
 Validation (planner, UI, CLI, engine): schema, ids, start, every outcome routed,
 no stray `next` keys, targets exist, reachability, every node can reach a
 terminal, every cycle bounded (`max_visits` or a gate), models/runtimes/harnesses/
 skills/presets/actions exist, grants and models allowed by the project, CEL
 compiles, template references resolve, output types valid, budget ≤ project cap.
+Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
+an llm node, `thinking` on a non-reasoning model, `spec.budget.wall`, …) produce
+a *declared but not enforced* warning rather than silently looking like they work.
 
 ## 7. Execution
 
@@ -228,9 +254,24 @@ active run looks at its latest visit:
 - a pod node whose Job ended without a result → error after a grace period;
 - a gate past its deadline → `timeout` outcome.
 
+Resolved settings and runtime image references are also pinned. Restart recovery
+reconciles pending visits and uncertain launches using durable transition state.
+See [RELIABILITY.md](RELIABILITY.md) for configuration drift, legacy migration,
+action replay, budget and transcript semantics.
+
 Transitions happen only on the engine's loop; the broker and API record facts
 (a result arrived, a gate was decided) and wake it. Infra errors (pod crash,
 OOM, timeout) fail the run after Job retries; business failures are outcomes.
+
+**Resume.** A failed or canceled run can be resumed at any node (default: the
+node of its last visit) with an optional note: `POST /api/runs/{id}/resume`
+`{node, note}`, or **Resume** in the run view. The run keeps its branch, pinned
+settings, visits and spend; the run, its task and a new pending visit commit in
+one transaction, so a repeated resume is rejected rather than doubled. Visits
+before the resume stop counting toward `max_visits`, giving each resume one fresh
+bounded window. Steps after the resume get a *Resumed* context section (where it
+stopped, the note) and `run.resumes` / `run.resume_note` in templates. A resume
+needs a free run slot and fails on configuration drift like any pinned run.
 
 ### 7.2 Node pod
 
@@ -279,7 +320,7 @@ A pod can re-exchange its own token — which only yields its own visit's grant.
 |---|---|
 | Outcome, outputs, summary | Visit rows (SQLite); templates and context read the latest visit per node. |
 | Code | The run branch, pushed after each writing node. Diff stats flow into `run.diff`. |
-| Transcripts, check output | Object store (`runs/<run>/<seq>-<node>.jsonl`), shown in the UI. |
+| Transcripts, check output | Object store; the accepted result pins its validated final content-addressed key, shown in the UI. Capture is bounded with explicit truncation metadata. |
 
 ## 9. Intake (Linear)
 
@@ -290,6 +331,14 @@ state with the trigger label becomes a task and is planned. ai-flow moves the
 issue through the mapped states (planning → flow ready → running → succeeded /
 failed) and comments with the flow link, then the PR link or the failure reason.
 Moving a failed issue back to a trigger state re-plans it.
+
+## 9a. Notifications
+
+With `notify.ntfy` set, the engine pushes a short message (title, the gate
+question or failure, a link to the run) when a gate opens, when a gate is
+still waiting after `stuckAfter` (once per gate visit, remembered across
+restarts), and when a run fails; `succeeded` is opt-in. Delivery is best
+effort and never affects the run.
 
 ## 10. UI
 

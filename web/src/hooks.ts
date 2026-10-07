@@ -14,6 +14,8 @@ const listeners = new Set<Listener>();
 let source: EventSource | null = null;
 let connected = false;
 const statusListeners = new Set<() => void>();
+const reconnectListeners = new Set<() => void>();
+let opened = false;
 
 function setConnected(v: boolean) {
   if (connected !== v) {
@@ -25,7 +27,11 @@ function setConnected(v: boolean) {
 function ensureSource() {
   if (source) return;
   source = new EventSource("/api/events");
-  source.onopen = () => setConnected(true);
+  source.onopen = () => {
+    setConnected(true);
+    if (opened) reconnectListeners.forEach((l) => l());
+    opened = true;
+  };
   source.onerror = () => setConnected(false); // EventSource reconnects on its own
   source.onmessage = (m) => {
     try {
@@ -100,10 +106,22 @@ export function useResource<T>(load: () => Promise<T>, deps: unknown[], shouldRe
     setLoading(true);
     setData(undefined);
     reload();
+    return () => { ++seq.current; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   const timer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const refresh = () => {
+      window.clearTimeout(timer.current);
+      reload();
+    };
+    reconnectListeners.add(refresh);
+    return () => {
+      reconnectListeners.delete(refresh);
+      window.clearTimeout(timer.current);
+    };
+  }, [reload]);
   useEvents((e) => {
     if (shouldReload && shouldReload(e)) {
       window.clearTimeout(timer.current);

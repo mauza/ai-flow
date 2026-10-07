@@ -24,7 +24,7 @@ spec:
         expect "llm proxy needs a grant"    "$(curl -s -m 5 -o /dev/null -w '%{http_code}' $P/llm/v1/models)" "401"
         GRANT=$(curl -s -m 5 -X POST -H "X-Pod-Token: $(cat /var/run/secrets/ai-flow/token)" $P/v1/exchange | jq -r .grant)
         expect "re-exchange works for own node" "$( [ -n "$GRANT" ] && [ "$GRANT" != null ] && echo yes)" "yes"
-        expect "ungranted model refused"    "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRANT" -H 'content-type: application/json' -d '{"model":"gemma-local","messages":[{"role":"user","content":"hi"}]}' $P/llm/v1/chat/completions)" "403"
+        expect "ungranted model refused"    "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRANT" -H 'content-type: application/json' -d '{"model":"gpt-6-sol","messages":[{"role":"user","content":"hi"}]}' $P/llm/v1/chat/completions)" "403"
         expect "ungranted MCP tool refused" "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRANT" -d '{"server":"demo","tool":"time_now","arguments":{}}' $P/v1/mcp/call)" "403"
         expect "forged pod token refused"   "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'X-Pod-Token: forged' $P/v1/exchange)" "401"
         expect "forged grant refused"       "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer x.y.z' $P/llm/v1/models)" "401"

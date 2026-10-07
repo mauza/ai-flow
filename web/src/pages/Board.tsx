@@ -8,7 +8,7 @@ import { Empty, LinearMark, Modal, PRLink, Pill, SourceChip, Spinner, useToast }
 
 const columns: { id: string; title: string; color: string; statuses: string[] }[] = [
   { id: "planning", title: "Planning", color: "var(--info)", statuses: ["new", "planning"] },
-  { id: "ready", title: "Ready to run", color: "var(--accent)", statuses: ["flow_ready", "plan_failed"] },
+  { id: "ready", title: "Ready to run", color: "var(--accent)", statuses: ["flow_ready", "plan_failed", "plan_interrupted"] },
   { id: "running", title: "Running", color: "var(--gate)", statuses: ["running"] },
   { id: "done", title: "Done", color: "var(--success)", statuses: ["succeeded"] },
   { id: "failed", title: "Failed", color: "var(--danger)", statuses: ["failed"] },
@@ -110,8 +110,8 @@ function TaskCard({ t, now, onOpen }: { t: Task; now: number; onOpen: () => void
       <div className="foot">
         {t.planning || t.status === "planning" ? (
           <Pill status="planning" label="planning" />
-        ) : t.status === "plan_failed" ? (
-          <Pill status="plan_failed" />
+        ) : t.status === "plan_failed" || t.status === "plan_interrupted" ? (
+          <Pill status="plan_failed" label={taskStatusLabel[t.status]} />
         ) : lastRun ? (
           <Pill status={lastRun.status} label={`run ${lastRun.status}`} />
         ) : t.status === "flow_ready" ? (
@@ -125,7 +125,7 @@ function TaskCard({ t, now, onOpen }: { t: Task; now: number; onOpen: () => void
         )}
         <PRLink url={lastRun?.pr_url} />
       </div>
-      {t.status === "plan_failed" && t.error && (
+      {(t.status === "plan_failed" || t.status === "plan_interrupted") && t.error && (
         <div className="err">
           <AlertTriangle size={12} /> {t.error}
         </div>
@@ -223,7 +223,7 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             )}
           </div>
           {t.body ? <div className="prose card card-pad" style={{ maxHeight: 220, overflow: "auto" }}>{t.body}</div> : <div className="muted small">No description.</div>}
-          {t.error && t.status === "plan_failed" && <div className="warn-box" style={{ whiteSpace: "pre-wrap" }}>{t.error}</div>}
+           {t.error && (t.status === "plan_failed" || t.status === "plan_interrupted") && <div className="warn-box" style={{ whiteSpace: "pre-wrap" }}>{t.error}</div>}
 
           <div className="row wrap">
             {(t.planning || t.status === "planning") && (
@@ -237,7 +237,7 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                 Open flow
               </Link>
             )}
-            {t.flow_name && t.status !== "running" && !t.planning && t.status !== "plan_failed" && (
+            {t.flow_name && t.status !== "running" && !t.planning && t.status !== "plan_failed" && t.status !== "plan_interrupted" && (
               <button
                 className="btn"
                 disabled={starting}

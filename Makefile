@@ -24,7 +24,7 @@ STATE_DIR ?= $(HOME)/.local/share/ai-flow/$(CLUSTER)
 -include .env
 export
 
-.PHONY: build build-linux ui test lint images kind-up dev-up dev-reload dev-down dev-reset dev-local secrets deploy logs release release-check
+.PHONY: build build-linux build-eval ui test test-race test-eval test-templates eval-demo lint helm-check images kind-up dev-up dev-reload dev-down dev-reset dev-local secrets deploy logs release release-check
 
 build: ui
 	go build -ldflags '$(LDFLAGS)' -o bin/ai-flow ./cmd/ai-flow
@@ -32,15 +32,40 @@ build: ui
 build-linux: ui
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o bin/linux/ai-flow ./cmd/ai-flow
 
+build-eval:
+	go build -o bin/ai-flow-eval ./cmd/ai-flow-eval
+
 ui:
 	@if [ -f web/package.json ]; then cd web && npm ci --no-audit --no-fund --loglevel=error && npm run build; fi
 
 test:
 	go test ./...
 
-lint:
+test-race:
+	go test -race ./...
+
+test-eval:
+	go test ./cmd/ai-flow-eval ./internal/eval
+
+test-templates:
+	go test ./internal/eval -run '^TestTemplatesValidate$$' -count=1
+
+# These are hand-authored fixtures, not live model evaluations.
+eval-demo:
+	go run ./cmd/ai-flow-eval -suite examples/evals/baseline-suite.json
+
+lint: helm-check
 	go vet ./...
-	helm lint deploy/chart -f deploy/chart/values-kind.yaml
+
+# Offline only: render both storage modes and both Garage secret branches.
+# Existing names are dummy references; no secret values or cluster are needed.
+helm-check:
+	helm lint deploy/chart --strict
+	helm lint deploy/chart -f deploy/chart/values-kind.yaml --strict
+	helm template ai-flow deploy/chart > /dev/null
+	helm template ai-flow deploy/chart -f deploy/chart/values-kind.yaml > /dev/null
+	helm template ai-flow deploy/chart --set garage.existingSecret=ci-garage-secret --set secretName=ci-control-plane-secrets > /dev/null
+	helm template ai-flow deploy/chart -f deploy/chart/values-kind.yaml --set garage.existingSecret=ci-garage-secret --set secretName=ci-control-plane-secrets > /dev/null
 
 images: build-linux
 	docker build -f deploy/images/control-plane.Dockerfile -t ai-flow:dev .

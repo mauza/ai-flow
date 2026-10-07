@@ -94,6 +94,8 @@ export interface Run {
   created_at: number;
   started_at?: number;
   finished_at?: number;
+  resumes?: number;
+  resume_note?: string;
 }
 
 export interface Visit {
@@ -165,12 +167,15 @@ export interface RunView {
 }
 
 export interface Overview {
+  projectless: { allowed_models: string[]; allowed_grants: string[] };
   projects: {
     name: string;
     description?: string;
     repo: string;
     base: string;
     start: string;
+    allowed_models: string[];
+    allowed_grants: string[];
     guidance?: string;
     linear?: { team: string; label: string; states: string[] };
   }[];
@@ -187,12 +192,41 @@ export interface Overview {
   runtimes: { name: string; image: string; description?: string }[];
   grants: { name: string; description?: string; kind: string }[];
   skills: { name: string; description?: string }[];
-  presets: { name: string; type: string; description?: string; outcomes?: string[]; min_size?: string }[];
+  presets: {
+    name: string;
+    type: string;
+    description?: string;
+    outcomes?: string[];
+    min_size?: string;
+    category?: string;
+    when_to_use?: string;
+    requires?: string[];
+    outputs?: Record<string, unknown>;
+    definition?: Record<string, unknown>;
+  }[];
   planner: { model: string; guidance?: string };
   actions: string[];
   node_types: string[];
   linear: boolean;
   local: boolean;
+  operations: {
+    as_of: number;
+    active: number;
+    waiting: number;
+    queued: number;
+    oldest_queued_age_ms: number;
+    nodes: {
+      project: string;
+      flow_name: string;
+      node: string;
+      type: string;
+      visits: number;
+      duration_samples: number;
+      duration_total_ms: number;
+      duration_max_ms: number;
+      failures: Partial<Record<"error" | "timeout" | "canceled" | "fail_outcome", number>>;
+    }[];
+  };
 }
 
 export interface ChatResult {
@@ -257,7 +291,8 @@ export const api = {
   },
   run: (id: string) => request<RunView>("GET", `/api/runs/${id}`),
   cancelRun: (id: string) => request<void>("POST", `/api/runs/${id}/cancel`),
-  decide: (id: string, seq: number, outcome: string) => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome }),
+  resumeRun: (id: string, node: string, note: string) => request<Run>("POST", `/api/runs/${id}/resume`, { node, note }),
+  decide: (id: string, seq: number, outcome: string, note = "") => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome, note }),
   transcript: async (id: string, seq: number): Promise<string> => {
     const res = await fetch(`/api/runs/${id}/visits/${seq}/transcript`);
     if (!res.ok) throw new ApiError(res.status, await res.text());

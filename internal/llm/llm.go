@@ -37,6 +37,7 @@ func New(cfg *config.Config) *Client {
 type Options struct {
 	Temperature float64
 	MaxTokens   int
+	Stream      bool
 }
 
 // Chat sends messages to a catalog model and returns the reply text.
@@ -53,6 +54,10 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 	if opt.MaxTokens > 0 {
 		body["max_tokens"] = opt.MaxTokens
 	}
+	if opt.Stream {
+		body["stream"] = true
+		body["stream_options"] = map[string]bool{"include_usage": true}
+	}
 	raw, _ := json.Marshal(body)
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
@@ -68,15 +73,38 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 			return "", Usage{}, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if opt.Stream {
+			req.Header.Set("Accept", "text/event-stream")
+		}
 		if key := config.Secret(up.APIKeyEnv); key != "" {
 			req.Header.Set("Authorization", "Bearer "+key)
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return "", Usage{}, ctx.Err()
+			}
 			lastErr = err
 			continue
 		}
-		data, _ := io.ReadAll(resp.Body)
+		if opt.Stream {
+			if resp.StatusCode >= 300 {
+				// Error bodies can contain credentials or echoed prompt content.
+				resp.Body.Close()
+				lastErr = fmt.Errorf("%s: HTTP %d", model, resp.StatusCode)
+				if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+					continue
+				}
+				return "", Usage{}, lastErr
+			}
+			reply, usage, err := ReadStream(ctx, resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return "", Usage{}, fmt.Errorf("%s: %w", model, err)
+			}
+			return reply, usage, nil
+		}
+		data, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("%s: HTTP %d: %s", model, resp.StatusCode, truncate(string(data), 300))
@@ -84,6 +112,9 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 		}
 		if resp.StatusCode >= 300 {
 			return "", Usage{}, fmt.Errorf("%s: HTTP %d: %s", model, resp.StatusCode, truncate(string(data), 500))
+		}
+		if readErr != nil {
+			return "", Usage{}, fmt.Errorf("%s: reading response: %w", model, readErr)
 		}
 		var out struct {
 			Choices []struct {

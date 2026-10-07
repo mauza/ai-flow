@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, AlertTriangle, ArrowRight, Flag, Plus, Trash2, X } from "lucide-react";
 import type { Graph, GraphNode, Issue, Overview } from "../api";
 import { TypeIcon, typeMeta, useToast } from "../ui";
-import { addNode, deleteNode, nodeTemplate, rawFlow, rawNode, renameNode, setFlowField, setNodeField, setStart, setTransition, removeTransition } from "./yamlEdit";
+import { matchesPreset, presetCategory, PresetDetails } from "../pages/Catalog";
+import { addNode, addPresetNode, deleteNode, nodeTemplate, rawFlow, rawNode, renameNode, setFlowField, setNodeField, setStart, setTransition, removeTransition } from "./yamlEdit";
 
 interface Props {
   yaml: string;
@@ -13,6 +14,22 @@ interface Props {
   onSelect: (id: string | null) => void;
   onChange: (yaml: string) => void;
   readOnly?: boolean;
+}
+
+function projectChoices(yaml: string, overview?: Overview) {
+  const projectName = (rawFlow(yaml)?.metadata as { project?: string } | undefined)?.project;
+  const project = projectName ? overview?.projects.find((p) => p.name === projectName) : overview?.projectless;
+  return {
+    models: new Set(project?.allowed_models ?? []),
+    grants: new Set(project?.allowed_grants ?? []),
+  };
+}
+
+function meetsMinimum(size?: string, minimum?: string) {
+  if (!minimum) return true;
+  const sizes = ["small", "medium", "large"];
+  const required = sizes.indexOf(minimum);
+  return required >= 0 && sizes.indexOf(size ?? "") >= required;
 }
 
 export default function Inspector(p: Props) {
@@ -141,6 +158,11 @@ function AddNode({ yaml, overview, onAdd }: { yaml: string; overview?: Overview;
   const [open, setOpen] = useState(false);
   const [id, setId] = useState("");
   const [type, setType] = useState("agent");
+  const [source, setMode] = useState<"preset" | "blank" | null>(null);
+  const mode = source ?? (overview?.presets.length ? "preset" : "blank");
+  const [query, setQuery] = useState("");
+  const [presetName, setPresetName] = useState("");
+  const [model, setModel] = useState("");
   const toast = useToast();
   if (!open) {
     return (
@@ -150,9 +172,48 @@ function AddNode({ yaml, overview, onAdd }: { yaml: string; overview?: Overview;
       </button>
     );
   }
-  const valid = /^[a-z][a-z0-9_]{0,40}$/.test(id);
+  const preset = overview?.presets.find((p) => p.name === presetName);
+  const choices = projectChoices(yaml, overview);
+  const needsModel = mode === "preset" && (preset?.type === "agent" || preset?.type === "llm");
+  const availableModels = (overview?.models ?? []).filter((m) => choices.models.has(m.name) && meetsMinimum(m.size, preset?.min_size));
+  const selectedModel = model || availableModels[0]?.name || "";
+  const duplicate = !!rawNode(yaml, id);
+  const valid = /^[a-z][a-z0-9_]{0,40}$/.test(id) && !duplicate && (mode === "blank" || (!!preset && (!needsModel || availableModels.some((m) => m.name === selectedModel))));
+  const filtered = (overview?.presets ?? []).filter((p) => matchesPreset(p, query));
   return (
-    <div className="card card-pad mt">
+    <div className="card card-pad mt preset-picker">
+      <div className="row wrap mb" role="group" aria-label="Node source">
+        <button className={`btn sm${mode === "preset" ? " primary" : ""}`} aria-pressed={mode === "preset"} onClick={() => setMode("preset")}>Preset</button>
+        <button className={`btn sm${mode === "blank" ? " primary" : ""}`} aria-pressed={mode === "blank"} onClick={() => setMode("blank")}>Blank node</button>
+      </div>
+      {mode === "preset" ? <>
+        <label className="field"><span>Find a preset</span><input className="input" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search purpose, type or category" /></label>
+        <div className="preset-options" aria-label="Available presets">
+          {filtered.map((p) => <button key={p.name} className={`preset-option${presetName === p.name ? " selected" : ""}`} aria-label={`Use preset/${p.name}`} aria-pressed={presetName === p.name} onClick={() => { setPresetName(p.name); setModel(""); }}>
+            <span className="row"><TypeIcon type={p.type} size={20} /><b className="mono">{p.name}</b></span>
+            <span className="small muted">{presetCategory(p)} · {typeMeta[p.type]?.label ?? p.type}</span>
+            {p.description && <span className="small">{p.description}</span>}
+          </button>)}
+          {!filtered.length && <p className="hint">{overview?.presets.length ? "No matching presets. Try another search." : "No presets available. Choose Blank node to create a step."}</p>}
+        </div>
+        {preset && <div className="preset-selection">
+          <div className="label">Selected: <span className="mono">preset/{preset.name}</span></div>
+          {preset.when_to_use && <p className="small">{preset.when_to_use}</p>}
+          <div className="label mt">Outcomes to wire</div>
+          <div className="chips">{preset.outcomes?.length ? preset.outcomes.map((outcome) => <span className="chip mono" key={outcome}>{outcome}</span>) : <span className="hint">Derived from the node type.</span>}</div>
+          <div className="label mt">Prerequisites</div>
+          {preset.requires?.length ? <ul className="small">{preset.requires.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul> : <p className="hint">No prerequisites listed.</p>}
+          <p className="hint">Add required grants explicitly under Access after insertion.</p>
+          {needsModel && <label className="field mt"><span>Preset model{preset.min_size ? ` · minimum ${preset.min_size}` : ""}</span>
+            <select className="input" value={selectedModel} onChange={(e) => setModel(e.target.value)}>
+              {!availableModels.length && <option value="">No compatible model</option>}
+              {availableModels.map((m) => <option key={m.name} value={m.name}>{m.name}{m.size ? ` · ${m.size}` : ""}</option>)}
+            </select>
+            {availableModels.length ? <span className="hint">Only project-allowed models{preset.min_size ? ` of size ${preset.min_size} or larger` : ""} are offered.</span>
+              : <span className="warn-box small" role="status">No project-allowed model{preset.min_size ? ` with a known size meeting ${preset.min_size}` : ""} is available. Update the project's model configuration or choose another preset before adding.</span>}
+          </label>}
+        </div>}
+      </> : <>
       <div className="field">
         <label>Type</label>
         <div className="row wrap" style={{ gap: 6 }}>
@@ -164,9 +225,12 @@ function AddNode({ yaml, overview, onAdd }: { yaml: string; overview?: Overview;
         </div>
         <span className="hint">{typeMeta[type]?.blurb}</span>
       </div>
+      </>}
+      <p className="hint">New outcomes are unconnected. Route each outcome, including failures, before running.</p>
       <div className="field">
-        <label>Node id</label>
-        <input className="input mono" autoFocus value={id} placeholder="e.g. run_linter" onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))} />
+        <label htmlFor="new-node-id">Node id</label>
+        <input id="new-node-id" className="input mono" value={id} placeholder="e.g. run_linter" onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))} />
+        {duplicate && <span className="hint">This node id already exists. Choose a unique id.</span>}
       </div>
       <div className="row">
         <button
@@ -174,7 +238,10 @@ function AddNode({ yaml, overview, onAdd }: { yaml: string; overview?: Overview;
           disabled={!valid}
           onClick={() => {
             try {
-              onAdd(addNode(yaml, id, nodeTemplate(type, overview?.models.map((m) => m.name) ?? [])), id);
+              const updated = mode === "preset" && preset
+                ? addPresetNode(yaml, id, preset.name, needsModel ? selectedModel : undefined)
+                : addNode(yaml, id, { ...nodeTemplate(type, [...choices.models]), next: {} });
+              onAdd(updated, id);
               setOpen(false);
               setId("");
             } catch (e) {
@@ -220,6 +287,10 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
   const repoGrants = overview?.grants.filter((g) => g.kind === "git") ?? [];
   const otherGrants = overview?.grants.filter((g) => g.kind !== "git") ?? [];
   const grants = (Array.isArray(raw.grants) ? (raw.grants as string[]) : node.grants) ?? [];
+  const choices = projectChoices(yaml, overview);
+  const selectedModel = (raw.llm as { model?: string })?.model || str("model") || "";
+  const unavailableGrants = grants.filter((g) => !choices.grants.has(g));
+  const preset = overview?.presets.find((p) => p.name === node.preset);
 
   const toggleGrant = (g: string, on: boolean) => {
     const cur = grants.filter((x) => x !== g && !(g.includes(":") && x === g.split(":")[0]));
@@ -244,6 +315,8 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
 
       <IssueList issues={myIssues} />
 
+      {preset && <details className="preset-node-details mt"><summary>Preset guide · prerequisites & outputs</summary><PresetDetails preset={preset} /></details>}
+
       <div className="field mt">
         <label>Description</label>
         <CommitInput value={str("description")} placeholder={node.description || "Why this step exists"} disabled={readOnly} onCommit={(v) => set(["description"], v)} />
@@ -252,14 +325,17 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
       {isModel && (
         <div className="field">
           <label>Model</label>
-          <select className="input" value={str("model") || (raw.llm as { model?: string })?.model || ""} disabled={readOnly} onChange={(e) => set(["model"], e.target.value)}>
+          <select aria-label="Model" className="input" value={selectedModel} disabled={readOnly} onChange={(e) => set(node.preset || raw.llm ? ["llm", "model"] : ["model"], e.target.value)}>
             <option value="">{node.model ? `${node.model} (default)` : "— pick a model —"}</option>
+            {selectedModel && !models.some((m) => m.name === selectedModel) && <option value={selectedModel} disabled>{selectedModel} — unavailable</option>}
             {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name} — {m.size ?? ""} {m.cost ? `· ${m.cost}` : ""}
+              <option key={m.name} value={m.name} disabled={!choices.models.has(m.name) || !meetsMinimum(m.size, preset?.min_size)}>
+                {m.name} — {!choices.models.has(m.name) ? "not allowed in this project" : !meetsMinimum(m.size, preset?.min_size) ? `requires size ${preset?.min_size} or larger` : `${m.size ?? ""} ${m.cost ? `· ${m.cost}` : ""}`}
               </option>
             ))}
           </select>
+          {(selectedModel || node.model) && !choices.models.has(selectedModel || node.model!) && <span className="hint">The selected model is unavailable in this project. Choose an allowed model.</span>}
+          {preset?.min_size && !meetsMinimum(models.find((m) => m.name === (selectedModel || node.model))?.size, preset.min_size) && <span className="hint">This preset requires a model of size {preset.min_size} or larger.</span>}
           {node.fallbacks?.length ? <span className="hint">Falls back to {node.fallbacks.join(", ")} (on_limit)</span> : null}
         </div>
       )}
@@ -331,24 +407,27 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
       {isPod && (
         <>
           <div className="section-title">Access</div>
+          {unavailableGrants.map((g) => <div key={g} className="warn-box small mb">{g} is unavailable in this project. <button className="btn sm" disabled={readOnly} onClick={() => set(["grants"], grants.filter((x) => x !== g))}>Remove grant</button></div>)}
           {repoGrants.map((g) => {
             const write = grants.includes(`${g.name}:write`);
             return (
               <label key={g.name} className="row small mb" style={{ cursor: "pointer" }}>
-                <input type="checkbox" checked={write} disabled={readOnly} onChange={(e) => toggleGrant(`${g.name}:write`, e.target.checked)} />
+                <input type="checkbox" checked={write} disabled={readOnly || (!write && !choices.grants.has(`${g.name}:write`))} onChange={(e) => toggleGrant(`${g.name}:write`, e.target.checked)} />
                 <span>
                   Commit changes to <span className="mono">{g.name}</span>
                   <span className="faint"> (every pod node can read the repo)</span>
+                  {!choices.grants.has(`${g.name}:write`) && <span className="faint"> — write not allowed in this project</span>}
                 </span>
               </label>
             );
           })}
           {otherGrants.map((g) => (
             <label key={g.name} className="row small mb" style={{ cursor: "pointer" }}>
-              <input type="checkbox" checked={grants.includes(g.name)} disabled={readOnly} onChange={(e) => toggleGrant(g.name, e.target.checked)} />
+              <input type="checkbox" checked={grants.includes(g.name)} disabled={readOnly || (!grants.includes(g.name) && !choices.grants.has(g.name))} onChange={(e) => toggleGrant(g.name, e.target.checked)} />
               <span>
                 <span className="mono">{g.name}</span> <span className="faint">({g.kind})</span>
                 {g.description ? <span className="faint"> — {g.description}</span> : null}
+                {!choices.grants.has(g.name) && <span className="faint"> — not allowed in this project</span>}
               </span>
             </label>
           ))}
@@ -378,6 +457,7 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
       )}
 
       <div className="section-title">Outcomes → next</div>
+      {node.outcomes.some((o) => !next[o] && !effectiveNext[o]) && <p className="hint">Unconnected outcomes need a route. Choose the next step or an explicit $success / $fail exit for each.</p>}
       {node.outcomes.map((o) => {
         const derived = rawOutcomes === undefined || !rawOutcomes.includes(o);
         return (
@@ -387,6 +467,7 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
             </span>
             <ArrowRight size={14} className="arrow" />
             <select
+              aria-label={`Route ${o}`}
               className="input"
               value={next[o] ?? effectiveNext[o] ?? ""}
               disabled={readOnly}

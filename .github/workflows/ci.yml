@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: web
+      - name: Install browser for frontend regression tests
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Frontend tests (desktop and mobile)
+        run: npm test
+        working-directory: web
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: web/test-results/
+          if-no-files-found: ignore
+      - name: Build frontend for Go embedding
+        run: npm run build
+        working-directory: web
+      - name: Go tests, race detector and vet
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+      - name: Credential handoff tests (synthetic credentials only)
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Build standalone evaluator
+        run: go build -o "${RUNNER_TEMP}/ai-flow-eval" ./cmd/ai-flow-eval
+      - name: Synthetic evaluation and intentional regression
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/eval-reports"
+          "${RUNNER_TEMP}/ai-flow-eval" -suite examples/evals/baseline-suite.json > "${RUNNER_TEMP}/eval-reports/baseline.json"
+          set +e
+          "${RUNNER_TEMP}/ai-flow-eval" -suite examples/evals/candidate-suite.json -baseline "${RUNNER_TEMP}/eval-reports/baseline.json" > "${RUNNER_TEMP}/eval-reports/candidate.json"
+          status=$?
+          set -e
+          test "$status" -eq 1
+      - name: Upload synthetic reports (not model benchmarks)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-evaluation-reports
+          path: ${{ runner.temp }}/eval-reports/
+          if-no-files-found: ignore
+      - name: Whitespace and generated-file drift
+        run: |
+          git diff --check HEAD^ HEAD
+          git diff --check
+          git diff --exit-code
+
+  helm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.19.0
+      - name: Lint and render default/kind, generated/existing secrets
+        run: make helm-check
+      - run: git diff --check

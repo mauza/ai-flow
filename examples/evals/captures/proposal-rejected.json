@@ -1,0 +1,18 @@
+{
+  "fixture_note": "SYNTHETIC gate decisions. revise is an explicitly counted correction; rejection is not inferred to be one.",
+  "run": {
+    "id": "synthetic-proposal",
+    "flow_name": "fixture-proposal",
+    "flow_version": 1,
+    "status": "failed",
+    "error": "Gate rejected proposal",
+    "started_at": 1000,
+    "finished_at": 31000,
+    "cost_usd": 0,
+    "tokens": 0
+  },
+  "visits": [
+    { "run_id": "synthetic-proposal", "seq": 1, "node": "approve", "type": "gate", "status": "succeeded", "outcome": "revise", "decided_by": "fixture-human", "outputs": {} },
+    { "run_id": "synthetic-proposal", "seq": 2, "node": "approve", "type": "gate", "status": "succeeded", "outcome": "reject", "decided_by": "fixture-human", "outputs": {} }
+  ]
+}

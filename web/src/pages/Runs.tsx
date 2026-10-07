@@ -1,18 +1,21 @@
 import { useNavigate } from "react-router-dom";
 import { Play } from "lucide-react";
-import { api, type Run } from "../api";
+import { api, type Overview, type Run } from "../api";
 import { useNow, useResource } from "../hooks";
 import { duration, timeAgo, tokens, usd } from "../format";
 import { Empty, PRLink, Pill, Spinner } from "../ui";
 
 export default function Runs() {
   const runs = useResource(() => api.runs(), [], (e) => e.type === "run");
+  const overview = useResource(() => api.overview(), [], (e) => e.type === "run" || e.type === "visit");
   return (
     <div className="page">
       <div className="page-head">
         <h1>Runs</h1>
         <span className="sub">Every execution of a flow version.</span>
       </div>
+      {overview.error && <div className="warn-box mb">Operations unavailable: {overview.error}</div>}
+      {overview.data?.operations && <Operations data={overview.data.operations} />}
       {runs.error && <div className="error-box mb">{runs.error}</div>}
       {!runs.data ? (
         <Spinner lg />
@@ -29,6 +32,28 @@ export default function Runs() {
       )}
     </div>
   );
+}
+
+function Operations({ data }: { data: Overview["operations"] }) {
+  const now = useNow(15000);
+  const queueAge = data.oldest_queued_age_ms + Math.max(0, now - data.as_of);
+  return <section aria-label="Operations" className="card card-pad mb">
+    <div className="row wrap">
+      <b>{data.active} running</b><span>{data.waiting} waiting for a decision</span><span>{data.queued} queued</span>
+      {data.queued > 0 && <span>Oldest queued: {duration(1, queueAge + 1)}</span>}
+      <span className="spacer" /><span className="small muted">Updated {timeAgo(data.as_of, now)}</span>
+    </div>
+    {data.nodes.length > 0 && <details className="mt"><summary>Step durations and failures · all history</summary>
+      <div style={{ overflowX: "auto" }}><table className="table"><thead><tr><th>Project / flow / step</th><th>Visits</th><th>Mean</th><th>Max</th><th>Failures</th></tr></thead>
+        <tbody>{data.nodes.map((n) => <tr key={JSON.stringify([n.project, n.flow_name, n.node, n.type])}>
+          <td><span className="small muted">{n.project} / {n.flow_name}</span><div className="mono">{n.node}</div></td><td>{n.visits}</td>
+          <td>{n.duration_samples ? duration(1, 1 + n.duration_total_ms / n.duration_samples) : "—"}</td>
+          <td>{n.duration_samples ? duration(1, 1 + n.duration_max_ms) : "—"}</td>
+          <td>{Object.entries(n.failures).map(([kind, count]) => `${count} ${kind.replaceAll("_", " ")}`).join(" · ") || "—"}</td>
+        </tr>)}</tbody></table></div>
+      <p className="small muted">Recorded step failures can be recovered by later steps; they do not necessarily mean the run failed.</p>
+    </details>}
+  </section>;
 }
 
 export function RunsTable({ runs, compact }: { runs: Run[]; compact?: boolean }) {

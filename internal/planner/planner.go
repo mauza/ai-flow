@@ -103,22 +103,31 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 	if model == "" {
 		return nil, fmt.Errorf("catalog.planner.model is not set")
 	}
+	if p.cfg.Catalog.Planner.MaxAttempts < 1 {
+		return nil, fmt.Errorf("catalog.planner.max_attempts must be positive")
+	}
 	res := &Result{}
 	for attempt := 1; attempt <= p.cfg.Catalog.Planner.MaxAttempts; attempt++ {
 		res.Attempts = attempt
-		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000})
+		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000, Stream: p.cfg.Catalog.Planner.Stream})
 		if err != nil {
 			return nil, err
 		}
 		slog.Info("planner reply", "flow", req.FlowName, "attempt", attempt, "tokens", usage.PromptTokens+usage.CompletionTokens)
 		explanation, body := splitReply(reply)
-		if body == "" {
+		// Every result field describes this attempt, including failed extraction
+		// and parsing. Never pair a new candidate with an earlier diagnostic.
+		res = &Result{Attempts: attempt, YAML: body, Explanation: explanation}
+		if strings.TrimSpace(body) == "" {
+			res.YAML = ""
+			res.Issues = []resolve.Issue{{Severity: resolve.Error, Message: "planner reply did not contain a non-empty YAML flow"}}
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
 				llm.Message{Role: "user", Content: "I could not find a ```yaml block. Reply with the complete flow in one ```yaml block."})
 			continue
 		}
 		fixed, perr := p.normalize(body, req)
 		if perr != nil {
+			res.Issues = []resolve.Issue{{Severity: resolve.Error, Message: perr.Error()}}
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
 				llm.Message{Role: "user", Content: fmt.Sprintf("That YAML does not parse: %v\nReply with the complete corrected flow in one ```yaml block.", perr)})
 			res.YAML, res.Explanation = body, explanation
@@ -423,10 +432,8 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	var sb strings.Builder
 	sb.WriteString(rules)
 	sb.WriteString("\n# Menu\n\nUse only these names.\n\n## Models (for `model:` on llm and agent nodes)\n\n")
-	for _, name := range sortedKeys(cat.Models) {
-		if !proj.AllowsModel(name) {
-			continue
-		}
+	menu := ProjectEligibility(p.cfg, proj)
+	for _, name := range menu.AllowedModels {
 		m := cat.Models[name]
 		fmt.Fprintf(&sb, "- `%s`: size %s, context %d tokens, tool use %s, cost %s. %s\n", name, orDash(m.Size), m.ContextTokens, orDash(m.ToolUse), orDash(m.Cost), m.Notes)
 	}
@@ -438,14 +445,15 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 		fmt.Fprintf(&sb, "Default runtime: `%s`.\n", cat.Defaults.Runtime)
 	}
 	sb.WriteString("\n## Grants (for `grants:`; pod nodes can always read the project repo)\n\n")
-	for _, name := range sortedKeys(cat.Grants) {
+	for _, entry := range menu.AllowedGrants {
+		name, mode, _ := strings.Cut(entry, ":")
 		g := cat.Grants[name]
-		if !proj.AllowsGrant(name) {
-			continue
-		}
 		switch g.Kind {
 		case config.GrantGit:
-			fmt.Fprintf(&sb, "- `%s:write`: lets an agent's file changes be committed to the run branch. %s\n", name, g.Description)
+			if mode == "" {
+				mode = "read"
+			}
+			fmt.Fprintf(&sb, "- `%s`: git %s access. %s\n", entry, mode, g.Description)
 		case config.GrantMCP:
 			fmt.Fprintf(&sb, "- `%s`: MCP tools %s. %s\n", name, strings.Join(g.Tools, ", "), g.Description)
 		default:
@@ -459,33 +467,86 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 		}
 	}
 	if len(cat.Presets) > 0 {
-		sb.WriteString("\n## Presets (`uses: preset/<name>`; the preset supplies type, prompt, outputs and outcomes; you still set model, grants and next)\n\n")
-		for _, name := range sortedKeys(cat.Presets) {
-			pr := cat.Presets[name]
-			var outs []string
-			for k := range pr.Outputs {
-				outs = append(outs, k)
-			}
-			sort.Strings(outs)
-			fmt.Fprintf(&sb, "- `preset/%s` (%s, min model size %s): %s Outcomes: %s.", name, pr.Type, orDash(pr.MinSize), pr.Description, strings.Join(pr.Outcomes, ", "))
-			if len(outs) > 0 {
-				fmt.Fprintf(&sb, " Outputs: %s.", strings.Join(outs, ", "))
-			}
-			sb.WriteString("\n")
-		}
+		writePresetMenu(&sb, cat.Presets)
 	}
 	sb.WriteString("\n## Actions (`type: action`)\n\n- `open_pull_request`: opens a PR from the run branch. `with: { title, body, draft }`. Outcome: done.\n- `comment_task`: comments on the source task. `with: { body }`. Outcome: done.\n")
 	fmt.Fprintf(&sb, "\n# Project `%s`\n\nRepo grant: `%s` (base branch `%s`). %s\n", proj.Metadata.Name, proj.Spec.Repo, proj.Spec.Base, proj.Spec.Description)
-	sb.WriteString("\n# How much the human wants to be in the loop\n\n")
+	sb.WriteString("\n# Planning guidance\n\n")
 	if g := strings.TrimSpace(cat.Planner.Guidance); g != "" {
 		sb.WriteString(g + "\n\n")
 	}
 	if g := strings.TrimSpace(proj.Spec.Planner.Guidance); g != "" {
 		sb.WriteString(g + "\n\n")
 	}
-	sb.WriteString("When you add a `gate`, say why in its `description`. When you leave gates out of risky work, say why in the explanation.\n")
+	sb.WriteString("Gates are optional: follow task/project guidance. When you add a `gate`, describe the specific decision for the human.\n")
 	sb.WriteString("\n# Example\n\n```yaml\n" + example + "```\n")
 	return sb.String()
+}
+
+// Keep model instructions in the preset itself. The planner needs selection
+// cues and wiring contracts, including executable fields for non-model nodes.
+func writePresetMenu(sb *strings.Builder, presets map[string]*config.Preset) {
+	sb.WriteString("\n## Presets (`uses: preset/<name>`; inherit the definition, set model for llm/agent, write grants for edits, and next for EVERY outcome)\n\n")
+	names := sortedKeys(presets)
+	sort.SliceStable(names, func(i, j int) bool { return presets[names[i]].Category < presets[names[j]].Category })
+	category := ""
+	for _, name := range names {
+		pr := presets[name]
+		if group := orDash(pr.Category); group != category {
+			category = group
+			fmt.Fprintf(sb, "### %s\n\n", category)
+		}
+		fmt.Fprintf(sb, "- `preset/%s` (%s", name, pr.Type)
+		if pr.MinSize != "" {
+			fmt.Fprintf(sb, ", min model %s", pr.MinSize)
+		}
+		fmt.Fprintf(sb, "): %s", pr.Description)
+		if pr.WhenToUse != "" {
+			fmt.Fprintf(sb, " Use when: %s", pr.WhenToUse)
+		}
+		if len(pr.Requires) > 0 {
+			fmt.Fprintf(sb, " Requires: %s.", strings.Join(pr.Requires, "; "))
+		}
+		fmt.Fprintf(sb, " Outcomes: %s.", strings.Join(pr.Outcomes, ", "))
+		if len(pr.Outputs) > 0 {
+			fmt.Fprintf(sb, " Outputs: %s.", inline(pr.Outputs))
+		}
+		// JSON keeps multiline commands on one line and preserves value types.
+		wiring := map[string]any{}
+		if pr.Runtime != "" {
+			wiring["runtime"] = pr.Runtime
+		}
+		if pr.MaxVisits > 0 {
+			wiring["max_visits"] = pr.MaxVisits
+			wiring["on_exhausted"] = pr.OnExhausted
+		}
+		switch pr.Type {
+		case flow.TypeCheck:
+			if pr.Run == "" {
+				sb.WriteString(" Configure run: REQUIRED (validation rejects an empty command).")
+			} else {
+				wiring["run"] = pr.Run
+			}
+			wiring["exit_codes"] = resolve.CheckExitCodes(&pr.Node)
+		case flow.TypeSwitch:
+			wiring["cases"], wiring["default"] = pr.Cases, pr.Default
+		case flow.TypeAction:
+			wiring["action"], wiring["with"] = pr.Action, pr.With
+		case flow.TypeGate:
+			wiring["prompt"] = pr.Prompt
+			if pr.Timeout.Duration > 0 {
+				wiring["timeout"] = pr.Timeout
+			}
+		}
+		if len(pr.Inputs) > 0 {
+			wiring["inputs"] = pr.Inputs
+		}
+		if len(wiring) > 0 {
+			b, _ := json.Marshal(wiring)
+			fmt.Fprintf(sb, " Defaults: %s", b)
+		}
+		sb.WriteString("\n")
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -504,7 +565,7 @@ func orDash(s string) string {
 	return s
 }
 
-const rules = `You design ai-flow flows. A flow is a small state machine that completes one task: each node is one narrow step that ends with exactly one outcome, and each outcome maps to the next node. Break the work down far enough that small local models can do each step.
+const rules = `You design ai-flow flows. A flow is a small state machine that completes one task: each node is one narrow step that ends with exactly one outcome, and each outcome maps to the next node. Break the work down into focused, verifiable steps using the smallest sufficient configured model.
 
 # Flow format
 
@@ -538,17 +599,36 @@ spec:
 
 - llm: one structured model call, no tools. Classify, review a diff (the branch diff is included automatically), extract, decide.
 - agent: a coding agent in the repo with read/edit/write/bash. Use for changes and investigation. Give it one focused job.
-- check: runs a shell command in the repo. Use for tests, linters, builds: anything deterministic.
+- check: runs bash -o pipefail -c in a fresh repo checkout, with CI=true. No implicit errexit: use && or set -e for multiple commands. Use for tests, linters, builds. Outputs are exit_code (integer), log_tail (string).
 - gate: waits for a human to pick an outcome. Only when the guidance below calls for it.
 - switch: routes on a CEL expression over run.diff.files_changed, run.diff.lines_changed, nodes.<id>.outputs.<field>, nodes.<id>.outcome.
 - action: open_pull_request or comment_task, run by ai-flow itself.
+
+# Choosing rigor
+
+Match rigor to how a wrong plan would fail, not to how important the task sounds:
+
+- Light: implement → check → open a PR. For small, reversible, well-understood changes.
+- Test-first (the default for behavior changes): a failing test → implement → check → review.
+- Investigate first: when the plan depends on an unknown only research can settle (unfamiliar code, unclear root cause, a feasibility question), start with a read-only agent that explores and reports findings as outputs. It proposes; it does not edit. Feed its outputs into the implementation prompt.
+- Independent review: when a plausible, self-consistent change could still be wrong in ways its author would not notice (concurrency, security, migrations, data loss, shared interfaces), add a review by a node that did not write the code. When more than one suitable model is allowed, review with a different model than the implementer's.
+
+Escalate only for those reasons: an unresolved unknown earns an investigation, and an author-blind failure mode earns an independent review. Importance alone earns neither. Name the level you chose, and why, in your explanation.
 
 # Rules
 
 - Every node needs outcomes and a next entry for each outcome.
 - Loops are good (tests fail → fix again), but every loop needs max_visits on one of its nodes.
+- For "repeat until" goals, prefer a bounded work → verify → condition group over a fixed one-pass chain. Route the condition's false/default outcome back to work and true to the next stage; refresh verification on EVERY pass. Use direct check outcomes for executable criteria. For judgment criteria, declare a bool output such as goal_met on a reviewer and route with CEL: nodes.verify.outcome == "pass" && nodes.assess.outputs.goal_met == true. An LLM's judgment must not override failed checks.
+- There are no shared mutable variables: nodes.<id>.outputs contains the latest successful visit's persisted result, not an accumulator. Do not read a producer before it has run; on an initial work visit use template fallbacks for prior feedback. Bind named outputs explicitly when a switch or gate is the previous step.
+- max_visits is a per-node total for the run, not a group iteration variable, and does not reset on a back edge or human decision. Bound every cycle, account for preset limits on all nodes in the repeated group, and explicitly route on_exhausted to $fail or a bounded handoff gate.
+- For human revise/approve loops, route revise back to work and approve onward. A gate alone does NOT automatically bound repetition: set max_visits plus an explicit gate timeout and next.timeout (normally $fail). Catalog/project/flow pod timeout defaults do not apply to gates. A gate timeout is per wait, not a whole-loop deadline; budget.wall is not currently enforced by the engine. The human can add a free-text note with the decision: the next step sees it in its context automatically, and later steps can read ${{ nodes.<gate>.outputs.note ?? "" }}. Route revise straight back to the work node so the note arrives with it. Gates remain optional according to guidance.
 - Nodes automatically receive the task, a summary of earlier steps, and the previous step's outputs; do not repeat them in prompts. Use ${{ nodes.<id>.outputs.<field> }} or ${{ task.title }} only when a step needs a specific value.
-- Prefer presets. Prefer the smallest model that can do the step.
+- Prefer presets and the smallest sufficient configured model for each step.
+- Use the configured planner for decomposition and routing. Only select models in the menu; do not assume a local-model preference.
+- Requires hints describe preconditions, not grants or automatic setup. llm nodes cannot inspect files or run tools; use an agent to gather missing evidence.
+- Each pod gets a fresh checkout; installed dependencies and uncommitted files do not carry between nodes. Checks need dependencies in their runtime or setup in their own run command, with permitted network access. Never invent tools or use a passing placeholder check.
+- Override preset run for repo-specific commands. Preset maps (inputs, with, outputs, cases) are replaced, not merged; supply the complete map/list when overriding. Wire earlier outputs explicitly when they are not from the immediately previous step.
 - Keep prompts short and specific to the step.
 - Reply with one or two sentences explaining the design, then exactly one ` + "```yaml" + ` block containing the complete flow.
 `
@@ -562,23 +642,19 @@ spec:
   nodes:
     implement:
       uses: preset/implement
-      model: qwen-local
+      model: gpt-6-sol
       grants: [repo/example:write]
       max_visits: 3
       on_exhausted: $fail
       next: { done: test, stuck: $fail }
     test:
-      type: check
-      run: python -m unittest -v
+      uses: preset/python-unittest
       next: { pass: review, fail: implement }
     review:
       uses: preset/code-review
-      model: gemma-local
+      model: gpt-6-luna
       next: { approve: open_pr, changes: implement }
     open_pr:
-      type: action
-      action: open_pull_request
-      with: { title: "${{ task.title }}" }
-      outcomes: [done]
+      uses: preset/open-pull-request
       next: { done: $success }
 `

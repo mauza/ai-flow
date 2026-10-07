@@ -38,6 +38,7 @@ export default function Chat({ name, yaml, onApply }: { name: string; yaml: stri
       setProposal(res);
       history.reload();
     } catch (e) {
+      setText(msg);
       toast("error", `Planner: ${(e as Error).message}`);
       history.reload();
     } finally {
@@ -49,7 +50,7 @@ export default function Chat({ name, yaml, onApply }: { name: string; yaml: stri
   return (
     <div className="chat">
       <div className="chat-log" ref={log}>
-        {messages.length === 0 && !busy && (
+        {messages.length === 0 && !busy && !proposal && (
           <div className="empty" style={{ padding: "24px 8px" }}>
             <Sparkles />
             <h3>Ask the planner to change this flow</h3>
@@ -84,7 +85,7 @@ export default function Chat({ name, yaml, onApply }: { name: string; yaml: stri
         )}
       </div>
       <div className="chat-input">
-        {messages.length < 3 && !busy && (
+        {messages.length < 3 && !busy && !proposal && (
           <div className="suggestions">
             {SUGGESTIONS.map((s) => (
               <button key={s} className="suggestion" onClick={() => send(s)}>
@@ -164,8 +165,10 @@ function Proposal({ before, result, stale, onApply, onDiscard }: { before: strin
         <Sparkles size={14} />
         Proposed change
         <span className="spacer" />
-        {errors ? <span className="pill invalid">{errors} error{errors > 1 ? "s" : ""}</span> : <span className="pill valid">valid</span>}
+        {!result.valid || errors ? <span className="pill invalid">{errors ? `${errors} error${errors > 1 ? "s" : ""}` : "invalid"}</span> : <span className="pill valid">valid</span>}
       </div>
+      <div className="side-pad small muted">{result.attempts} planner attempt{result.attempts === 1 ? "" : "s"}</div>
+      {result.issues.length > 0 && <ul className="side-pad small">{result.issues.map((i, n) => <li key={n}>{i.node ? `${i.node}: ` : ""}{i.message}</li>)}</ul>}
       {changed ? (
         <pre className="diff">
           {lines.map((l, i) => (
@@ -179,7 +182,7 @@ function Proposal({ before, result, stale, onApply, onDiscard }: { before: strin
       )}
       {stale && <div className="warn-box" style={{ margin: "0 12px 8px" }}>You edited the flow since asking; applying replaces those edits.</div>}
       <div className="row" style={{ padding: "8px 12px 12px" }}>
-        <button className="btn primary sm" disabled={!changed} onClick={onApply}>
+        <button className="btn primary sm" disabled={!changed || !result.yaml.trim()} onClick={onApply}>
           <Check />
           Apply to editor
         </button>
