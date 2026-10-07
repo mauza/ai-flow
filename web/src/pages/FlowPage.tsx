@@ -88,8 +88,10 @@ function FlowEditor({ name }: { name: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.data]);
 
-  // Re-validate as the YAML changes.
+  // Re-validate as the YAML changes. Before the flow has loaded, the editor's
+  // empty YAML is a placeholder, not a document to validate.
   useEffect(() => {
+    if (!loadedKey.current) return;
     if (analysis?.yaml === yaml && !validationRetry) return;
     let canceled = false;
     setValidationError(null);
