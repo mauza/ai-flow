@@ -107,6 +107,7 @@ func Validate(r *Resolved, cfg *config.Config) []Issue {
 	for _, id := range r.Order {
 		v.checkNode(r.Nodes[id], f.Spec.Nodes[id])
 	}
+	v.checkParallel()
 	v.checkGraph()
 	return v.sorted()
 }
@@ -224,8 +225,34 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 		if strings.TrimSpace(n.Prompt) == "" {
 			v.warnf(id, "prompt", "tell the human what they are deciding")
 		}
-	case flow.TypeSwitch:
-		if len(n.Cases) == 0 {
+	case flow.TypeParallel:
+		if len(raw.Next) > 0 || len(raw.Outcomes) > 0 {
+			v.errf(id, "next", "a parallel node continues at its join; route the join's outcomes instead")
+		}
+		if len(n.Branches) < 2 {
+			v.errf(id, "branches", "list at least two branches (the first node of each)")
+		}
+		seenBranch := map[string]bool{}
+		for _, b := range n.Branches {
+			if seenBranch[b] {
+				v.errf(id, "branches", "duplicate branch %q", b)
+			}
+			seenBranch[b] = true
+			if _, ok := v.r.Nodes[b]; !ok {
+				v.errf(id, "branches", "unknown node %q", b)
+			} else if b == id || b == n.Join {
+				v.errf(id, "branches", "%q cannot be a branch of its own parallel node", b)
+			}
+		}
+		if n.Join == "" {
+			v.errf(id, "join", "required: the join node every branch ends at")
+		} else if j, ok := v.r.Nodes[n.Join]; !ok {
+			v.errf(id, "join", "unknown node %q", n.Join)
+		} else if j.Type != flow.TypeJoin {
+			v.errf(id, "join", "%q is a %s node, not a join", n.Join, j.Type)
+		}
+	case flow.TypeSwitch, flow.TypeJoin:
+		if len(n.Cases) == 0 && n.Type == flow.TypeSwitch {
 			v.errf(id, "cases", "switch nodes need at least one case")
 		}
 		for i, c := range n.Cases {
@@ -276,8 +303,10 @@ var consumers = map[string][]string{
 	"outputs":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"run":        {flow.TypeCheck},
 	"exit_codes": {flow.TypeCheck},
-	"cases":      {flow.TypeSwitch},
-	"default":    {flow.TypeSwitch},
+	"cases":      {flow.TypeSwitch, flow.TypeJoin},
+	"default":    {flow.TypeSwitch, flow.TypeJoin},
+	"branches":   {flow.TypeParallel},
+	"join":       {flow.TypeParallel},
 	"action":     {flow.TypeAction},
 	"with":       {flow.TypeAction},
 }
@@ -291,6 +320,7 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 		"timeout": raw.Timeout.Duration > 0, "prompt": raw.Prompt != "", "inputs": len(raw.Inputs) > 0,
 		"outputs": len(raw.Outputs) > 0, "run": raw.Run != "", "exit_codes": len(raw.ExitCodes) > 0,
 		"cases": len(raw.Cases) > 0, "default": raw.Default != "", "action": raw.Action != "", "with": len(raw.With) > 0,
+		"branches": len(raw.Branches) > 0, "join": raw.Join != "",
 	}
 	for _, field := range sortedKeys(consumers) {
 		if set[field] && !contains(consumers[field], n.Type) {
@@ -490,6 +520,65 @@ func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 			}
 		default:
 			v.errf(n.ID, field, "%s: expected outputs, outcome, summary, visit or history after the node id", ref.Raw)
+		}
+	}
+}
+
+// checkParallel: branches are self-contained, read-only paths from their
+// parallel node to its join. Nothing outside a branch may route into it, and
+// only that parallel node's branches may route into its join.
+func (v *validator) checkParallel() {
+	r := v.r
+	lanes, shared := r.Lanes()
+	for _, id := range shared {
+		v.errf(id, "", "reached from more than one parallel branch; each branch needs its own nodes")
+	}
+	joins := map[string]string{}
+	for _, id := range r.Order {
+		n := r.Nodes[id]
+		if n.Type != flow.TypeParallel || n.Join == "" {
+			continue
+		}
+		if other, ok := joins[n.Join]; ok {
+			v.errf(id, "join", "join %q already belongs to parallel node %q", n.Join, other)
+		}
+		joins[n.Join] = id
+	}
+	for _, id := range r.Order {
+		n := r.Nodes[id]
+		lane, inLane := lanes[id]
+		if inLane {
+			switch n.Type {
+			case flow.TypeGate, flow.TypeAction, flow.TypeParallel, flow.TypeJoin:
+				v.errf(id, "type", "%s nodes cannot run inside a parallel branch (branch %q of %q)", n.Type, lane.Branch, lane.Fork)
+			}
+			for _, g := range n.Grants {
+				name, mode, _ := strings.Cut(g, ":")
+				if grant := v.cfg.Catalog.Grants[name]; grant != nil && grant.Kind == config.GrantGit && mode == "write" {
+					v.errf(id, "grants", "parallel branches are read-only: %q would push to the run branch while other branches run", g)
+				}
+			}
+		}
+		for _, t := range n.Targets() {
+			if inLane && t == flow.Success {
+				v.errf(id, "next", "a branch cannot end the run with %s; route to the join %q", flow.Success, lane.Join)
+			}
+			if tl, ok := lanes[t]; ok {
+				fromFork := n.Type == flow.TypeParallel && id == tl.Fork && t == tl.Branch
+				if !fromFork && (!inLane || lane != tl) {
+					v.errf(id, "next", "%q is inside branch %q of %q; only that branch may route to it", t, tl.Branch, tl.Fork)
+				}
+			}
+			if fork, ok := joins[t]; ok && !(id == fork) && (!inLane || lane.Fork != fork) {
+				v.errf(id, "next", "%q is the join of %q; only its branches may route to it", t, fork)
+			}
+		}
+	}
+	for _, id := range r.Order {
+		if n := r.Nodes[id]; n.Type == flow.TypeJoin {
+			if _, ok := joins[id]; !ok {
+				v.errf(id, "", "join node without a parallel node (set join: %s on one)", id)
+			}
 		}
 	}
 }

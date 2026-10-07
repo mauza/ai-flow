@@ -120,7 +120,7 @@ const FlowNode = memo(function FlowNode({ data }: NodeProps<Node<FlowNodeData>>)
         {runMode && run && (
           <div className="fnode-status">
             {run.status === "running" || run.status === "pending" ? (
-              <span className="progress">{run.progress || "starting…"}</span>
+              <span className="progress">{node.type === "parallel" ? "waiting for its branches" : run.progress || "starting…"}</span>
             ) : run.status === "waiting" ? (
               <span style={{ color: "var(--gate)", fontWeight: 600 }}>Waiting for you</span>
             ) : run.status === "error" ? (
@@ -167,7 +167,8 @@ function NodeChips({ node }: { node: GraphNode }) {
   const chips: { key: string; el: React.ReactNode }[] = [];
   if (node.type === "check" && node.run) chips.push({ key: "run", el: <span className="chip mono">$ {node.run}</span> });
   if (node.type === "action" && node.action) chips.push({ key: "act", el: <span className="chip mono">{node.action}</span> });
-  if (node.type === "switch") chips.push({ key: "sw", el: <span className="chip mono">{(node.cases?.length ?? 0) + " case(s)"}</span> });
+  if (node.type === "switch" || (node.type === "join" && node.cases?.length)) chips.push({ key: "sw", el: <span className="chip mono">{(node.cases?.length ?? 0) + " case(s)"}</span> });
+  if (node.type === "parallel") chips.push({ key: "par", el: <span className="chip mono">{(node.branches?.length ?? 0) + " branches → " + (node.join || "?")}</span> });
   const writes = node.grants?.filter((g) => g.endsWith(":write")).length ?? 0;
   const other = (node.grants?.length ?? 0) - writes;
   if (writes) {
@@ -210,7 +211,7 @@ const TerminalNode = memo(function TerminalNode({ data }: NodeProps<Node<Termina
   );
 });
 
-type RouteData = { points?: Point[]; kind: "next" | "exhausted"; taken: boolean; last: boolean; runMode: boolean };
+type RouteData = { points?: Point[]; kind: "next" | "exhausted" | "branch"; taken: boolean; last: boolean; runMode: boolean };
 
 function RouteEdge({ id, data, markerEnd, sourceX, sourceY, targetX, targetY }: EdgeProps<Edge<RouteData>>) {
   const pts = data?.points && data.points.length > 1 ? data.points : [{ x: sourceX, y: sourceY }, { x: sourceX, y: (sourceY + targetY) / 2 }, { x: targetX, y: (sourceY + targetY) / 2 }, { x: targetX, y: targetY }];
@@ -222,6 +223,7 @@ function RouteEdge({ id, data, markerEnd, sourceX, sourceY, targetX, targetY }: 
     stroke = "var(--warn)";
     dash = "5 4";
   }
+  if (data?.kind === "branch") stroke = "var(--t-parallel)";
   if (data?.runMode && !data.taken) stroke = "color-mix(in srgb, var(--border-strong) 60%, transparent)";
   if (data?.taken) {
     stroke = "var(--success)";
@@ -331,7 +333,7 @@ function Canvas(props: Props) {
   const nodes: Node[] = useMemo(() => {
     const pos = layout?.positions ?? {};
     const out: Node[] = graph.nodes.map((n) => {
-      const routed = new Set(graph.edges.filter((e) => e.from === n.id && e.kind === "next").map((e) => e.outcome));
+      const routed = new Set(graph.edges.filter((e) => e.from === n.id && (e.kind === "next" || e.kind === "branch")).map((e) => e.outcome));
       return {
         id: n.id,
         type: "flow",
@@ -374,7 +376,7 @@ function Canvas(props: Props) {
       .map((e) => {
         const id = edgeId(e.from, e.kind === "exhausted" ? "exhausted" : e.outcome);
         const taken = !!run?.takenEdges.has(id);
-        const color = taken ? "var(--success)" : e.kind === "exhausted" ? "var(--warn)" : "var(--border-strong)";
+        const color = taken ? "var(--success)" : e.kind === "exhausted" ? "var(--warn)" : e.kind === "branch" ? "var(--t-parallel)" : "var(--border-strong)";
         return {
           id,
           source: e.from,

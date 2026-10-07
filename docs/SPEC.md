@@ -130,9 +130,47 @@ spec:
 | `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
 | `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
+| `parallel` | control plane | Starts every node in `branches` at once; emits `joined` when all branches have reached its `join`. |
+| `join` | control plane | Runs after every branch of its parallel node arrived; routes like a switch over any branch's results (no cases → `done`). |
 
 Implicit outcomes: `timeout` on gates with a timeout; `limit` on llm/agent nodes
-whose `on_limit` uses `action: outcome`.
+whose `on_limit` uses `action: outcome`; `joined` on parallel nodes.
+
+#### 4.1.1 Parallel branches
+
+```yaml
+checks:
+  type: parallel
+  branches: [lint, test, review]   # the first node of each branch
+  join: gather
+lint:   { uses: preset/custom-check, run: go vet ./..., next: { pass: gather, fail: gather } }
+test:   { uses: preset/go-test, next: { pass: gather, fail: diagnose } }
+diagnose: { uses: preset/investigate-bug, model: gpt-6.1-sol, next: { diagnosed: gather, inconclusive: gather } }
+review: { uses: preset/code-review, model: gpt-6-luna, next: { approve: gather, changes: gather } }
+gather:
+  type: join
+  cases: [{ when: 'nodes.test.outcome == "pass" && nodes.review.outcome == "approve"', outcome: green }]
+  default: red
+  next: { green: open_pr, red: fix }
+```
+
+A branch is every node reachable from its first node without passing the join;
+it can be several steps long and loop (bounded by `max_visits`). The validator
+enforces the rules that make concurrent branches safe and readable:
+
+- branches are **read-only**: no `repo:write` grant, because branches share the
+  run branch and would race to push; edits go after the join;
+- branches hold only `llm`, `agent`, `check` and `switch` nodes (no gates,
+  actions or nested parallel nodes);
+- a branch may route to `$fail` (failing the run) but not `$success`;
+- nothing outside a branch routes into it, only its branches route to the join,
+  and no node belongs to two branches.
+
+Branch visits record their parallel visit (`fork_seq`) and branch (`lane`). A
+branch step's context shows the main path and its own branch, not its siblings;
+the join and everything after it see every branch's results. Any branch error
+fails the run and stops the other branches' Jobs. Branch pods count against
+cluster capacity, not `runs.maxConcurrent`, which limits runs.
 
 ### 4.2 Templates and context
 
@@ -246,9 +284,11 @@ a *declared but not enforced* warning rather than silently looking like they wor
 
 ### 7.1 Engine
 
-A run is a pinned flow version with one active node. The engine loop (every 3s
-and on demand) starts queued runs up to `runs.maxConcurrent`, then for each
-active run looks at its latest visit:
+A run is a pinned flow version with one active node on its main path; a
+parallel node is that active node while its branches each advance one visit at
+a time. The engine loop (every 3s and on demand) starts queued runs up to
+`runs.maxConcurrent`, then for each active run looks at its latest visit (and,
+under a parallel node, at the latest visit of each branch):
 
 - finished → follow `next[outcome]`; entering a node that already ran
   `max_visits` times goes to `on_exhausted` instead;
@@ -387,7 +427,8 @@ secrets via an existing Secret (`ai-flow-secrets`).
 
 ## 13. Not done yet
 
-- `map` (fan-out) and sub-flow nodes.
+- `map` (fan-out over a list) and sub-flow nodes; parallel branches that write
+  to the repo.
 - Claude Code / opencode harnesses; cloud models and subscription proxies (config
   supports any OpenAI-compatible upstream already).
 - GitLab forge.

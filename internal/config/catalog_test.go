@@ -196,6 +196,11 @@ func TestCatalogPresetsResolve(t *testing.T) {
 		}
 	}
 	for _, typ := range flow.NodeTypes {
+		// Parallel and join are flow structure: their branches and join name
+		// nodes of one flow, so no reusable preset can describe them.
+		if typ == flow.TypeParallel || typ == flow.TypeJoin {
+			continue
+		}
 		if !types[typ] {
 			t.Errorf("no presets for %s", typ)
 		}

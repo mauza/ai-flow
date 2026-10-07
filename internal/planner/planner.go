@@ -578,7 +578,7 @@ spec:
   start: <first node id>
   nodes:
     <node_id>:                 # lowercase_snake_case
-      type: llm | agent | check | gate | switch | action   # omit when using a preset
+      type: llm | agent | check | gate | switch | action | parallel | join   # omit when using a preset
       uses: preset/<name>      # optional
       description: <why this step exists>
       model: <model name>      # llm and agent nodes
@@ -593,6 +593,8 @@ spec:
       run: <shell command>     # check nodes: exit 0 → pass, anything else → fail
       cases: [{ when: <CEL expression>, outcome: <x> }]   # switch nodes, plus default: <y>
       action: open_pull_request                  # action nodes, with: { title: ..., body: ... }
+      branches: [<node_id>, ...]                # parallel nodes: the first node of each branch
+      join: <join node id>                       # parallel nodes: where every branch ends
 ` + "```" + `
 
 # Node types
@@ -603,6 +605,8 @@ spec:
 - gate: waits for a human to pick an outcome. Only when the guidance below calls for it.
 - switch: routes on a CEL expression over run.diff.files_changed, run.diff.lines_changed, nodes.<id>.outputs.<field>, nodes.<id>.outcome.
 - action: open_pull_request or comment_task, run by ai-flow itself.
+- parallel: starts all its branches at once. Each branch is a path of nodes that begins at a listed node and ends by routing to the parallel node's join. Branches are read-only (no repo write grants), may contain only llm, agent, check and switch nodes, may route to $fail but not $success, and nothing outside a branch may route into it. A parallel node has no outcomes or next of its own.
+- join: waits until every branch has reached it, then routes like a switch: cases over nodes.<id>.outcome / nodes.<id>.outputs from any branch, plus default. Without cases its single outcome is done.
 
 # Choosing rigor
 
@@ -617,7 +621,9 @@ Escalate only for those reasons: an unresolved unknown earns an investigation, a
 
 # Rules
 
-- Every node needs outcomes and a next entry for each outcome.
+- Every node needs outcomes and a next entry for each outcome (parallel nodes excepted).
+- Use parallel for independent read-only work that would otherwise wait in line: lint + tests + review, reviews by two different models, or several investigations. Put edits after the join; route the join's failure outcome to a fixer and back to the parallel node for another round (bounded with max_visits).
+- End where the task's deliverable is. A pull request is right for code changes; investigations, questions and reports end with comment_task or $success once their outputs exist. Do not add a PR the task does not need.
 - Loops are good (tests fail → fix again), but every loop needs max_visits on one of its nodes.
 - For "repeat until" goals, prefer a bounded work → verify → condition group over a fixed one-pass chain. Route the condition's false/default outcome back to work and true to the next stage; refresh verification on EVERY pass. Use direct check outcomes for executable criteria. For judgment criteria, declare a bool output such as goal_met on a reviewer and route with CEL: nodes.verify.outcome == "pass" && nodes.assess.outputs.goal_met == true. An LLM's judgment must not override failed checks.
 - There are no shared mutable variables: nodes.<id>.outputs contains the latest successful visit's persisted result. nodes.<id>.history lists every successful visit (visit, outcome, summary, outputs), oldest first; use it for all earlier feedback in a loop or size(nodes.<id>.history) in a switch. Steps in a loop already get every earlier pass in their context. Do not read a producer before it has run; on an initial work visit use template fallbacks for prior feedback. Bind named outputs explicitly when a switch or gate is the previous step.

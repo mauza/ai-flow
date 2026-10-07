@@ -12,6 +12,8 @@ import {
   ListChecks,
   Loader2,
   MessageSquareText,
+  GitFork,
+  GitMerge,
   Pause,
   Split,
   X,
@@ -25,6 +27,8 @@ export const typeMeta: Record<string, { color: string; icon: typeof Bot; label: 
   gate: { color: "var(--t-gate)", icon: Hand, label: "Gate", blurb: "Waits for a human decision" },
   switch: { color: "var(--t-switch)", icon: Split, label: "Switch", blurb: "Routes on a CEL expression" },
   action: { color: "var(--t-action)", icon: Zap, label: "Action", blurb: "Built-in action (open a PR, comment)" },
+  parallel: { color: "var(--t-parallel)", icon: GitFork, label: "Parallel", blurb: "Starts its branches at once; each ends at the join" },
+  join: { color: "var(--t-join)", icon: GitMerge, label: "Join", blurb: "Waits for every branch, then routes like a switch" },
 };
 
 export function TypeIcon({ type, size }: { type: string; size?: number }) {

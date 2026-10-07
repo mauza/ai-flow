@@ -79,6 +79,15 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 			n.LLM = effectiveLLM(&n.Node, cfg)
 			n.Model = n.LLM.Model
 		}
+		switch n.Type {
+		case flow.TypeParallel:
+			// The parallel node continues at its join once every branch is there.
+			n.Next = map[string]string{flow.OutcomeJoined: n.Join}
+		case flow.TypeJoin:
+			if n.Default == "" && len(n.Cases) == 0 {
+				n.Default = "done"
+			}
+		}
 		n.Outcomes = effectiveOutcomes(&n.Node)
 		r.Nodes[id] = n
 	}
@@ -261,13 +270,15 @@ func effectiveOutcomes(n *flow.Node) []string {
 				add(n.ExitCodes[k])
 			}
 		}
-	case flow.TypeSwitch:
+	case flow.TypeSwitch, flow.TypeJoin:
 		if len(n.Outcomes) == 0 {
 			for _, c := range n.Cases {
 				add(c.Outcome)
 			}
 			add(n.Default)
 		}
+	case flow.TypeParallel:
+		return []string{flow.OutcomeJoined}
 	case flow.TypeAction:
 		if len(out) == 0 {
 			add("done")
@@ -307,7 +318,7 @@ func contains(xs []string, x string) bool {
 
 // Targets returns every transition target of n, including on_exhausted.
 func (n *Node) Targets() []string {
-	var t []string
+	t := append([]string{}, n.Branches...)
 	for _, o := range n.Outcomes {
 		if v, ok := n.Next[o]; ok {
 			t = append(t, v)

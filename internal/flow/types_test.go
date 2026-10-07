@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,5 +24,23 @@ func TestDurationRoundTrip(t *testing.T) {
 	var d Duration
 	if err := json.Unmarshal([]byte(`"2d"`), &d); err != nil || d.Duration != 48*time.Hour {
 		t.Errorf("2d → %v %v", d.Duration, err)
+	}
+}
+
+func TestNodeIDsVisitBranchesBeforeTheJoin(t *testing.T) {
+	f, err := Parse([]byte(`spec:
+  start: checks
+  nodes:
+    checks: { type: parallel, branches: [lint, stats], join: gather }
+    gather: { type: join, next: { done: report } }
+    lint: { type: check, next: { pass: gather } }
+    stats: { type: check, next: { pass: gather } }
+    report: { type: llm, outcomes: [done], next: { done: $success } }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.NodeIDs(), ","); got != "checks,lint,stats,gather,report" {
+		t.Errorf("order %s", got)
 	}
 }

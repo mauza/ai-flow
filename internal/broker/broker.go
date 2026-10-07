@@ -160,6 +160,22 @@ func (b *Broker) checkCurrentVisit(ctx context.Context, run *store.Run, v *store
 	if v.Type != flow.TypeAgent && v.Type != flow.TypeLLM && v.Type != flow.TypeCheck {
 		return fmt.Errorf("visit %d is not a pod node", v.Seq)
 	}
+	if v.ForkSeq != 0 {
+		// A branch visit is current while it heads its branch and the parallel
+		// visit it belongs to is still the run's active step.
+		head, err := b.store.LaneHead(ctx, run.ID, v.ForkSeq, v.Lane)
+		if err != nil {
+			return err
+		}
+		fork, err := b.store.LastVisit(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		if head.Seq != v.Seq || fork.Seq != v.ForkSeq || fork.Status != store.VisitRunning {
+			return fmt.Errorf("visit %d is not current", v.Seq)
+		}
+		return nil
+	}
 	latest, err := b.store.LastVisit(ctx, run.ID)
 	if err != nil {
 		return err

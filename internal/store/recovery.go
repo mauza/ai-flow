@@ -20,7 +20,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
+	if version > 4 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -42,6 +42,15 @@ func migrate(db *sql.DB) error {
 		ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE runs ADD COLUMN resume_note TEXT NOT NULL DEFAULT '';
 		PRAGMA user_version = 3;`); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		// Parallel branches: a branch visit names the parallel visit it belongs to
+		// (fork_seq) and its branch (lane). The main path has fork_seq 0.
+		if _, err := tx.Exec(`ALTER TABLE visits ADD COLUMN fork_seq INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE visits ADD COLUMN lane TEXT NOT NULL DEFAULT '';
+		PRAGMA user_version = 4;`); err != nil {
 			return err
 		}
 	}

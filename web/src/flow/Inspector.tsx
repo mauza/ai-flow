@@ -378,7 +378,49 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
         </>
       )}
 
-      {node.type === "switch" && (
+      {node.type === "parallel" && (
+        <>
+          <div className="section-title">Branches</div>
+          <p className="hint">All branches start at once. Each is a read-only path that must end by routing to the join.</p>
+          {(node.branches ?? []).map((b) => (
+            <div key={b} className="transition-row">
+              <span className="chip mono">branch</span>
+              <ArrowRight size={14} className="arrow" />
+              <select aria-label={`Branch ${b}`} className="input" value={b} disabled={readOnly} onChange={(e) => apply(() => setTransition(yaml, node.id, b, e.target.value))}>
+                {graph.nodes.filter((n) => n.id !== node.id && n.type !== "join").map((n) => (
+                  <option key={n.id}>{n.id}</option>
+                ))}
+              </select>
+              {!readOnly ? (
+                <button className="btn ghost icon sm" title={`Remove branch ${b}`} onClick={() => apply(() => removeTransition(yaml, node.id, b))}>
+                  <X />
+                </button>
+              ) : (
+                <span />
+              )}
+            </div>
+          ))}
+          {!readOnly && (
+            <select aria-label="Add branch" className="input mb" value="" onChange={(e) => e.target.value && apply(() => setTransition(yaml, node.id, "", e.target.value))}>
+              <option value="">+ add a branch starting at…</option>
+              {graph.nodes.filter((n) => n.id !== node.id && n.type !== "join" && !(node.branches ?? []).includes(n.id)).map((n) => (
+                <option key={n.id}>{n.id}</option>
+              ))}
+            </select>
+          )}
+          <div className="field">
+            <label htmlFor="parallel-join">Join</label>
+            <select id="parallel-join" className="input" value={str("join") || node.join || ""} disabled={readOnly} onChange={(e) => set(["join"], e.target.value)}>
+              <option value="">— choose the join node —</option>
+              {graph.nodes.filter((n) => n.type === "join").map((n) => (
+                <option key={n.id}>{n.id}</option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
+
+      {(node.type === "switch" || (node.type === "join" && (node.cases?.length ?? 0) > 0)) && (
         <>
           <div className="section-title">Cases</div>
           {(node.cases ?? []).map((c, i) => (
@@ -456,6 +498,7 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
         </>
       )}
 
+      {node.type !== "parallel" && <>
       <div className="section-title">Outcomes → next</div>
       {node.outcomes.some((o) => !next[o] && !effectiveNext[o]) && <p className="hint">Unconnected outcomes need a route. Choose the next step or an explicit $success / $fail exit for each.</p>}
       {node.outcomes.map((o) => {
@@ -503,6 +546,7 @@ function NodeForm({ yaml, graph, issues, overview, node, onSelect, onChange, rea
           }}
         />
       )}
+      </>}
 
       <div className="section-title">Loops</div>
       <div className="row">

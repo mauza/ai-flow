@@ -113,11 +113,22 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 
 	visits, _ := e.store.Visits(ctx, r.ID)
+	var cur *store.Visit
+	for _, v := range visits {
+		if v.Seq == seq {
+			cur = v
+		}
+	}
 	var prev *store.Visit
 	var done []*store.Visit
 	for _, v := range visits {
 		if v.Seq >= seq {
 			break
+		}
+		// Inside a parallel branch, sibling branches are concurrent work, not
+		// earlier steps: show the main path and this branch only.
+		if cur != nil && cur.ForkSeq != 0 && v.ForkSeq == cur.ForkSeq && v.Lane != cur.Lane {
+			continue
 		}
 		if v.Status == store.VisitSucceeded {
 			done = append(done, v)
@@ -265,6 +276,9 @@ func (e *Engine) evalSwitch(ctx context.Context, r *store.Run, res *resolve.Reso
 	c, err := e.checkedTemplateContext(ctx, r, res, n)
 	if err != nil {
 		return "", "", err
+	}
+	if len(n.Cases) == 0 {
+		return n.Default, "All branches finished", nil
 	}
 	for _, cs := range n.Cases {
 		ok, err := resolve.EvalCEL(cs.When, c)

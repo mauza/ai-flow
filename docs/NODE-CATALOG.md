@@ -1,7 +1,10 @@
 # Node catalog
 
-`deploy/config/catalog.yaml` provides 30 reusable primitives. They use the existing
-six node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`.
+`deploy/config/catalog.yaml` provides 30 reusable primitives. They use six of the
+node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`. `parallel` and
+`join` are structure rather than presets: wrap independent read-only presets (checks,
+reviews, investigations) in a parallel node to run them at once; see
+[SPEC §4.1.1](SPEC.md#411-parallel-branches).
 Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipeline.
 
 ## Selection guide

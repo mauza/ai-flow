@@ -278,6 +278,9 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	if err != nil {
 		return err
 	}
+	if v.Type == flow.TypeParallel && (v.Status == store.VisitPending || v.Status == store.VisitRunning) {
+		return e.stepParallel(ctx, r, v)
+	}
 	switch v.Status {
 	case store.VisitSucceeded, store.VisitError:
 		return e.advance(ctx, r, v)
@@ -298,68 +301,75 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		}
 		return e.alertStuck(ctx, r, v)
 	case store.VisitPending, store.VisitRunning:
-		if !flow.PodType(v.Type) {
-			res, err := e.Resolved(ctx, r)
-			if err != nil {
-				return err
-			}
-			n := res.Nodes[v.Node]
-			if n == nil {
-				return rejectf("node %q not in snapshot", v.Node)
-			}
-			return e.execute(ctx, r, res, n, v)
-		}
-		if v.JobName == "" || v.LaunchState == "pending" {
-			res, err := e.Resolved(ctx, r)
-			if err != nil {
-				return err
-			}
-			n := res.Nodes[v.Node]
-			if n == nil {
-				return rejectf("node %q not in snapshot", v.Node)
-			}
-			return e.launch(ctx, r, res, n, v)
-		}
-		if v.Deadline > 0 && store.Now() > v.Deadline+60_000 {
-			return e.visitError(ctx, r, v, "node exceeded its timeout")
-		}
-		st, err := e.launcher.Status(ctx, v.JobName)
-		if err != nil {
-			slog.Warn("job status", "job", v.JobName, "err", err)
-			return nil
-		}
-		if st.State == JobRunning {
-			delete(e.orphans, v.JobName)
-			return nil
-		}
-		// The job ended (or vanished) but no result is recorded. Results are
-		// posted just before the pod exits, so allow a short grace period.
-		since, seen := e.orphans[v.JobName]
-		if !seen {
-			e.orphans[v.JobName] = time.Now()
-			return nil
-		}
-		grace := e.OrphanGrace
-		if st.State == JobMissing {
-			grace *= 8
-		}
-		if time.Since(since) < grace {
-			return nil
-		}
-		delete(e.orphans, v.JobName)
-		msg := "node exited without reporting a result"
-		switch st.State {
-		case JobFailed:
-			msg = "node pod failed"
-		case JobMissing:
-			msg = "node job disappeared"
-		}
-		if st.Message != "" {
-			msg += ": " + st.Message
-		}
-		return e.visitError(ctx, r, v, msg)
+		return e.stepActive(ctx, r, v)
 	}
 	return nil
+}
+
+// stepActive moves one unfinished visit along, on the main path or in a
+// parallel branch: control-plane nodes execute, pod nodes launch or are
+// watched until their result arrives, their deadline passes or their job dies.
+func (e *Engine) stepActive(ctx context.Context, r *store.Run, v *store.Visit) error {
+	if !flow.PodType(v.Type) {
+		res, err := e.Resolved(ctx, r)
+		if err != nil {
+			return err
+		}
+		n := res.Nodes[v.Node]
+		if n == nil {
+			return rejectf("node %q not in snapshot", v.Node)
+		}
+		return e.execute(ctx, r, res, n, v)
+	}
+	if v.JobName == "" || v.LaunchState == "pending" {
+		res, err := e.Resolved(ctx, r)
+		if err != nil {
+			return err
+		}
+		n := res.Nodes[v.Node]
+		if n == nil {
+			return rejectf("node %q not in snapshot", v.Node)
+		}
+		return e.launch(ctx, r, res, n, v)
+	}
+	if v.Deadline > 0 && store.Now() > v.Deadline+60_000 {
+		return e.visitError(ctx, r, v, "node exceeded its timeout")
+	}
+	st, err := e.launcher.Status(ctx, v.JobName)
+	if err != nil {
+		slog.Warn("job status", "job", v.JobName, "err", err)
+		return nil
+	}
+	if st.State == JobRunning {
+		delete(e.orphans, v.JobName)
+		return nil
+	}
+	// The job ended (or vanished) but no result is recorded. Results are
+	// posted just before the pod exits, so allow a short grace period.
+	since, seen := e.orphans[v.JobName]
+	if !seen {
+		e.orphans[v.JobName] = time.Now()
+		return nil
+	}
+	grace := e.OrphanGrace
+	if st.State == JobMissing {
+		grace *= 8
+	}
+	if time.Since(since) < grace {
+		return nil
+	}
+	delete(e.orphans, v.JobName)
+	msg := "node exited without reporting a result"
+	switch st.State {
+	case JobFailed:
+		msg = "node pod failed"
+	case JobMissing:
+		msg = "node job disappeared"
+	}
+	if st.Message != "" {
+		msg += ": " + st.Message
+	}
+	return e.visitError(ctx, r, v, msg)
 }
 
 func (e *Engine) visitError(ctx context.Context, r *store.Run, v *store.Visit, msg string) error {
@@ -394,23 +404,65 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 		return e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: outcome %q has no transition", v.Node, v.Outcome))
 	}
 	e.event(ctx, r, v.Node, "outcome", fmt.Sprintf("%s#%d → %s", v.Node, v.Visit, v.Outcome))
-	return e.enter(ctx, r, res, target, 0)
+	ln, err := e.laneOf(ctx, res, v)
+	if err != nil {
+		return err
+	}
+	return e.enterWhy(ctx, r, res, target, 0, "", ln)
 }
 
 func (e *Engine) enter(ctx context.Context, r *store.Run, res *resolve.Resolved, target string, depth int) error {
-	return e.enterWhy(ctx, r, res, target, depth, "")
+	return e.enterWhy(ctx, r, res, target, depth, "", nil)
 }
 
-// enterWhy moves the run to target; why explains an on_exhausted jump.
-func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolved, target string, depth int, why string) error {
+// lane is a parallel branch in progress; nil means the run's main path.
+type lane struct {
+	fork int    // seq of the parallel visit
+	name string // the branch (its first node)
+	join string // where every branch of the parallel node ends
+}
+
+// laneOf returns the branch v runs in, or nil on the main path.
+func (e *Engine) laneOf(ctx context.Context, res *resolve.Resolved, v *store.Visit) (*lane, error) {
+	if v.ForkSeq == 0 {
+		return nil, nil
+	}
+	fv, err := e.store.GetVisit(ctx, v.RunID, v.ForkSeq)
+	if err != nil {
+		return nil, err
+	}
+	fork := res.Nodes[fv.Node]
+	if fork == nil {
+		return nil, rejectf("parallel node %q not in snapshot", fv.Node)
+	}
+	return &lane{fork: v.ForkSeq, name: v.Lane, join: fork.Join}, nil
+}
+
+// enterWhy moves the run (or one parallel branch, when ln is set) to target;
+// why explains an on_exhausted jump. A branch that reaches its join stops
+// there: stepParallel continues once every branch has arrived.
+func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolved, target string, depth int, why string, ln *lane) error {
 	if depth > 20 {
 		return rejectf("too many chained transitions (on_exhausted cycle?)")
 	}
+	if ln != nil && target == ln.join {
+		e.Wake()
+		return nil
+	}
 	switch target {
 	case flow.Success:
+		if ln != nil {
+			return rejectf("branch %q cannot end the run with $success", ln.name)
+		}
 		return e.finish(ctx, r, store.RunSucceeded, "")
 	case flow.Fail:
-		last, err := e.store.LastVisit(ctx, r.ID)
+		var last *store.Visit
+		var err error
+		if ln != nil {
+			last, err = e.store.LaneHead(ctx, r.ID, ln.fork, ln.name)
+		} else {
+			last, err = e.store.LastVisit(ctx, r.ID)
+		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
@@ -438,16 +490,111 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		if count >= n.MaxVisits {
 			why := fmt.Sprintf("%s already ran %d times (max_visits)", target, n.MaxVisits)
 			e.event(ctx, r, target, "exhausted", why+" → "+n.OnExhausted)
-			return e.enterWhy(ctx, r, res, n.OnExhausted, depth+1, why)
+			return e.enterWhy(ctx, r, res, n.OnExhausted, depth+1, why, ln)
 		}
 	}
-	v, err := e.store.AddVisit(ctx, r.ID, target, n.Type)
+	var v *store.Visit
+	var err error
+	if ln != nil {
+		v, err = e.store.AddLaneVisit(ctx, r.ID, target, n.Type, ln.fork, ln.name)
+	} else {
+		v, err = e.store.AddVisit(ctx, r.ID, target, n.Type)
+		r.CurrentNode, r.Status = target, store.RunRunning
+	}
 	if err != nil {
 		return err
 	}
-	r.CurrentNode, r.Status = target, store.RunRunning
 	e.publishRun(r)
 	return e.execute(ctx, r, res, n, v)
+}
+
+// stepParallel drives each branch of the parallel visit fv one step. Once
+// every branch has reached the join, the parallel visit succeeds with
+// "joined" and the run continues at the join on the main path. Any branch
+// error fails the run (and finish stops the other branches).
+func (e *Engine) stepParallel(ctx context.Context, r *store.Run, fv *store.Visit) error {
+	res, err := e.Resolved(ctx, r)
+	if err != nil {
+		return err
+	}
+	n := res.Nodes[fv.Node]
+	if n == nil {
+		return rejectf("node %q not in snapshot", fv.Node)
+	}
+	if fv.Status == store.VisitPending {
+		if err := e.store.UpdateVisit(ctx, r.ID, fv.Seq, map[string]any{"status": store.VisitRunning, "started_at": store.Now()}); err != nil {
+			return err
+		}
+		fv.Status = store.VisitRunning
+		e.event(ctx, r, n.ID, "parallel", fmt.Sprintf("%s#%d started %d branches: %s", n.ID, fv.Visit, len(n.Branches), strings.Join(n.Branches, ", ")))
+		e.publishVisit(r.ID, fv.Seq)
+	}
+	arrived := 0
+	for _, b := range n.Branches {
+		ln := &lane{fork: fv.Seq, name: b, join: n.Join}
+		head, err := e.store.LaneHead(ctx, r.ID, fv.Seq, b)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			err = e.enterWhy(ctx, r, res, b, 0, "", ln)
+		case err != nil:
+		case head.Status == store.VisitPending || head.Status == store.VisitRunning:
+			err = e.stepActive(ctx, r, head)
+		case head.Status == store.VisitSucceeded:
+			var done bool
+			if done, err = e.laneArrived(ctx, r, res, ln, head); done {
+				arrived++
+			} else if err == nil {
+				err = e.advance(ctx, r, head)
+			}
+		case head.Status == store.VisitError:
+			err = e.advance(ctx, r, head)
+		default:
+			err = e.finish(ctx, r, store.RunCanceled, "canceled")
+		}
+		if err != nil {
+			return err
+		}
+		if store.RunDone(r.Status) {
+			return nil
+		}
+	}
+	if arrived < len(n.Branches) {
+		return nil
+	}
+	ok, err := e.store.UpdateVisitIf(ctx, r.ID, fv.Seq, []string{store.VisitPending, store.VisitRunning}, map[string]any{
+		"status": store.VisitSucceeded, "outcome": flow.OutcomeJoined, "finished_at": store.Now(),
+		"summary": fmt.Sprintf("All %d branches reached %s", len(n.Branches), n.Join),
+	})
+	if err != nil || !ok {
+		return err
+	}
+	fv.Status, fv.Outcome = store.VisitSucceeded, flow.OutcomeJoined
+	return e.advance(ctx, r, fv)
+}
+
+// laneArrived reports whether the branch whose latest visit is head has
+// reached its join, following the same on_exhausted jumps enterWhy takes.
+func (e *Engine) laneArrived(ctx context.Context, r *store.Run, res *resolve.Resolved, ln *lane, head *store.Visit) (bool, error) {
+	n := res.Nodes[head.Node]
+	if n == nil {
+		return false, rejectf("node %q not in snapshot", head.Node)
+	}
+	target := n.Next[head.Outcome]
+	for depth := 0; depth <= 20; depth++ {
+		if target == ln.join {
+			return true, nil
+		}
+		next := res.Nodes[target]
+		if next == nil || next.MaxVisits == 0 {
+			return false, nil
+		}
+		count, err := e.visitCount(ctx, r, target)
+		if err != nil || count < next.MaxVisits {
+			return false, err
+		}
+		target = next.OnExhausted
+	}
+	return false, nil
 }
 
 // execute resumes the same durable visit; it never appends a second visit.
@@ -475,7 +622,9 @@ func (e *Engine) execute(ctx context.Context, r *store.Run, res *resolve.Resolve
 		e.publishVisit(r.ID, v.Seq)
 		e.alert(ctx, config.NotifyGate, r, n.ID+" needs a decision", prompt, 4, "raised_hand")
 		return nil
-	case flow.TypeSwitch:
+	case flow.TypeParallel:
+		return e.stepParallel(ctx, r, v)
+	case flow.TypeSwitch, flow.TypeJoin:
 		outcome, why, err := e.evalSwitch(ctx, r, res, n)
 		if err != nil {
 			return err
@@ -604,11 +753,17 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 		return nil
 	}
 	if status == store.RunFailed {
-		v, err := e.store.LastVisit(ctx, r.ID)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+		pods, err := e.liveJobs(ctx, r.ID)
+		if err != nil {
 			return err
 		}
-		if v != nil && flow.PodType(v.Type) && v.JobName != "" && v.Status != store.VisitSucceeded {
+		active := 0
+		for _, v := range pods {
+			if !visitDone(v.Status) {
+				active++
+			}
+		}
+		for _, v := range pods {
 			// Cleanup uses the persisted identity, never current authorization.
 			// Record failure first so a failed Kill remains cleanup work after
 			// restart, even if configuration is repaired or a result arrives.
@@ -619,7 +774,7 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 				if err != nil {
 					return err
 				}
-				if !updated {
+				if !updated && active == 1 {
 					return nil // a result won the race; reconcile it on the next tick
 				}
 				e.publishVisit(r.ID, v.Seq)
@@ -735,12 +890,12 @@ func (e *Engine) Cancel(ctx context.Context, runID string) error {
 	if store.RunDone(r.Status) {
 		return nil
 	}
-	v, err := e.store.LastVisit(ctx, runID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	pods, err := e.liveJobs(ctx, runID)
+	if err != nil {
 		return err
 	}
-	if err == nil && !visitDone(v.Status) {
-		if v.JobName != "" {
+	for _, v := range pods {
+		if !visitDone(v.Status) {
 			if err := e.launcher.Kill(ctx, v.JobName); err != nil {
 				return err
 			}
@@ -749,10 +904,26 @@ func (e *Engine) Cancel(ctx context.Context, runID string) error {
 	if err := e.finish(ctx, r, store.RunCanceled, "canceled"); err != nil {
 		return err
 	}
-	if v != nil {
+	for _, v := range pods {
 		e.publishVisit(runID, v.Seq)
 	}
 	return nil
+}
+
+// liveJobs returns the pod visits whose Job may still exist: unfinished ones,
+// and errored ones (a timed-out pod can outlive its visit). Kill is idempotent.
+func (e *Engine) liveJobs(ctx context.Context, runID string) ([]*store.Visit, error) {
+	vs, err := e.store.Visits(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []*store.Visit
+	for _, v := range vs {
+		if flow.PodType(v.Type) && v.JobName != "" && v.Status != store.VisitSucceeded && v.Status != store.VisitCanceled {
+			out = append(out, v)
+		}
+	}
+	return out, nil
 }
 
 // Resume re-opens a failed or canceled run at node (default: the node of its
@@ -786,6 +957,9 @@ func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*st
 	n := res.Nodes[node]
 	if n == nil {
 		return nil, fmt.Errorf("%q is not a node of %s v%d", node, r.FlowName, r.FlowVersion)
+	}
+	if lanes, _ := res.Lanes(); lanes[node].Fork != "" {
+		return nil, fmt.Errorf("%q runs inside a branch of %q; resume at %q to rerun its branches", node, lanes[node].Fork, lanes[node].Fork)
 	}
 	active, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunRunning, store.RunWaiting}, Limit: -1})
 	if err != nil {
