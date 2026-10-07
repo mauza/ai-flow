@@ -53,14 +53,21 @@ func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *
 		return nil, err
 	}
 	var lastDone *store.Visit
+	history := map[string][]any{}
 	for _, v := range visits {
 		if v.Status != store.VisitSucceeded {
 			continue
 		}
 		var outputs map[string]any
 		json.Unmarshal(v.Outputs, &outputs)
+		history[v.Node] = append(history[v.Node], map[string]any{"visit": v.Visit, "outcome": v.Outcome, "summary": v.Summary, "outputs": outputs})
 		nodes[v.Node] = map[string]any{"outcome": v.Outcome, "summary": v.Summary, "outputs": outputs, "visit": v.Visit}
 		lastDone = v
+	}
+	// history: every successful visit of the node, oldest first. Loops use it
+	// to see earlier passes (e.g. all review comments, not just the latest).
+	for id, h := range history {
+		nodes[id].(map[string]any)["history"] = h
 	}
 	if lastDone != nil {
 		runCtx["last_node"] = lastDone.Node
@@ -128,6 +135,7 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 			fmt.Fprintf(&sb, "- %s#%d → %s: %s\n", v.Node, v.Visit, v.Outcome, oneLine(v.Summary, 200))
 		}
 		sb.WriteString("\n")
+		writeLoopHistory(&sb, done)
 	}
 	if r.Resumes > 0 && seq > r.ResumeSeq {
 		writeResume(&sb, r, visits)
@@ -165,6 +173,54 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+const loopHistoryBudget = 8000
+
+// writeLoopHistory lists every pass of each step that ran more than once, with
+// its outputs, so a step in a loop can see all earlier feedback rather than only
+// the latest. When it is too long, the oldest passes are dropped first.
+func writeLoopHistory(sb *strings.Builder, done []*store.Visit) {
+	count := map[string]int{}
+	for _, v := range done {
+		count[v.Node]++
+	}
+	var lines []string
+	for _, v := range done {
+		if count[v.Node] < 2 {
+			continue
+		}
+		line := fmt.Sprintf("- %s#%d → %s: %s", v.Node, v.Visit, v.Outcome, oneLine(v.Summary, 300))
+		var outputs map[string]any
+		json.Unmarshal(v.Outputs, &outputs)
+		delete(outputs, "log_tail")
+		if len(outputs) > 0 {
+			b, _ := json.Marshal(outputs)
+			line += "\n  outputs: " + oneLine(string(b), 800)
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return
+	}
+	trimmed := false
+	for size(lines) > loopHistoryBudget && len(lines) > 1 {
+		lines, trimmed = lines[1:], true
+	}
+	sb.WriteString("## Loop history\n\nEvery pass of the steps that repeated, oldest first. Do not undo fixes made for earlier feedback.\n\n")
+	if trimmed {
+		sb.WriteString("- … earlier passes trimmed\n")
+	}
+	sb.WriteString(strings.Join(lines, "\n"))
+	sb.WriteString("\n\n")
+}
+
+func size(lines []string) int {
+	n := 0
+	for _, l := range lines {
+		n += len(l) + 1
+	}
+	return n
 }
 
 // writeResume tells steps after a resume why the run stopped and what the

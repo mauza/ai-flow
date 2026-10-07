@@ -68,8 +68,13 @@ next: { complete: $success, repeat: work }
 
 `nodes.assess.outputs` is the **latest successful visit's persisted output** for
 that node; earlier visits remain in history. A later result supersedes the values
-seen through that name. There is no shared variable assignment, increment, reset,
-or group-level accumulator. Skipped producers can leave stale values visible;
+seen through that name. `nodes.assess.history` lists **every** successful visit
+(`visit`, `outcome`, `summary`, `outputs`), oldest first: read it in a template to
+pass all earlier feedback on, or count passes in CEL with
+`size(nodes.assess.history)`. Pod steps in a loop also get a *Loop history* context
+section listing every pass of each repeated step with its outputs, so a fixer sees
+the first review's comments as well as the latest. There is still no assignment,
+increment or reset. Skipped producers can leave stale values visible;
 these examples rerun verify/assess before every condition evaluation. Accessing
 a missing value in CEL can fail the run; do not assume missing means false.
 The initial work step uses template fallbacks because no earlier feedback exists.

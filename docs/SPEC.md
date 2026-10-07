@@ -138,12 +138,13 @@ whose `on_limit` uses `action: outcome`.
 
 `${{ path ?? "fallback" }}` with roots `task`, `run` (`id`, `branch`, `base`,
 `diff.files_changed|lines_added|lines_removed|lines_changed`, `last_node`),
-`nodes.<id>.{outcome,summary,outputs.<f>}` (latest visit) and `inputs`. Rendered
+`nodes.<id>.{outcome,summary,visit,outputs.<f>}` (latest visit),
+`nodes.<id>.history` (every successful visit, oldest first) and `inputs`. Rendered
 once, in the control plane, so model output is never re-evaluated. CEL switch
 expressions see the same values.
 
 Every pod node also receives a context section: the task, a list of earlier steps
-with outcomes and summaries, the previous step's outputs and log tail, its inputs,
+with outcomes and summaries, every pass of each step that repeated (with outputs), the previous step's outputs and log tail, its inputs,
 and the branch diff stats.
 
 ### 4.3 Model config and limits per step

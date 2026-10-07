@@ -463,7 +463,7 @@ func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 		}
 	case "nodes":
 		if len(ref.Path) < 3 {
-			v.errf(n.ID, field, "%s: use nodes.<id>.outputs.<field> or nodes.<id>.outcome", ref.Raw)
+			v.errf(n.ID, field, "%s: use nodes.<id>.outputs.<field>, nodes.<id>.outcome or nodes.<id>.history", ref.Raw)
 			return
 		}
 		other, ok := v.r.Nodes[ref.Path[1]]
@@ -472,7 +472,7 @@ func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 			return
 		}
 		switch ref.Path[2] {
-		case "outcome", "summary":
+		case "outcome", "summary", "visit", "history":
 		case "outputs":
 			if len(ref.Path) >= 4 && other.Outputs != nil {
 				if _, ok := other.Outputs[ref.Path[3]]; !ok && other.Type != flow.TypeCheck {
@@ -480,7 +480,7 @@ func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 				}
 			}
 		default:
-			v.errf(n.ID, field, "%s: expected outputs, outcome or summary after the node id", ref.Raw)
+			v.errf(n.ID, field, "%s: expected outputs, outcome, summary, visit or history after the node id", ref.Raw)
 		}
 	}
 }
