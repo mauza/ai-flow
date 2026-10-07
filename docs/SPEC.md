@@ -212,7 +212,10 @@ node → preset → flow/project/catalog defaults → catalog model → built-in
 Two enforcement points: the **limit shim** in the pod (behaviour: retries,
 waits, fallbacks, token/turn limits) and the **LLM proxy** in the control plane
 (security: model allowlist from the grant, node `limits.usd`, flow `budget.usd`,
-project per-run and per-month caps, usage accounting).
+project per-run and per-month caps, usage accounting, and each catalog model's
+`max_concurrency`: calls beyond it wait for a slot, across all pods and parallel
+branches). Gateway 500s that report an unreachable backend (LiteLLM's
+`APIConnectionError`) count as `rate_limited`, so retries and fallbacks apply.
 
 ## 5. Configuration
 

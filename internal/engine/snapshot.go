@@ -57,9 +57,15 @@ func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
 		if n.LLM != nil {
 			for _, name := range append([]string{n.LLM.Model}, n.LLM.Fallbacks...) {
 				m := e.cfg.Catalog.Models[name]
-				deps["model/"+name] = m
 				if m != nil {
+					// max_concurrency is admission control, like runs.maxConcurrent:
+					// tuning it must not fail pinned runs as configuration drift.
+					pinned := *m
+					pinned.MaxConcurrency = 0
+					deps["model/"+name] = pinned
 					deps["upstream/"+m.Upstream] = e.cfg.Env.LLM.Upstreams[m.Upstream].BaseURL
+				} else {
+					deps["model/"+name] = m
 				}
 			}
 		}

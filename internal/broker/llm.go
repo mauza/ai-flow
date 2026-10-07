@@ -68,6 +68,17 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		return
 	}
 
+	// max_concurrency caps simultaneous calls per model across every pod (a
+	// local GPU server, parallel branches). Extra calls wait for a slot.
+	if slots := b.modelSlots(name, model.MaxConcurrency); slots != nil {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-ctx.Done():
+			return
+		}
+	}
+
 	body["model"] = model.Model
 	stream, _ := body["stream"].(bool)
 	if stream {
@@ -198,4 +209,20 @@ func (b *Broker) monthSpend(ctx context.Context, project string) (float64, error
 
 func limitErr(w http.ResponseWriter, status int, typ, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"type": typ, "message": msg}})
+}
+
+// modelSlots returns the semaphore for a catalog model, or nil when unlimited.
+func (b *Broker) modelSlots(name string, max int) chan struct{} {
+	if max <= 0 {
+		return nil
+	}
+	b.slotsMu.Lock()
+	defer b.slotsMu.Unlock()
+	if b.slots == nil {
+		b.slots = map[string]chan struct{}{}
+	}
+	if b.slots[name] == nil {
+		b.slots[name] = make(chan struct{}, max)
+	}
+	return b.slots[name]
 }

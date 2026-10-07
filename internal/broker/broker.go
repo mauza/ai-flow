@@ -53,6 +53,9 @@ type Broker struct {
 
 	transcriptMu     sync.Mutex
 	transcriptWrites map[string]*transcriptWrite
+
+	slotsMu sync.Mutex
+	slots   map[string]chan struct{} // per catalog model, sized max_concurrency
 }
 
 func New(cfg *config.Config, st *store.Store, e *engine.Engine, s *grant.Signer, obj objstore.Store, h *hub.Hub, pods PodIdentifier, mcp *mcpx.Pool) *Broker {

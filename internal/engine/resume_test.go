@@ -137,3 +137,16 @@ func TestResumeRespectsRunSlots(t *testing.T) {
 		t.Fatalf("status %s", r.Status)
 	}
 }
+
+func TestMaxConcurrencyIsNotConfigurationDrift(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(resumeFlow)
+	h.cfg.Catalog.Models[testModel].MaxConcurrency = 7
+	if _, err := h.e.Resolved(h.ctx, h.run(id)); err != nil {
+		t.Fatalf("tuning max_concurrency drifted a pinned run: %v", err)
+	}
+	h.cfg.Catalog.Models[testModel].ContextTokens++
+	if _, err := h.e.Resolved(h.ctx, h.run(id)); err == nil || !strings.Contains(err.Error(), "drift") {
+		t.Fatalf("a real model change must still be drift: %v", err)
+	}
+}
