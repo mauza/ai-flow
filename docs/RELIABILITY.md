@@ -66,7 +66,8 @@ transcript; an earlier attempt's upload alone does not seal the visit. Late
 uploads and duplicate results cannot replace the selected artifact. An absent
 final key selects no artifact rather than another attempt's capture. Unselected
 objects are retained; automatic object retention/garbage collection is not part
-of this change. Publication serialization assumes one control plane, consistent
+of this change. Deleting a flow removes its runs' objects (`runs/<id>/`), best
+effort after the database rows are gone. Publication serialization assumes one control plane, consistent
 with the SQLite deployment.
 
 ## Health and operations

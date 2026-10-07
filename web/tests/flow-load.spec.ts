@@ -58,3 +58,45 @@ test("a slow flow load never validates the empty initial document", async ({ pag
   await page.waitForTimeout(500);
   expect(validated.filter((y) => y.trim() === "")).toEqual([]);
 });
+
+async function flowPage(page: import("@playwright/test").Page, runs: FlowView["runs"]) {
+  const deletes: string[] = [];
+  await page.addInitScript(() => {
+    window.EventSource = class {
+      onopen?: () => void;
+      constructor() { setTimeout(() => this.onopen?.(), 0); }
+      close() {}
+    } as unknown as typeof EventSource;
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === "DELETE") {
+      deletes.push(path);
+      return route.fulfill({ json: { versions: 1, runs: [] } });
+    }
+    if (path === "/api/overview") return route.fulfill({ json: overview });
+    if (path === "/api/flows/slow") {
+      const flow = { name: "slow", version: 1, yaml, created_at: Date.now() };
+      return route.fulfill({ json: { flow, versions: [flow], graph, issues: [], runs, planning: false } satisfies FlowView });
+    }
+    if (path === "/api/validate") return route.fulfill({ json: { graph, issues: [] } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/flows/slow");
+  await expect(page.locator(".fnode-title", { hasText: /^test$/ })).toBeVisible();
+  return deletes;
+}
+
+test("deleting a flow asks first, then leaves for the flow list", async ({ page }) => {
+  const deletes = await flowPage(page, []);
+  page.once("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "Delete flow" }).click();
+  await expect(page).toHaveURL(/\/flows$/);
+  expect(deletes).toEqual(["/api/flows/slow"]);
+});
+
+test("a flow with an active run cannot be deleted from the editor", async ({ page }) => {
+  const run = { id: "r-1", flow_name: "slow", flow_version: 1, status: "waiting", branch: "b", base: "main", diff: {}, cost_usd: 0, tokens: 0, created_at: Date.now() };
+  await flowPage(page, [run]);
+  await expect(page.getByRole("button", { name: "Delete flow" })).toBeDisabled();
+});

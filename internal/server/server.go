@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -70,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/flows/{name}", s.getFlow)
 	api("GET /api/flows/{name}/versions/{v}", s.getFlowVersion)
 	api("POST /api/flows/{name}", s.saveFlow)
+	api("DELETE /api/flows/{name}", s.deleteFlow)
 	api("GET /api/flows/{name}/chat", s.getChat)
 	api("POST /api/flows/{name}/chat", s.chat)
 	api("POST /api/flows/{name}/runs", s.startRun)
@@ -460,6 +462,35 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, 200, run)
 	}
+}
+
+// deleteFlow removes a flow, its versions, chat and runs (with their
+// transcripts). 409 while any of its runs is queued, running or waiting.
+func (s *Server) deleteFlow(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	res, err := s.app.Engine.DeleteFlow(r.Context(), name)
+	var active *store.ErrFlowActive
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, 404, "not found")
+		return
+	case errors.As(err, &active):
+		writeErr(w, 409, err.Error())
+		return
+	case err != nil:
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if d, ok := s.obj.(objstore.Deleter); ok {
+		for _, id := range res.Runs {
+			// Best effort: the database rows are already gone.
+			if err := d.DeletePrefix(r.Context(), "runs/"+id+"/"); err != nil {
+				slog.Warn("delete run objects", "run", id, "err", err)
+			}
+		}
+	}
+	s.app.Hub.Publish(hub.Event{Type: "flow", ID: name})
+	writeJSON(w, 200, res)
 }
 
 func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {

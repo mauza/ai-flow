@@ -389,7 +389,10 @@ effort and never affects the run.
   pills, validation badges); side panel with the node inspector (model, prompt,
   access, skills, outcome → next, loops, effective settings), YAML editor with
   inline diagnostics, planner chat with diff proposals, and runs. Drag from an
-  outcome to a node to route it. Versions, save (Ctrl+S), revert, run.
+  outcome to a node to route it. Versions, save (Ctrl+S), revert, run, delete.
+  Deleting (`DELETE /api/flows/{name}`) removes every version, the planner chat,
+  all runs with their visits, events and transcripts, and unlinks tasks; it is
+  refused with 409 while any run of the flow is queued, running or waiting.
 - **Run view** — the same graph colored live over SSE (running, done, waiting,
   failed, not reached; taken edges in green; visit counts), gate decisions,
   step timeline with progress, and step detail (result, outputs, rendered prompt,

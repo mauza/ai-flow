@@ -195,8 +195,11 @@ func (e *Engine) handleError(ctx context.Context, r *store.Run, err error) {
 
 // ---- starting runs ----
 
-// CreateRun queues a run of a saved flow version.
+// CreateRun queues a run of a saved flow version. It holds the engine lock so
+// a concurrent DeleteFlow cannot remove the flow between the read and the insert.
 func (e *Engine) CreateRun(ctx context.Context, flowName string, version int, taskID string) (*store.Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	fv, err := e.store.GetFlow(ctx, flowName, version)
 	if err != nil {
 		return nil, fmt.Errorf("flow %s: %w", flowName, err)
@@ -877,6 +880,15 @@ func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outco
 	r.Status = store.RunRunning
 	v.Status, v.Outcome = store.VisitSucceeded, outcome
 	return e.advance(ctx, r, v)
+}
+
+// DeleteFlow removes a flow with its versions, chat and finished runs. It
+// fails with *store.ErrFlowActive while a run of the flow is queued, running
+// or waiting. Objects such as transcripts are the caller's to remove.
+func (e *Engine) DeleteFlow(ctx context.Context, name string) (*store.DeletedFlow, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store.DeleteFlow(ctx, name)
 }
 
 // Cancel stops a run.
