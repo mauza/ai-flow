@@ -32,7 +32,10 @@ func loadCatalog(t *testing.T) *config.Config {
 
 func TestCatalogModelOptions(t *testing.T) {
 	cfg := loadCatalog(t)
-	want := []string{"gpt-6-sol", "gpt-6-luna", "gpt-6-astra"}
+	want := []string{"gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"}
+	if _, ok := cfg.Catalog.Models["gpt-6-sol"]; ok {
+		t.Error("catalog must not offer the previous GPT-6 Sol alias")
+	}
 	if len(cfg.Catalog.Models) != len(want) {
 		t.Fatalf("catalog must offer only Sol, Luna, and Astra: %v", cfg.Catalog.Models)
 	}

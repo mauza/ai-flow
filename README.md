@@ -8,7 +8,7 @@ model, tools, MCP tools and repo access it declares; git, LLM and MCP traffic go
 through the control plane, so pods never hold credentials.
 
 Small steps keep work focused and verifiable. The only configured model options
-are **GPT-6 Sol** (`gpt-6-sol`), **GPT-6 Luna** (`gpt-6-luna`), and **GPT-6 Astra**
+are **GPT-6.1 Sol** (`gpt-6.1-sol`), **GPT-6 Luna** (`gpt-6-luna`), and **GPT-6 Astra**
 (`gpt-6-astra`). Sol remains the default planner with streaming enabled; Luna and
 Astra are additional choices.
 

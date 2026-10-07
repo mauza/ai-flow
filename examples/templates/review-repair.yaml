@@ -34,7 +34,7 @@ spec:
       next: { approve: verify, changes: repair, blocked: $fail }
     repair:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: ["repo/template:write"]
       prompt: |
         Repair only the review findings: ${{ nodes.review.outputs.findings }}

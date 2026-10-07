@@ -8,7 +8,7 @@ Every task gets its own small state machine — a **flow**. A model (the planner
 drafts the flow; each node is one narrow step: a single LLM call, a coding-agent
 session (pi), a deterministic check, a human gate, a CEL switch, or a built-in
 action. Steps are focused and verifiable, using the smallest sufficient configured
-model. The current menu contains only GPT-6 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
+model. The current menu contains only GPT-6.1 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
 YAML; the UI shows them as a graph you can edit by hand or by chatting with the
 planner. Runs execute each pod step as a Kubernetes Job with exactly the tools,
 skills, MCP tools, models and repo access that step declares — and no raw
@@ -150,7 +150,7 @@ and the branch diff stats.
 
 ```yaml
 llm:
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   thinking: medium
   limits: { tokens: 400000, usd: 0.50, turns: 80 }
   on_limit:
@@ -196,12 +196,12 @@ Secrets are env vars named by `*Env` fields, never inlined.
 The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
 
-The checked-in model menu is `gpt-6-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
+The checked-in model menu is `gpt-6.1-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
 existing `home` upstream with matching upstream aliases. Sol remains the default
 planner with `planner.stream: true`; Luna and Astra are additional choices. All three use `size: frontier`,
 `reasoning: true`, `tool_use: good`, and `cost: subscription` as selection metadata
 without performance claims. `context_tokens: 100000` is a conservative working limit,
-not a full-capacity claim. The Sol and Luna gateway aliases were verified with existing
+not a full-capacity claim. Earlier verification covered GPT-6 Sol (the previous version) and Luna with existing
 OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for access
 synchronization and the separate ai-flow application rollout. The original
 local-model premise is historical, not the current model policy.

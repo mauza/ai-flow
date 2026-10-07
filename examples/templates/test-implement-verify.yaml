@@ -19,7 +19,7 @@ spec:
   nodes:
     write_test:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: ["repo/template:write"]
       prompt: |
         Task: ${{ task.title }}
@@ -42,7 +42,7 @@ spec:
       next: { unexpected_pass: $fail, red: implement, blocked: $fail }
     implement:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: ["repo/template:write"]
       prompt: |
         Implement the task with the smallest correct change. Preserve the

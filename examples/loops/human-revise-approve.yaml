@@ -10,7 +10,7 @@ spec:
   nodes:
     work:
       uses: preset/implement
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: [repo/ai-flow-sandbox:write]
       inputs:
         human_decision: '${{ nodes.review_gate.outcome ?? "No human decision yet." }}'

@@ -5,9 +5,9 @@ kind: Catalog
 models:
   # Selection hints, not performance claims. All three subscription aliases use the Responses bridge.
   # context_tokens is a conservative working limit, not the model's full capacity.
-  gpt-6-sol:
+  gpt-6.1-sol:
     upstream: home
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     size: frontier
     context_tokens: 100000
     tool_use: good
@@ -564,7 +564,7 @@ presets:
     outcomes: [done]
 
 planner:
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   stream: true
   max_attempts: 3
   guidance: |

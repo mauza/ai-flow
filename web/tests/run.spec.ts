@@ -4,7 +4,7 @@ import type { Graph, Run, RunView, Visit } from "../src/api";
 const graph: Graph = {
   start: "work",
   nodes: [
-    { id: "work", type: "agent", model: "gpt-6-sol", outcomes: ["done"] },
+    { id: "work", type: "agent", model: "gpt-6.1-sol", outcomes: ["done"] },
     { id: "test", type: "check", run: "make test", outcomes: ["pass", "fail"] },
     { id: "approve", type: "gate", prompt: "Ship it?", outcomes: ["approve", "revise"] },
   ],

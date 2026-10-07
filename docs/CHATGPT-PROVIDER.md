@@ -10,7 +10,7 @@ ai-flow ──┘      │
                 └─ persistent access + refresh credentials
 ```
 
-The selectable ai-flow models are **`gpt-6-astra`**, **`gpt-6-sol`**, and
+The selectable ai-flow models are **`gpt-6-astra`**, **`gpt-6.1-sol`**, and
 **`gpt-6-luna`**, with no fallback to other families. Sol remains the default
 streaming planner. OpenCode defaults to `litellm-openai/gpt-6-astra` and uses Luna
 for its small/background-model setting. Existing local-model configuration in
@@ -39,7 +39,7 @@ The current tailnet gateway does not require a client API key; the configured
 retain its old model choice; select one of:
 
 - `litellm-openai/gpt-6-astra`
-- `litellm-openai/gpt-6-sol`
+- `litellm-openai/gpt-6.1-sol`
 - `litellm-openai/gpt-6-luna`
 
 The subscription backend may drop token-limit parameters. Observed usage still
@@ -116,17 +116,31 @@ refresh copy over credentials that LiteLLM may already have rotated.
 ## Verification and rollback
 
 On 2026-09-28:
-- Astra, Sol and Luna worked through the native ChatGPT Responses bridge.
+- Astra, GPT-6 Sol (the previous version) and Luna worked through the native ChatGPT Responses bridge.
 - LiteLLM's native refresh successfully renewed and persisted the transferred
   session without a new login.
 - The previous five-minute workstation sync was disabled.
 - OpenCode's separate gateway provider completed real tool-call round trips.
-- Sol generated a valid bounded test/review flow on its first attempt. GitHub's
+- GPT-6 Sol generated a valid bounded test/review flow on its first attempt. GitHub's
   sandbox context lookup returned 404, so that test did not use fetched repository
   context or execute the resulting flow.
 
-The ai-flow application changes still need their separate build/deployment.
-Updating gateway routes does not deploy the new application UI/parser.
+### GPT-6.1 Sol upgrade
+
+GPT-6.1 Sol replaces the previous Sol choice as `gpt-6.1-sol`. The published
+gateway no longer lists `gpt-6-sol`. Live ai-flow exposes only Astra, GPT-6.1 Sol
+and Luna, with GPT-6.1 Sol as its streaming planner. OpenCode exposes
+`litellm-openai/gpt-6.1-sol`; restart OpenCode to load the updated choice.
+
+The new upstream returned its exact model ID in a streaming smoke test. OpenCode
+completed a real read-tool round trip through the published route. The deployed
+ai-flow binary generated a valid bounded test/review workflow in two planner
+attempts, with Luna reviewing the change. The generated flow was not executed.
+Both ArgoCD applications were Synced/Healthy after rollout.
+
+Model/catalog configuration can roll independently of application images.
+Application UI/parser changes require their own image/chart release; changing
+gateway routes alone does not deploy application code.
 
 Rollback must preserve the PVC's **current** credentials. Reverting to the earlier
 access-only mount/timer alone cannot recover refresh ownership. To move ownership

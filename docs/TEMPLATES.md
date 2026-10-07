@@ -44,12 +44,12 @@ templates were format-validated, not executed against models or real repositorie
    branch or commit. For review-repair this must be the branch/commit you actually
    want reviewed; a new run starts its own branch from that base. A fresh run has
    no run diff, so the first review uses an **agent** to inspect the checkout.
-3. **Models.** The catalog offers three aliases: `gpt-6-sol`, `gpt-6-luna`, and
+3. **Models.** The catalog offers three aliases: `gpt-6.1-sol`, `gpt-6-luna`, and
    `gpt-6-astra`. Templates use an illustrative subset: Sol for coding/investigation
    and Luna for review/proposals. All three use `home` with matching upstream aliases;
    the validation fixture includes only Sol/Luna and points `home` to an inert
    endpoint. Sol remains the default streaming planner; Luna and Astra are additional
-   choices. The Sol and Luna live gateway aliases were smoke-tested with existing
+   choices. Earlier live smoke tests covered GPT-6 Sol (the previous version) and Luna with existing
    OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md).
    All three declare frontier size, reasoning, good tool use, and subscription cost
    as selection metadata, not performance claims; the 100,000-token working

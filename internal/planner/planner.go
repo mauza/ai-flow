@@ -642,7 +642,7 @@ spec:
   nodes:
     implement:
       uses: preset/implement
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: [repo/example:write]
       max_visits: 3
       on_exhausted: $fail

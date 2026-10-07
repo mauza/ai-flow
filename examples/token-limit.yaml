@@ -9,7 +9,7 @@ spec:
   nodes:
     big:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       prompt: Read every file in the repository and write a detailed summary of each one.
       llm:
         limits: { tokens: 3000 }

@@ -8,7 +8,7 @@ spec:
   nodes:
     stats:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: [mcp/word-stats]
       prompt: |
         Read README.md, then call the demo__word_stats tool with its full text.
