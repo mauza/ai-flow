@@ -8,7 +8,7 @@ Every task gets its own small state machine — a **flow**. A model (the planner
 drafts the flow; each node is one narrow step: a single LLM call, a coding-agent
 session (pi), a deterministic check, a human gate, a CEL switch, or a built-in
 action. Steps are focused and verifiable, using the smallest sufficient configured
-model. The current menu contains only GPT-6 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
+model. The current menu contains only GPT-6.1 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
 YAML; the UI shows them as a graph you can edit by hand or by chatting with the
 planner. Runs execute each pod step as a Kubernetes Job with exactly the tools,
 skills, MCP tools, models and repo access that step declares — and no raw
@@ -126,31 +126,70 @@ spec:
 |---|---|---|
 | `llm` | pod | One chat completion with a JSON-schema response format (`{outcome, summary, outputs}`); the branch diff is included. |
 | `agent` | pod | pi session in the repo; ends with the `flow_finish` tool. One nudge if the agent forgets. |
-| `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`. |
+| `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`, plus any declared `outputs` the command writes as one JSON object to `$AI_FLOW_OUTPUTS` (type-checked; undeclared fields fail the step; no file means none). |
 | `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
 | `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
+| `parallel` | control plane | Starts every node in `branches` at once; emits `joined` when all branches have reached its `join`. |
+| `join` | control plane | Runs after every branch of its parallel node arrived; routes like a switch over any branch's results (no cases → `done`). |
 
 Implicit outcomes: `timeout` on gates with a timeout; `limit` on llm/agent nodes
-whose `on_limit` uses `action: outcome`.
+whose `on_limit` uses `action: outcome`; `joined` on parallel nodes.
+
+#### 4.1.1 Parallel branches
+
+```yaml
+checks:
+  type: parallel
+  branches: [lint, test, review]   # the first node of each branch
+  join: gather
+lint:   { uses: preset/custom-check, run: go vet ./..., next: { pass: gather, fail: gather } }
+test:   { uses: preset/go-test, next: { pass: gather, fail: diagnose } }
+diagnose: { uses: preset/investigate-bug, model: gpt-6.1-sol, next: { diagnosed: gather, inconclusive: gather } }
+review: { uses: preset/code-review, model: gpt-6-luna, next: { approve: gather, changes: gather } }
+gather:
+  type: join
+  cases: [{ when: 'nodes.test.outcome == "pass" && nodes.review.outcome == "approve"', outcome: green }]
+  default: red
+  next: { green: open_pr, red: fix }
+```
+
+A branch is every node reachable from its first node without passing the join;
+it can be several steps long and loop (bounded by `max_visits`). The validator
+enforces the rules that make concurrent branches safe and readable:
+
+- branches are **read-only**: no `repo:write` grant, because branches share the
+  run branch and would race to push; edits go after the join;
+- branches hold only `llm`, `agent`, `check` and `switch` nodes (no gates,
+  actions or nested parallel nodes);
+- a branch may route to `$fail` (failing the run) but not `$success`;
+- nothing outside a branch routes into it, only its branches route to the join,
+  and no node belongs to two branches.
+
+Branch visits record their parallel visit (`fork_seq`) and branch (`lane`). A
+branch step's context shows the main path and its own branch, not its siblings;
+the join and everything after it see every branch's results. Any branch error
+fails the run and stops the other branches' Jobs. Branch pods count against
+cluster capacity, not `runs.maxConcurrent`, which limits runs.
 
 ### 4.2 Templates and context
 
 `${{ path ?? "fallback" }}` with roots `task`, `run` (`id`, `branch`, `base`,
 `diff.files_changed|lines_added|lines_removed|lines_changed`, `last_node`),
-`nodes.<id>.{outcome,summary,outputs.<f>}` (latest visit) and `inputs`. Rendered
+`nodes.<id>.{outcome,summary,visit,outputs.<f>}` (latest visit),
+`nodes.<id>.history` (every successful visit, oldest first) and `inputs`. Rendered
 once, in the control plane, so model output is never re-evaluated. CEL switch
 expressions see the same values.
 
 Every pod node also receives a context section: the task, a list of earlier steps
-with outcomes and summaries, the previous step's outputs and log tail, its inputs,
+with outcomes and summaries, every pass of each step that repeated (with outputs), the previous step's outputs and log tail, its inputs,
 and the branch diff stats.
 
 ### 4.3 Model config and limits per step
 
 ```yaml
 llm:
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   thinking: medium
   limits: { tokens: 400000, usd: 0.50, turns: 80 }
   on_limit:
@@ -196,12 +235,12 @@ Secrets are env vars named by `*Env` fields, never inlined.
 The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
 
-The checked-in model menu is `gpt-6-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
+The checked-in model menu is `gpt-6.1-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
 existing `home` upstream with matching upstream aliases. Sol remains the default
 planner with `planner.stream: true`; Luna and Astra are additional choices. All three use `size: frontier`,
 `reasoning: true`, `tool_use: good`, and `cost: subscription` as selection metadata
 without performance claims. `context_tokens: 100000` is a conservative working limit,
-not a full-capacity claim. The Sol and Luna gateway aliases were verified with existing
+not a full-capacity claim. Earlier verification covered GPT-6 Sol (the previous version) and Luna with existing
 OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for access
 synchronization and the separate ai-flow application rollout. The original
 local-model premise is historical, not the current model policy.
@@ -245,9 +284,11 @@ a *declared but not enforced* warning rather than silently looking like they wor
 
 ### 7.1 Engine
 
-A run is a pinned flow version with one active node. The engine loop (every 3s
-and on demand) starts queued runs up to `runs.maxConcurrent`, then for each
-active run looks at its latest visit:
+A run is a pinned flow version with one active node on its main path; a
+parallel node is that active node while its branches each advance one visit at
+a time. The engine loop (every 3s and on demand) starts queued runs up to
+`runs.maxConcurrent`, then for each active run looks at its latest visit (and,
+under a parallel node, at the latest visit of each branch):
 
 - finished → follow `next[outcome]`; entering a node that already ran
   `max_visits` times goes to `on_exhausted` instead;
@@ -386,7 +427,8 @@ secrets via an existing Secret (`ai-flow-secrets`).
 
 ## 13. Not done yet
 
-- `map` (fan-out) and sub-flow nodes.
+- `map` (fan-out over a list) and sub-flow nodes; parallel branches that write
+  to the repo.
 - Claude Code / opencode harnesses; cloud models and subscription proxies (config
   supports any OpenAI-compatible upstream already).
 - GitLab forge.

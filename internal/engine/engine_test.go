@@ -125,7 +125,7 @@ func (h *harness) path(id string) string {
 	return strings.Join(p, " ")
 }
 
-const testModel = "gpt-6-sol"
+const testModel = "gpt-6.1-sol"
 
 const header = `apiVersion: ai-flow/v1alpha1
 kind: Flow

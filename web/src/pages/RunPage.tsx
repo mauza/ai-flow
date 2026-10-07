@@ -230,7 +230,7 @@ export default function RunPage() {
                           </span>
                           {v.outcome && <span className="chip mono">→ {v.outcome}</span>}
                         </div>
-                        <div className="tl-sub">{v.status === "running" || v.status === "pending" ? v.progress || "starting…" : v.error || v.summary}</div>
+                        <div className="tl-sub">{v.status === "running" || v.status === "pending" ? (v.type === "parallel" ? "waiting for its branches" : v.progress || "starting…") : v.error || v.summary}</div>
                       </div>
                       <div className="tl-time">
                         {v.started_at ? duration(v.started_at, v.finished_at, now) : ""}
@@ -260,7 +260,10 @@ function buildOverlay(graph: Graph, visits: Visit[], runStatus: string): RunOver
     s.status = v.status;
     s.progress = v.progress;
     s.outcome = v.outcome;
-    if (v.status === "succeeded" && v.outcome) {
+    if (v.type === "parallel" && v.status !== "pending") {
+      for (const e of graph.edges) if (e.from === v.node && e.kind === "branch") taken.add(edgeId(v.node, e.outcome));
+    }
+    if (v.status === "succeeded" && v.outcome && v.type !== "parallel") {
       s.taken.push(v.outcome);
       const id = edgeId(v.node, v.outcome);
       taken.add(id);

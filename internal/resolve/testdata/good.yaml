@@ -9,7 +9,7 @@ spec:
   nodes:
     reproduce:
       uses: preset/write-failing-test
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: ["repo/ai-flow-sandbox:write"]
       max_visits: 2
       next: { reproduced: fix, cannot_reproduce: ask_human }
@@ -22,7 +22,7 @@ spec:
     fix:
       uses: preset/implement
       llm:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         limits: { tokens: 400000 }
         on_limit:
           budget_exceeded: { action: outcome }

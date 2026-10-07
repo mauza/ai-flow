@@ -108,7 +108,7 @@ func TestShimCompleteDefaultNonstream(t *testing.T) {
 func TestShimCompleteStreamFailureNoPartialResult(t *testing.T) {
 	for _, ending := range []string{"", streamStopUsage + "data: {\"error\":\"private-error\"}\n\n"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeCompletionStream(w, structuredReply, ending) }))
-		s := NewShim(&protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6-sol"}}}, "grant")
+		s := NewShim(&protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6.1-sol"}}}, "grant")
 		out, err := s.Complete(context.Background(), map[string]any{"stream": true})
 		server.Close()
 		if err == nil || out != nil {
@@ -129,7 +129,7 @@ func TestShimCompleteStreamCancellation(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	s := NewShim(&protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6-sol"}}}, "grant")
+	s := NewShim(&protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6.1-sol"}}}, "grant")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)

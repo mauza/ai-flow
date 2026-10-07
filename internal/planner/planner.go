@@ -578,7 +578,7 @@ spec:
   start: <first node id>
   nodes:
     <node_id>:                 # lowercase_snake_case
-      type: llm | agent | check | gate | switch | action   # omit when using a preset
+      type: llm | agent | check | gate | switch | action | parallel | join   # omit when using a preset
       uses: preset/<name>      # optional
       description: <why this step exists>
       model: <model name>      # llm and agent nodes
@@ -593,16 +593,20 @@ spec:
       run: <shell command>     # check nodes: exit 0 → pass, anything else → fail
       cases: [{ when: <CEL expression>, outcome: <x> }]   # switch nodes, plus default: <y>
       action: open_pull_request                  # action nodes, with: { title: ..., body: ... }
+      branches: [<node_id>, ...]                # parallel nodes: the first node of each branch
+      join: <join node id>                       # parallel nodes: where every branch ends
 ` + "```" + `
 
 # Node types
 
 - llm: one structured model call, no tools. Classify, review a diff (the branch diff is included automatically), extract, decide.
 - agent: a coding agent in the repo with read/edit/write/bash. Use for changes and investigation. Give it one focused job.
-- check: runs bash -o pipefail -c in a fresh repo checkout, with CI=true. No implicit errexit: use && or set -e for multiple commands. Use for tests, linters, builds. Outputs are exit_code (integer), log_tail (string).
+- check: runs bash -o pipefail -c in a fresh repo checkout, with CI=true. No implicit errexit: use && or set -e for multiple commands. Use for tests, linters, builds. Outputs are exit_code (integer), log_tail (string). For structured results (counts, coverage, failing names), declare outputs and have the command write one JSON object with those fields to "$AI_FLOW_OUTPUTS"; a switch can then route on them. Undeclared or mistyped fields fail the step.
 - gate: waits for a human to pick an outcome. Only when the guidance below calls for it.
 - switch: routes on a CEL expression over run.diff.files_changed, run.diff.lines_changed, nodes.<id>.outputs.<field>, nodes.<id>.outcome.
 - action: open_pull_request or comment_task, run by ai-flow itself.
+- parallel: starts all its branches at once. Each branch is a path of nodes that begins at a listed node and ends by routing to the parallel node's join. Branches are read-only (no repo write grants), may contain only llm, agent, check and switch nodes, may route to $fail but not $success, and nothing outside a branch may route into it. A parallel node has no outcomes or next of its own.
+- join: waits until every branch has reached it, then routes like a switch: cases over nodes.<id>.outcome / nodes.<id>.outputs from any branch, plus default. Without cases its single outcome is done.
 
 # Choosing rigor
 
@@ -617,10 +621,12 @@ Escalate only for those reasons: an unresolved unknown earns an investigation, a
 
 # Rules
 
-- Every node needs outcomes and a next entry for each outcome.
+- Every node needs outcomes and a next entry for each outcome (parallel nodes excepted).
+- Use parallel for independent read-only work that would otherwise wait in line: lint + tests + review, reviews by two different models, or several investigations. Put edits after the join; route the join's failure outcome to a fixer and back to the parallel node for another round (bounded with max_visits).
+- End where the task's deliverable is. A pull request is right for code changes; investigations, questions and reports end with comment_task or $success once their outputs exist. Do not add a PR the task does not need.
 - Loops are good (tests fail → fix again), but every loop needs max_visits on one of its nodes.
 - For "repeat until" goals, prefer a bounded work → verify → condition group over a fixed one-pass chain. Route the condition's false/default outcome back to work and true to the next stage; refresh verification on EVERY pass. Use direct check outcomes for executable criteria. For judgment criteria, declare a bool output such as goal_met on a reviewer and route with CEL: nodes.verify.outcome == "pass" && nodes.assess.outputs.goal_met == true. An LLM's judgment must not override failed checks.
-- There are no shared mutable variables: nodes.<id>.outputs contains the latest successful visit's persisted result, not an accumulator. Do not read a producer before it has run; on an initial work visit use template fallbacks for prior feedback. Bind named outputs explicitly when a switch or gate is the previous step.
+- There are no shared mutable variables: nodes.<id>.outputs contains the latest successful visit's persisted result. nodes.<id>.history lists every successful visit (visit, outcome, summary, outputs), oldest first; use it for all earlier feedback in a loop or size(nodes.<id>.history) in a switch. Steps in a loop already get every earlier pass in their context. Do not read a producer before it has run; on an initial work visit use template fallbacks for prior feedback. Bind named outputs explicitly when a switch or gate is the previous step.
 - max_visits is a per-node total for the run, not a group iteration variable, and does not reset on a back edge or human decision. Bound every cycle, account for preset limits on all nodes in the repeated group, and explicitly route on_exhausted to $fail or a bounded handoff gate.
 - For human revise/approve loops, route revise back to work and approve onward. A gate alone does NOT automatically bound repetition: set max_visits plus an explicit gate timeout and next.timeout (normally $fail). Catalog/project/flow pod timeout defaults do not apply to gates. A gate timeout is per wait, not a whole-loop deadline; budget.wall is not currently enforced by the engine. The human can add a free-text note with the decision: the next step sees it in its context automatically, and later steps can read ${{ nodes.<gate>.outputs.note ?? "" }}. Route revise straight back to the work node so the note arrives with it. Gates remain optional according to guidance.
 - Nodes automatically receive the task, a summary of earlier steps, and the previous step's outputs; do not repeat them in prompts. Use ${{ nodes.<id>.outputs.<field> }} or ${{ task.title }} only when a step needs a specific value.
@@ -642,7 +648,7 @@ spec:
   nodes:
     implement:
       uses: preset/implement
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: [repo/example:write]
       max_visits: 3
       on_exhausted: $fail

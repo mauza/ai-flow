@@ -1,7 +1,10 @@
 # Node catalog
 
-`deploy/config/catalog.yaml` provides 30 reusable primitives. They use the existing
-six node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`.
+`deploy/config/catalog.yaml` provides 30 reusable primitives. They use six of the
+node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`. `parallel` and
+`join` are structure rather than presets: wrap independent read-only presets (checks,
+reviews, investigations) in a parallel node to run them at once; see
+[SPEC §4.1.1](SPEC.md#411-parallel-branches).
 Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipeline.
 
 ## Selection guide
@@ -51,7 +54,13 @@ Output types use the existing shorthand (`string`, `integer`, `number`, `bool`,
 `[string]`) or supported JSON Schema maps. Model results contain `outcome`,
 `summary`, and `outputs`; all declared output fields belong in `outputs`, including
 empty arrays/strings when appropriate. Checks actually emit `exit_code: integer`
-and `log_tail: string`. PR creation emits `url: string` and `number: integer`.
+and `log_tail: string`. A check may also declare
+`outputs` and write them as one JSON object to the file named by `$AI_FLOW_OUTPUTS`,
+e.g. `go test -json ./... | ./summarize > "$AI_FLOW_OUTPUTS"` producing
+`{"failed": 2, "failing": ["TestSlug"]}`. Fields are type-checked against the
+declaration; an undeclared field, a wrong type or a file that is not a JSON object
+fails the step. No file means no structured outputs, so a command that fails early
+still routes by its exit code. PR creation emits `url: string` and `number: integer`.
 Gates, switches, and task comments declare no extra output payload.
 
 The planner menu includes category, when-to-use, requirements, output types,
@@ -71,7 +80,7 @@ spec:
   nodes:
     implement:
       uses: preset/implement
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: [repo/ai-flow-sandbox:write]
       max_visits: 3
       on_exhausted: $fail
@@ -96,12 +105,12 @@ be wired with a complete map:
 
 - **Models:** `llm` has no tools; repository discovery belongs in an `agent`.
   Choose the smallest sufficient configured model for each step. The only model
-  options are `gpt-6-sol` (default planner, `planner.stream: true`), `gpt-6-luna`,
+  options are `gpt-6.1-sol` (default planner, `planner.stream: true`), `gpt-6-luna`,
   and `gpt-6-astra`, all using `home` with matching upstream aliases. No model fallback
   is configured. All three declare `size: frontier`, `reasoning: true`, `tool_use: good`,
   and `cost: subscription` as selection metadata, not performance claims.
   Their `context_tokens: 100000` is a conservative working limit, not full capacity.
-  The Sol and Luna gateway aliases have passed streaming smoke tests with the existing
+  Earlier streaming smoke tests covered GPT-6 Sol (the previous version) and Luna with the existing
   OpenCode login; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for setup and limits.
 - **Images:** `agent-base` includes bash, git, ripgrep, Python 3, Node 22/npm,
   jq, and curl. `agent-go` adds Go 1.25 in the checked-in Dockerfile. Projects

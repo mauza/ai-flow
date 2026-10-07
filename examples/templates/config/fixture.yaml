@@ -9,9 +9,9 @@ llm:
 apiVersion: ai-flow/v1alpha1
 kind: Catalog
 models:
-  gpt-6-sol:
+  gpt-6.1-sol:
     upstream: home
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     size: frontier
     context_tokens: 100000 # conservative working limit, not full capacity
     tool_use: good
@@ -28,7 +28,7 @@ models:
     cost: subscription
     notes: Alternate alias; real gateway subscription authentication and smoke test pending.
 planner:
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   stream: true
 harnesses:
   pi: { description: Replace runtime with an image containing the pi harness. }
@@ -50,5 +50,5 @@ spec:
   start: manual
   allow:
     grants: ["repo/template:read", "repo/template:write"]
-    models: [gpt-6-sol, gpt-6-luna]
+    models: [gpt-6.1-sol, gpt-6-luna]
   budget: { usd_per_run: 2 }

@@ -18,7 +18,7 @@ spec:
   nodes:
     investigate:
       type: agent
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       grants: ["repo/template:read"]
       prompt: |
         Investigate ${{ task.title }}: ${{ task.body }}

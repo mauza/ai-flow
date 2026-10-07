@@ -135,3 +135,80 @@ func EvalCEL(expr string, vars map[string]any) (bool, error) {
 	}
 	return b, nil
 }
+
+// CheckValue reports whether v (decoded JSON) satisfies schema, as produced by
+// OutputSchema: the type keyword, array items, object properties and required.
+// Other JSON Schema keywords are not checked.
+func CheckValue(schema map[string]any, v any) error {
+	typ, _ := schema["type"].(string)
+	switch typ {
+	case "string":
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("want a string, got %s", jsonKind(v))
+		}
+	case "boolean":
+		if _, ok := v.(bool); !ok {
+			return fmt.Errorf("want a bool, got %s", jsonKind(v))
+		}
+	case "number", "integer":
+		f, ok := v.(float64)
+		if !ok {
+			return fmt.Errorf("want %s, got %s", map[string]string{"number": "a number", "integer": "an integer"}[typ], jsonKind(v))
+		}
+		if typ == "integer" && f != float64(int64(f)) {
+			return fmt.Errorf("want an integer, got %v", f)
+		}
+	case "array":
+		xs, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("want a list, got %s", jsonKind(v))
+		}
+		if items, ok := schema["items"].(map[string]any); ok {
+			for i, x := range xs {
+				if err := CheckValue(items, x); err != nil {
+					return fmt.Errorf("[%d]: %w", i, err)
+				}
+			}
+		}
+	case "object":
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("want an object, got %s", jsonKind(v))
+		}
+		props, _ := schema["properties"].(map[string]any)
+		for k, x := range m {
+			if p, ok := props[k].(map[string]any); ok {
+				if err := CheckValue(p, x); err != nil {
+					return fmt.Errorf("%s: %w", k, err)
+				}
+			}
+		}
+		req, _ := schema["required"].([]any)
+		for _, r := range req {
+			if k, _ := r.(string); k != "" {
+				if _, ok := m[k]; !ok {
+					return fmt.Errorf("missing required %q", k)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func jsonKind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "a string"
+	case bool:
+		return "a bool"
+	case float64:
+		return "a number"
+	case []any:
+		return "a list"
+	case map[string]any:
+		return "an object"
+	}
+	return fmt.Sprintf("%T", v)
+}

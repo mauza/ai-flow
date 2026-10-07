@@ -34,13 +34,15 @@ type GraphNode struct {
 	Timeout     string            `json:"timeout,omitempty"`
 	Limits      *flow.Limits      `json:"limits,omitempty"`
 	OnLimit     map[string]string `json:"on_limit,omitempty"`
+	Branches    []string          `json:"branches,omitempty"`
+	Join        string            `json:"join,omitempty"`
 }
 
 type GraphEdge struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
 	Outcome string `json:"outcome"`
-	Kind    string `json:"kind"` // next | exhausted
+	Kind    string `json:"kind"` // next | exhausted | branch
 }
 
 // Graph builds the UI projection. Edges to unknown nodes are kept so the UI
@@ -74,6 +76,19 @@ func (r *Resolved) Graph() *Graph {
 					gn.OnLimit[k] = s
 				}
 			}
+		}
+		if n.Type == flow.TypeParallel {
+			// One port per branch; the implicit "joined" edge to the join is
+			// left out because the branches visibly converge there.
+			gn.Branches, gn.Join, gn.Outcomes = n.Branches, n.Join, append([]string{}, n.Branches...)
+			g.Nodes = append(g.Nodes, gn)
+			for _, b := range n.Branches {
+				g.Edges = append(g.Edges, GraphEdge{From: id, To: b, Outcome: b, Kind: "branch"})
+			}
+			if n.MaxVisits > 0 && n.OnExhausted != "" {
+				g.Edges = append(g.Edges, GraphEdge{From: id, To: n.OnExhausted, Outcome: "exhausted", Kind: "exhausted"})
+			}
+			continue
 		}
 		g.Nodes = append(g.Nodes, gn)
 		for _, o := range n.Outcomes {

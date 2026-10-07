@@ -505,15 +505,17 @@ type Visit struct {
 	CreatedAt     int64           `json:"created_at"`
 	StartedAt     int64           `json:"started_at,omitempty"`
 	FinishedAt    int64           `json:"finished_at,omitempty"`
+	ForkSeq       int             `json:"fork_seq,omitempty"` // the parallel visit this branch visit belongs to; 0 = main path
+	Lane          string          `json:"lane,omitempty"`     // the branch (its first node)
 }
 
-const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at, launch_state`
+const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at, launch_state, fork_seq, lane`
 
 func scanVisit(row interface{ Scan(...any) error }) (*Visit, error) {
 	var v Visit
 	var outputs string
 	err := row.Scan(&v.RunID, &v.Seq, &v.Node, &v.Visit, &v.Type, &v.Status, &v.Outcome, &outputs, &v.Summary, &v.Error, &v.Prompt, &v.JobName, &v.Model,
-		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt, &v.LaunchState)
+		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt, &v.LaunchState, &v.ForkSeq, &v.Lane)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -521,8 +523,18 @@ func scanVisit(row interface{ Scan(...any) error }) (*Visit, error) {
 	return &v, err
 }
 
-// AddVisit appends the next visit of node to the run and returns it.
+// AddVisit appends the next visit of node on the run's main path and returns it.
 func (s *Store) AddVisit(ctx context.Context, runID, node, typ string) (*Visit, error) {
+	return s.addVisit(ctx, runID, node, typ, 0, "")
+}
+
+// AddLaneVisit appends the next visit of node inside a parallel branch. The
+// run's current node stays the parallel node.
+func (s *Store) AddLaneVisit(ctx context.Context, runID, node, typ string, forkSeq int, lane string) (*Visit, error) {
+	return s.addVisit(ctx, runID, node, typ, forkSeq, lane)
+}
+
+func (s *Store) addVisit(ctx context.Context, runID, node, typ string, forkSeq int, lane string) (*Visit, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -535,16 +547,18 @@ func (s *Store) AddVisit(ctx context.Context, runID, node, typ string) (*Visit, 
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM visits WHERE run_id = ? AND node = ?`, runID, node).Scan(&visit); err != nil {
 		return nil, err
 	}
-	v := &Visit{RunID: runID, Seq: seq + 1, Node: node, Visit: visit + 1, Type: typ, Status: VisitPending, Outputs: json.RawMessage("{}"), CreatedAt: now()}
-	_, err = tx.ExecContext(ctx, `INSERT INTO visits (run_id, seq, node, visit, type, status, outputs, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		v.RunID, v.Seq, v.Node, v.Visit, v.Type, v.Status, "{}", v.CreatedAt)
+	v := &Visit{RunID: runID, Seq: seq + 1, Node: node, Visit: visit + 1, Type: typ, Status: VisitPending, Outputs: json.RawMessage("{}"), CreatedAt: now(), ForkSeq: forkSeq, Lane: lane}
+	_, err = tx.ExecContext(ctx, `INSERT INTO visits (run_id, seq, node, visit, type, status, outputs, created_at, fork_seq, lane) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		v.RunID, v.Seq, v.Node, v.Visit, v.Type, v.Status, "{}", v.CreatedAt, v.ForkSeq, v.Lane)
 	if err != nil {
 		return nil, err
 	}
-	// The visit and the run's pointer must become visible together. A pending
-	// visit is durable work for the engine, including after a process crash.
-	if err := update(ctx, tx, "runs", "id = ?", []any{runID}, map[string]any{"current_node": node, "status": RunRunning}, false); err != nil {
-		return nil, err
+	if forkSeq == 0 {
+		// The visit and the run's pointer must become visible together. A pending
+		// visit is durable work for the engine, including after a process crash.
+		if err := update(ctx, tx, "runs", "id = ?", []any{runID}, map[string]any{"current_node": node, "status": RunRunning}, false); err != nil {
+			return nil, err
+		}
 	}
 	return v, tx.Commit()
 }
@@ -570,9 +584,34 @@ func (s *Store) Visits(ctx context.Context, runID string) ([]*Visit, error) {
 	return out, rows.Err()
 }
 
-// LastVisit returns the run's most recent visit, or ErrNotFound.
+// LastVisit returns the run's most recent visit on its main path (not inside
+// a parallel branch), or ErrNotFound.
 func (s *Store) LastVisit(ctx context.Context, runID string) (*Visit, error) {
-	return scanVisit(s.db.QueryRowContext(ctx, `SELECT `+visitCols+` FROM visits WHERE run_id = ? ORDER BY seq DESC LIMIT 1`, runID))
+	return scanVisit(s.db.QueryRowContext(ctx, `SELECT `+visitCols+` FROM visits WHERE run_id = ? AND fork_seq = 0 ORDER BY seq DESC LIMIT 1`, runID))
+}
+
+// LaneHead returns the most recent visit in branch lane of the parallel visit
+// forkSeq, or ErrNotFound when the branch has not started.
+func (s *Store) LaneHead(ctx context.Context, runID string, forkSeq int, lane string) (*Visit, error) {
+	return scanVisit(s.db.QueryRowContext(ctx, `SELECT `+visitCols+` FROM visits WHERE run_id = ? AND fork_seq = ? AND lane = ? ORDER BY seq DESC LIMIT 1`, runID, forkSeq, lane))
+}
+
+// ActiveVisits returns the run's unfinished visits, on every path.
+func (s *Store) ActiveVisits(ctx context.Context, runID string) ([]*Visit, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+visitCols+` FROM visits WHERE run_id = ? AND status IN (?,?,?) ORDER BY seq`, runID, VisitPending, VisitRunning, VisitWaiting)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Visit
+	for rows.Next() {
+		v, err := scanVisit(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) UpdateVisit(ctx context.Context, runID string, seq int, fields map[string]any) error {

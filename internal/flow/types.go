@@ -31,9 +31,17 @@ const (
 	TypeGate   = "gate"
 	TypeSwitch = "switch"
 	TypeAction = "action"
+	// TypeParallel starts its branches at once; each branch is a path of
+	// nodes that ends at the parallel node's join.
+	TypeParallel = "parallel"
+	// TypeJoin waits for every branch, then routes like a switch.
+	TypeJoin = "join"
 )
 
-var NodeTypes = []string{TypeLLM, TypeAgent, TypeCheck, TypeGate, TypeSwitch, TypeAction}
+// OutcomeJoined is the parallel node's only outcome: every branch reached the join.
+const OutcomeJoined = "joined"
+
+var NodeTypes = []string{TypeLLM, TypeAgent, TypeCheck, TypeGate, TypeSwitch, TypeAction, TypeParallel, TypeJoin}
 
 // PodTypes run as a Kubernetes Job; the rest run inside the control plane.
 func PodType(t string) bool { return t == TypeLLM || t == TypeAgent || t == TypeCheck }
@@ -109,6 +117,10 @@ type Node struct {
 	// action
 	Action string         `json:"action,omitempty"`
 	With   map[string]any `json:"with,omitempty"`
+
+	// parallel: the first node of each branch, and the join they all end at
+	Branches []string `json:"branches,omitempty"`
+	Join     string   `json:"join,omitempty"`
 }
 
 type Case struct {
@@ -245,6 +257,12 @@ func (f *Flow) NodeIDs() []string {
 		}
 		seen[id] = true
 		out = append(out, id)
+		// A parallel node's branches come before its join, so the join lays
+		// out below them (the UI breaks cycles by this order).
+		queue = append(queue, n.Branches...)
+		if n.Join != "" {
+			queue = append(queue, n.Join)
+		}
 		for _, o := range n.Outcomes {
 			queue = append(queue, n.Next[o])
 		}

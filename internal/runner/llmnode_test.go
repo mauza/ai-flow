@@ -47,11 +47,11 @@ func TestRunLLMStreamsStructuredResults(t *testing.T) {
 		name, model                    string
 		repair, schemaFallback, budget bool
 	}{
-		{name: "sol", model: "gpt-6-sol"},
+		{name: "sol", model: "gpt-6.1-sol"},
 		{name: "luna", model: "gpt-6-luna"},
-		{name: "repair", model: "gpt-6-sol", repair: true},
+		{name: "repair", model: "gpt-6.1-sol", repair: true},
 		{name: "schema fallback", model: "gpt-6-luna", schemaFallback: true},
-		{name: "repair accumulates budget", model: "gpt-6-sol", repair: true, budget: true},
+		{name: "repair accumulates budget", model: "gpt-6.1-sol", repair: true, budget: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := runtimeRunner(t)
@@ -174,7 +174,7 @@ func TestRunLLMRejectsFailedStreams(t *testing.T) {
 			defer server.Close()
 			r := runtimeRunner(t)
 			r.b.Outcomes = []string{"done"}
-			r.b.LLM = &protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6-sol"}}}
+			r.b.LLM = &protocol.LLMAccess{BaseURL: server.URL, Models: []protocol.ModelInfo{{Name: "gpt-6.1-sol"}}}
 			res := r.runLLM(context.Background())
 			if !strings.Contains(res.Error, tc.want) || res.Outcome != "" || len(res.Outputs) != 0 {
 				t.Fatalf("failure became valid output: %+v", res)

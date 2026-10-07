@@ -8,7 +8,7 @@ model, tools, MCP tools and repo access it declares; git, LLM and MCP traffic go
 through the control plane, so pods never hold credentials.
 
 Small steps keep work focused and verifiable. The only configured model options
-are **GPT-6 Sol** (`gpt-6-sol`), **GPT-6 Luna** (`gpt-6-luna`), and **GPT-6 Astra**
+are **GPT-6.1 Sol** (`gpt-6.1-sol`), **GPT-6 Luna** (`gpt-6-luna`), and **GPT-6 Astra**
 (`gpt-6-astra`). Sol remains the default planner with streaming enabled; Luna and
 Astra are additional choices.
 
@@ -52,8 +52,10 @@ Linear / UI ──▶ planner ──▶ flow YAML (versioned) ──▶ engine �
 - **Flows** are YAML ([format](docs/SPEC.md#4-flow-format), [examples](examples/)).
   The UI edits them as a graph, as YAML, or by chatting with the planner.
 - **Node types**: `llm` (one structured call), `agent` (pi coding agent),
-  `check` (shell command), `gate` (human decision), `switch` (CEL), `action`
-  (open a PR, comment on the task).
+  `check` (shell command, optionally with structured JSON outputs), `gate` (human
+  decision with an optional note), `switch` (CEL), `action` (open a PR, comment on
+  the task), and `parallel` + `join` (run read-only branches at once, then route
+  on all their results).
 - **Per-step models and limits**: each step picks a model from the catalog and
   says what happens on rate limits, quota, context overflow or budget:
   retry, wait, fall back to another model, route to another node, or fail.

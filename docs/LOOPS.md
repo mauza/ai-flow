@@ -12,13 +12,13 @@ lets a human choose whether another pass is useful.
 | [human-revise-approve.yaml](../examples/loops/human-revise-approve.yaml) | `work → verify → review_gate`; `revise → work` | Passing checks reach human approval. Revise repeats work; stop, timeout, or exhausted work visits fail. At most three work visits. |
 
 Both use actual catalog presets (`implement`, `python-unittest`, `code-review`,
-`human-decision`) and the checked-in `sandbox` project. Work uses `gpt-6-sol`;
+`human-decision`) and the checked-in `sandbox` project. Work uses `gpt-6.1-sol`;
 the automated assessor uses the alternate `gpt-6-luna`. The three configured
-model options are `gpt-6-sol`, `gpt-6-luna`, and `gpt-6-astra`, routed through
+model options are `gpt-6.1-sol`, `gpt-6-luna`, and `gpt-6-astra`, routed through
 `home` with matching aliases. Sol remains the default streaming planner; the
 examples use Sol and Luna as an illustrative subset. Their catalog fields are
-selection hints, not performance claims. The Sol and Luna gateway aliases have passed live smoke
-tests using the [existing OpenCode login](CHATGPT-PROVIDER.md). The 100,000-token
+selection hints, not performance claims. Earlier live smoke tests covered GPT-6 Sol
+(the previous version) and Luna using the [existing OpenCode login](CHATGPT-PROVIDER.md). The 100,000-token
 catalog limit is conservative, not a full-capacity claim. Before real execution,
 provide concrete task criteria and specialize the project, repo write grant,
 models, verification command, and runtime for the target repository. Python's
@@ -68,8 +68,13 @@ next: { complete: $success, repeat: work }
 
 `nodes.assess.outputs` is the **latest successful visit's persisted output** for
 that node; earlier visits remain in history. A later result supersedes the values
-seen through that name. There is no shared variable assignment, increment, reset,
-or group-level accumulator. Skipped producers can leave stale values visible;
+seen through that name. `nodes.assess.history` lists **every** successful visit
+(`visit`, `outcome`, `summary`, `outputs`), oldest first: read it in a template to
+pass all earlier feedback on, or count passes in CEL with
+`size(nodes.assess.history)`. Pod steps in a loop also get a *Loop history* context
+section listing every pass of each repeated step with its outputs, so a fixer sees
+the first review's comments as well as the latest. There is still no assignment,
+increment or reset. Skipped producers can leave stale values visible;
 these examples rerun verify/assess before every condition evaluation. Accessing
 a missing value in CEL can fail the run; do not assume missing means false.
 The initial work step uses template fallbacks because no earlier feedback exists.

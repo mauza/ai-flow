@@ -32,13 +32,15 @@ export interface GraphNode {
   timeout?: string;
   limits?: { tokens?: number; usd?: number; turns?: number };
   on_limit?: Record<string, string>;
+  branches?: string[];
+  join?: string;
 }
 
 export interface GraphEdge {
   from: string;
   to: string;
   outcome: string;
-  kind: "next" | "exhausted";
+  kind: "next" | "exhausted" | "branch";
 }
 
 export interface Graph {

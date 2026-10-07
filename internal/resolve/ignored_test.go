@@ -18,7 +18,7 @@ spec:
   nodes:
     classify:
       type: llm
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       llm: { thinking: high }
       skills: [small-diffs]
       prompt: classify
@@ -32,7 +32,7 @@ spec:
       next: { pass: route, fail: $fail }
     route:
       type: switch
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       timeout: 5m
       cases: [{ when: "run.diff.files_changed > 1", outcome: big }]
       default: small

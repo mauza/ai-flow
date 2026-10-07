@@ -44,8 +44,28 @@ export function setNodeField(text: string, id: string, path: (string | number)[]
   return doc.toString(toStringOpts);
 }
 
+/** On a parallel node, an outcome is a branch: routing it replaces that branch. */
+function branchList(doc: Document, id: string): string[] | undefined {
+  if (doc.getIn([...nodePath(id), "type"]) !== "parallel") return undefined;
+  const b = doc.getIn([...nodePath(id), "branches"]);
+  return b && typeof b === "object" && "toJSON" in b ? ((b as { toJSON(): unknown }).toJSON() as string[]) : [];
+}
+
+function setBranches(doc: Document, id: string, branches: string[]) {
+  doc.setIn([...nodePath(id), "branches"], doc.createNode(branches));
+  const n = doc.getIn([...nodePath(id), "branches"], true);
+  if (n && typeof n === "object" && "flow" in n) (n as { flow: boolean }).flow = true;
+}
+
 export function setTransition(text: string, from: string, outcome: string, to: string): string {
   const doc = load(text);
+  const branches = branchList(doc, from);
+  if (branches) {
+    if (to.startsWith("$")) throw new Error("a parallel branch must start at a node");
+    const i = branches.indexOf(outcome);
+    setBranches(doc, from, i >= 0 ? branches.map((b, j) => (j === i ? to : b)) : [...branches, to]);
+    return doc.toString(toStringOpts);
+  }
   const path = [...nodePath(from), "next"];
   if (!doc.hasIn(path)) {
     const m = doc.createNode({}) as YAMLMap;
@@ -58,6 +78,11 @@ export function setTransition(text: string, from: string, outcome: string, to: s
 
 export function removeTransition(text: string, from: string, outcome: string): string {
   const doc = load(text);
+  const branches = branchList(doc, from);
+  if (branches) {
+    setBranches(doc, from, branches.filter((b) => b !== outcome));
+    return doc.toString(toStringOpts);
+  }
   const path = [...nodePath(from), "next", outcome];
   if (doc.hasIn(path)) doc.deleteIn(path);
   return doc.toString(toStringOpts);
@@ -96,6 +121,10 @@ export function nodeTemplate(type: string, models: string[]): Record<string, unk
       return { type, cases: [{ when: "run.diff.files_changed > 10", outcome: "big" }], default: "small", next: {} };
     case "action":
       return { type, action: "open_pull_request", with: { title: "${{ task.title }}" }, outcomes: ["done"], next: { done: "$success" } };
+    case "parallel":
+      return { type, description: "Independent read-only work that runs at once", branches: [] };
+    case "join":
+      return { type, description: "Waits for every branch" };
   }
   return { type };
 }
@@ -143,6 +172,9 @@ export function deleteNode(text: string, id: string): string {
         }
       }
       if (doc.getIn([...nodePath(nid), "on_exhausted"]) === id) doc.deleteIn([...nodePath(nid), "on_exhausted"]);
+      const branches = branchList(doc, nid);
+      if (branches?.includes(id)) setBranches(doc, nid, branches.filter((b) => b !== id));
+      if (doc.getIn([...nodePath(nid), "join"]) === id) doc.deleteIn([...nodePath(nid), "join"]);
     }
   }
   return doc.toString(toStringOpts);
@@ -162,6 +194,9 @@ export function renameNode(text: string, from: string, to: string): string {
     const next = doc.getIn([...nodePath(nid), "next"], true);
     if (isMap(next)) for (const t of next.items) if (isScalar(t.value) && t.value.value === from) t.value.value = to;
     if (doc.getIn([...nodePath(nid), "on_exhausted"]) === from) doc.setIn([...nodePath(nid), "on_exhausted"], to);
+    const branches = branchList(doc, nid);
+    if (branches?.includes(from)) setBranches(doc, nid, branches.map((b) => (b === from ? to : b)));
+    if (doc.getIn([...nodePath(nid), "join"]) === from) doc.setIn([...nodePath(nid), "join"], to);
   }
   if (doc.getIn(["spec", "start"]) === from) doc.setIn(["spec", "start"], to);
   return doc.toString(toStringOpts).replaceAll(`nodes.${from}.`, `nodes.${to}.`);
