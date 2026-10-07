@@ -276,6 +276,7 @@ export const api = {
   createTask: (t: { title: string; body: string; project: string; plan: boolean }) => request<Task>("POST", "/api/tasks", t),
   planTask: (id: string) => request<void>("POST", `/api/tasks/${id}/plan`),
   deleteTask: (id: string) => request<void>("DELETE", `/api/tasks/${id}`),
+  deleteFlow: (name: string) => request<{ versions: number; runs: string[] }>("DELETE", `/api/flows/${name}`),
   flows: () => request<FlowVersion[]>("GET", "/api/flows"),
   flow: (name: string, version?: number) =>
     request<FlowView>("GET", version ? `/api/flows/${name}/versions/${version}` : `/api/flows/${name}`),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AlertCircle, Code2, History, ListTree, MessageSquare, Play, RotateCcw, Save, Sparkles } from "lucide-react";
+import { AlertCircle, Code2, History, ListTree, MessageSquare, Play, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
 import { api, type FlowView, type Graph, type Issue } from "../api";
 import { useResource } from "../hooks";
 import { timeAgo } from "../format";
@@ -88,8 +88,10 @@ function FlowEditor({ name }: { name: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.data]);
 
-  // Re-validate as the YAML changes.
+  // Re-validate as the YAML changes. Before the flow has loaded, the editor's
+  // empty YAML is a placeholder, not a document to validate.
   useEffect(() => {
+    if (!loadedKey.current) return;
     if (analysis?.yaml === yaml && !validationRetry) return;
     let canceled = false;
     setValidationError(null);
@@ -297,6 +299,25 @@ function FlowEditor({ name }: { name: string }) {
         <button className="btn primary" disabled={!validated || errors.length > 0 || starting || saving || isOld} onClick={run} title={errors.length ? "Fix validation errors first" : dirty ? "Save and run" : "Run this flow"}>
           {starting ? <Spinner /> : <Play />}
           {dirty ? "Save & run" : "Run"}
+        </button>
+        <button
+          className="btn ghost icon"
+          aria-label="Delete flow"
+          disabled={!!activeRun || saving || starting}
+          title={activeRun ? "A run of this flow is active; cancel or finish it first" : "Delete this flow, all its versions and runs"}
+          onClick={async () => {
+            const runs = view.data?.runs.length ?? 0;
+            if (!window.confirm(`Delete ${name} with all ${view.data?.versions.length ?? 0} version(s) and ${runs} run(s)? This cannot be undone.`)) return;
+            try {
+              await api.deleteFlow(name);
+              toast("ok", `Deleted ${name}`);
+              navigate("/flows");
+            } catch (e) {
+              toast("error", (e as Error).message);
+            }
+          }}
+        >
+          <Trash2 />
         </button>
         </div>
       </div>

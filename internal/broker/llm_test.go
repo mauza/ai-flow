@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,5 +153,59 @@ func TestMissingCatalogModelDoesNotPanic(t *testing.T) {
 	b.llmChat(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`)), c)
 	if w.Code != 503 {
 		t.Fatalf("status %d", w.Code)
+	}
+}
+
+func TestMaxConcurrencyQueuesCallsPerModel(t *testing.T) {
+	b, c := llmTestBroker(t)
+	b.cfg.Catalog.Models[c.Models[0]].MaxConcurrency = 1
+	release := make(chan struct{})
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	b.http.Transport = llmTransport(func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))}, nil
+	})
+	call := func() {
+		w := httptest.NewRecorder()
+		b.llmChat(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`)), c)
+		if w.Code != 200 {
+			t.Logf("call: %d %s", w.Code, w.Body)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); call() }()
+	}
+	time.Sleep(100 * time.Millisecond)
+	for i := 0; i < 3; i++ {
+		release <- struct{}{}
+	}
+	wg.Wait()
+	if peak != 1 {
+		t.Fatalf("max_concurrency 1 allowed %d calls at once", peak)
+	}
+
+	// A caller that gives up while queued leaves without taking a slot.
+	b.cfg.Catalog.Models[c.Models[0]].MaxConcurrency = 1
+	done := make(chan struct{})
+	go func() { call(); close(done) }() // holds the only slot
+	time.Sleep(50 * time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	w := httptest.NewRecorder()
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	b.llmChat(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`)).WithContext(ctx), c)
+	release <- struct{}{}
+	<-done
+	if got := len(b.modelSlots(c.Models[0], 1)); got != 0 {
+		t.Fatalf("%d slots still held", got)
 	}
 }

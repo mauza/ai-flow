@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Version 0 is the original schema. Migrations and their version are committed
@@ -172,4 +173,79 @@ func (s *Store) ProjectSpend(ctx context.Context, project string, start, end int
 	var total float64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(cost_usd),0) FROM runs WHERE project = ? AND created_at >= ? AND created_at < ?`, project, start, end).Scan(&total)
 	return total, err
+}
+
+// ErrFlowActive means a flow still has a queued, running or waiting run.
+type ErrFlowActive struct{ Runs []string }
+
+func (e *ErrFlowActive) Error() string {
+	return fmt.Sprintf("flow has active runs (%s); cancel or finish them first", strings.Join(e.Runs, ", "))
+}
+
+// DeletedFlow reports what DeleteFlow removed.
+type DeletedFlow struct {
+	Versions int      `json:"versions"`
+	Runs     []string `json:"runs"`
+}
+
+// DeleteFlow removes every version of a flow with its chat, runs, visits and
+// events, and unlinks tasks that pointed at it, in one transaction. It refuses
+// with *ErrFlowActive while any run of the flow is queued, running or waiting;
+// the check and the deletes share the transaction, so no run can slip between.
+func (s *Store) DeleteFlow(ctx context.Context, name string) (*DeletedFlow, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	out := &DeletedFlow{Runs: []string{}}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM flow_versions WHERE name = ?`, name).Scan(&out.Versions); err != nil {
+		return nil, err
+	}
+	if out.Versions == 0 {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, status FROM runs WHERE flow_name = ? ORDER BY created_at`, name)
+	if err != nil {
+		return nil, err
+	}
+	var active []string
+	for rows.Next() {
+		var id, status string
+		if err := rows.Scan(&id, &status); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.Runs = append(out.Runs, id)
+		if !RunDone(status) {
+			active = append(active, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(active) > 0 {
+		return nil, &ErrFlowActive{Runs: active}
+	}
+	for _, q := range []string{
+		`DELETE FROM visits WHERE run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,
+		`DELETE FROM kv WHERE key LIKE 'notify/stuck/%' AND substr(key, 14, instr(substr(key, 14), '/') - 1) IN (SELECT id FROM runs WHERE flow_name = ?)`,
+		`DELETE FROM events WHERE flow_name = ? OR run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,
+		`DELETE FROM runs WHERE flow_name = ?`,
+		`DELETE FROM chat WHERE flow_name = ?`,
+		`DELETE FROM flow_versions WHERE name = ?`,
+	} {
+		args := []any{name}
+		if strings.Count(q, "?") == 2 {
+			args = append(args, name)
+		}
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET flow_name = '', updated_at = ? WHERE flow_name = ?`, now(), name); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit()
 }

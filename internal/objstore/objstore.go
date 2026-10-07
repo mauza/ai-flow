@@ -23,6 +23,12 @@ type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 }
 
+// Deleter removes every object under a key prefix such as "runs/r-123/". Both
+// built-in stores implement it; callers type-assert so test fakes need not.
+type Deleter interface {
+	DeletePrefix(ctx context.Context, prefix string) error
+}
+
 var ErrNotFound = errors.New("object not found")
 
 func New(ctx context.Context, cfg config.ObjectStore, dataDir string) (Store, error) {
@@ -101,6 +107,17 @@ func (l *local) Get(_ context.Context, key string) ([]byte, error) {
 	return b, err
 }
 
+func (l *local) DeletePrefix(_ context.Context, prefix string) error {
+	if !strings.HasSuffix(prefix, "/") {
+		return fmt.Errorf("prefix %q must end with /", prefix)
+	}
+	p, err := l.path(prefix)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(p)
+}
+
 type s3 struct {
 	c      *minio.Client
 	bucket string
@@ -126,4 +143,17 @@ func (s *s3) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+func (s *s3) DeletePrefix(ctx context.Context, prefix string) error {
+	if !strings.HasSuffix(prefix, "/") || prefix == "/" {
+		return fmt.Errorf("prefix %q must end with /", prefix)
+	}
+	objects := s.c.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true})
+	for e := range s.c.RemoveObjects(ctx, s.bucket, objects, minio.RemoveObjectsOptions{}) {
+		if e.Err != nil {
+			return e.Err
+		}
+	}
+	return nil
 }

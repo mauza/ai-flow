@@ -463,6 +463,11 @@ func classify(status int, body []byte, h http.Header) *upstreamErr {
 		ue.kind = flow.LimitQuotaExhausted
 	case status == 429 || status == 502 || status == 503 || status == 504 || status == 529:
 		ue.kind = flow.LimitRateLimited
+	case status == 500 && (strings.Contains(low, "apiconnectionerror") || strings.Contains(low, "connection error") ||
+		strings.Contains(low, "connection refused") || strings.Contains(low, "serviceunavailable")):
+		// A gateway (LiteLLM) reports an unreachable backend, such as a local
+		// GPU server that is switched off, as a 500: retry or fall back like 503.
+		ue.kind = flow.LimitRateLimited
 	}
 	return ue
 }

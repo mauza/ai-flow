@@ -212,7 +212,10 @@ node → preset → flow/project/catalog defaults → catalog model → built-in
 Two enforcement points: the **limit shim** in the pod (behaviour: retries,
 waits, fallbacks, token/turn limits) and the **LLM proxy** in the control plane
 (security: model allowlist from the grant, node `limits.usd`, flow `budget.usd`,
-project per-run and per-month caps, usage accounting).
+project per-run and per-month caps, usage accounting, and each catalog model's
+`max_concurrency`: calls beyond it wait for a slot, across all pods and parallel
+branches). Gateway 500s that report an unreachable backend (LiteLLM's
+`APIConnectionError`) count as `rate_limited`, so retries and fallbacks apply.
 
 ## 5. Configuration
 
@@ -389,7 +392,10 @@ effort and never affects the run.
   pills, validation badges); side panel with the node inspector (model, prompt,
   access, skills, outcome → next, loops, effective settings), YAML editor with
   inline diagnostics, planner chat with diff proposals, and runs. Drag from an
-  outcome to a node to route it. Versions, save (Ctrl+S), revert, run.
+  outcome to a node to route it. Versions, save (Ctrl+S), revert, run, delete.
+  Deleting (`DELETE /api/flows/{name}`) removes every version, the planner chat,
+  all runs with their visits, events and transcripts, and unlinks tasks; it is
+  refused with 409 while any run of the flow is queued, running or waiting.
 - **Run view** — the same graph colored live over SSE (running, done, waiting,
   failed, not reached; taken edges in green; visit counts), gate decisions,
   step timeline with progress, and step detail (result, outputs, rendered prompt,
