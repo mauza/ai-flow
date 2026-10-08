@@ -33,6 +33,7 @@ import (
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/runner"
 	"github.com/mauza/ai-flow/internal/store"
+	"github.com/mauza/ai-flow/internal/tmpl"
 )
 
 // PodIdentifier maps a projected service-account token to the visit it runs.
@@ -332,6 +333,12 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	}
 	if n.Type == flow.TypeCheck {
 		bundle.Check = &protocol.CheckSpec{Run: n.Run, ExitCodes: resolve.CheckExitCodes(&n.Node)}
+		if inputs, _ := tc["inputs"].(map[string]any); len(inputs) > 0 {
+			bundle.Check.Inputs = map[string]string{}
+			for k, v := range inputs {
+				bundle.Check.Inputs[k] = tmpl.Stringify(v)
+			}
+		}
 	}
 
 	ttl := n.Timeout.Duration + 30*time.Minute

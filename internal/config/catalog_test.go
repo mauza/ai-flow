@@ -97,7 +97,9 @@ func TestCatalogPresetsResolve(t *testing.T) {
 					node.Next[outcome] = flow.Success
 				}
 			}
-			if name == "custom-check" {
+			// Checks shipped without a command (custom-check, local-stack-test)
+			// must be rejected until the flow configures one.
+			if preset.Type == flow.TypeCheck && preset.Run == "" {
 				issues := resolve.Validate(resolve.Resolve(f, cfg), cfg)
 				if !slices.ContainsFunc(issues, func(i resolve.Issue) bool {
 					return i.Severity == resolve.Error && i.Node == "step" && i.Field == "run"
@@ -153,6 +155,9 @@ func TestCatalogPresetsResolve(t *testing.T) {
 				outputs[field] = exampleOutput(t, typ)
 			}
 			for _, outcome := range n.Outcomes {
+				if outcome == flow.OutcomeTimeout || outcome == flow.OutcomeLimit {
+					continue // emitted by the engine, never part of a model's result
+				}
 				sample := map[string]any{"outcome": outcome, "summary": "Evidence from this step", "outputs": outputs}
 				if err := compiled.Validate(sample); err != nil {
 					t.Fatalf("valid result rejected: %v", err)
@@ -234,7 +239,7 @@ func exampleOutput(t *testing.T, typ any) any {
 func exampleContext(files, lines float64) map[string]any {
 	return map[string]any{
 		"task": map[string]any{"title": "Fix parsing", "body": "Handle empty input"},
-		"run": map[string]any{"id": "run-1", "branch": "ai-flow/test", "pr_url": "https://example.test/pr/1",
+		"run": map[string]any{"id": "run-1", "branch": "ai-flow/test", "base": "main", "pr_url": "https://example.test/pr/1", "merged_sha": "0123456789abcdef",
 			"diff": map[string]any{"files_changed": files, "lines_changed": lines}},
 		"nodes": map[string]any{}, "inputs": map[string]any{},
 	}

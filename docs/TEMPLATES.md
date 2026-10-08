@@ -9,11 +9,13 @@ into ordinary nodes and transitions; they need no new subflow engine or runtime.
 | [`test-implement-verify.yaml`](../examples/templates/test-implement-verify.yaml) | Write a regression test → confirm red → implement → verify; verification failures loop back, at most three implementation visits. Success means verification passed. |
 | [`investigate-propose-approve.yaml`](../examples/templates/investigate-propose-approve.yaml) | Read-only investigation → structured proposal → human approve/revise/reject; revisions return to investigation, at most three visits. Success means proposal approved, **not implemented**. |
 | [`review-repair.yaml`](../examples/templates/review-repair.yaml) | Inspect an existing branch → repair findings → re-review → deterministic verification; failures return to repair, at most three repairs/four reviews. Success means review and checks passed. |
+| [`release-pipeline.yaml`](../examples/templates/release-pipeline.yaml) | For a project that deploys on merge: implement → (unit tests ‖ QA) → PR → CI → merge (the deploy) → wait for the new version → 10-minute health soak. Degraded or never live: triage → revert → PR → CI → merge the revert → `$fail`. Success means the release is live and healthy. |
 
-No template publishes a PR or merges a change. Add the existing
-`open_pull_request` action if publication is part of your desired flow. The repo
-grant's write mode allows commits to the run branch; ending at `$success` alone
-does not merge them upstream.
+Only `release-pipeline` publishes and merges. The others end on the run branch;
+add `open_pull_request` if publication is part of your flow. Merging deploys only
+in a project whose `deploy.branch` is the flow base, and there the validator
+requires CI before every merge and monitoring after it (see the node catalog's
+release section).
 
 ## Offline validation
 

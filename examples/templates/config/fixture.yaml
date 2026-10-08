@@ -5,6 +5,7 @@ kind: Environment
 llm:
   upstreams:
     home: { baseUrl: "http://127.0.0.1:1/v1" }
+metrics: { url: "http://127.0.0.1:1" }
 ---
 apiVersion: ai-flow/v1alpha1
 kind: Catalog
@@ -51,4 +52,11 @@ spec:
   allow:
     grants: ["repo/template:read", "repo/template:write"]
     models: [gpt-6.1-sol, gpt-6-luna]
-  budget: { usd_per_run: 2 }
+  budget: { usd_per_run: 4 }
+  # Merging into main deploys (CI/CD builds and rolls out main).
+  deploy:
+    branch: main
+    url: https://example.invalid/
+    versions: [{ url: "https://example.invalid/version", field: commit }]
+    health:
+      - { name: 5xx rate, query: 'sum(rate(http_requests_total{code=~"5.."}[5m])) or vector(0)', max: 0.05 }

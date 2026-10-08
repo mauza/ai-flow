@@ -1,6 +1,6 @@
 # Node catalog
 
-`deploy/config/catalog.yaml` provides 30 reusable primitives. They use six of the
+`deploy/config/catalog.yaml` provides 38 reusable primitives. They use six of the
 node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`. `parallel` and
 `join` are structure rather than presets: wrap independent read-only presets (checks,
 reviews, investigations) in a parallel node to run them at once; see
@@ -18,6 +18,50 @@ Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipel
 | Verification | `go-test`, `python-unittest`, `npm-test`, `npm-build`, `json-check`, `custom-check` | Execute deterministic commands in a compatible runtime. |
 | Control | `human-decision`, `has-changes`, `large-change` | Optional human decisions or deterministic routing on the cumulative branch diff. |
 | Delivery | `summarize-change`, `release-notes`, `open-pull-request`, `comment-task` | Prepare evidence-based text, then publish through existing actions when appropriate. |
+| Release | `ci-checks`, `local-stack-test`, `qa-test`, `deploy`, `wait-for-deploy` | Verify in CI and locally (QA exercises the app), then ship by merging. |
+| Operations | `monitor-deploy`, `deploy-triage`, `revert-deploy` | Soak production on health queries; on degradation diagnose and revert. |
+
+## Release: ship on merge, watch, roll back
+
+A project ships to production by merging into its `deploy.branch` (its CI/CD
+builds and rolls out that branch). Declare it in the Project:
+
+```yaml
+deploy:
+  branch: main
+  url: https://games.example            # probed during the soak (2xx)
+  versions:                             # all must report the merged commit
+    - { url: https://games.example/api/version, field: commit }
+  health:                               # PromQL against Environment metrics.url
+    - { name: 5xx rate, query: 'sum(rate(traefik_service_requests_total{service=~"games.*",code=~"5.."}[5m])) or vector(0)', max: 0.05 }
+    - { name: restarts, query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="games"}[10m]))', max: 0 }
+```
+
+The release pipeline, in catalog terms:
+
+```
+work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-request → ci-checks
+  → deploy → wait-for-deploy → monitor-deploy → healthy: $success
+                                              → degraded: deploy-triage → revert-deploy
+                                                → open-pull-request → ci-checks → deploy → $fail
+```
+
+- `ci-checks` (`wait_for_checks`) waits on the PR head's GitHub check runs and
+  statuses; `none` means no CI reported within `settle` (default 2m).
+- `deploy` (`merge_pull_request`) merges at the PR head with a merge commit, so
+  `revert-deploy` can revert it and push the run branch as a fast-forward.
+- `wait-for-deploy` polls `deploy.versions` until every endpoint reports the merged
+  commit; `monitor-deploy` (`check_health`) then soaks: a check failing on two
+  consecutive polls is degraded; query errors are inconclusive (a metrics outage
+  ends in `timeout`, not a rollback). Write queries where no data means healthy.
+- `revert-deploy` reads `run.merged_sha` (the run's latest merge) and `run.base`
+  through `$AI_FLOW_INPUT_*`; give it the repo write grant.
+
+When merging deploys, the validator rejects a flow in which any merge can be
+reached without a passing `ci-checks` after the last repo-writing step, or in which
+the run can succeed after a merge without `wait-for-deploy` and then a healthy
+`monitor-deploy`. Projects without `deploy` (or whose flows target another base)
+merge without these rules.
 
 The original four names and output fields remain available: `triage.questions`,
 `implement.summary_of_change`, `write-failing-test.test_name/evidence`, and
@@ -113,7 +157,7 @@ be wired with a complete map:
   Earlier streaming smoke tests covered GPT-6 Sol (the previous version) and Luna with the existing
   OpenCode login; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for setup and limits.
 - **Images:** `agent-base` includes bash, git, ripgrep, Python 3, Node 22/npm,
-  jq, and curl. `agent-go` adds Go 1.25 in the checked-in Dockerfile. Projects
+  jq, and curl. `agent-go` adds Go 1.26 in the checked-in Dockerfile. Projects
   needing a newer Go version (including ai-flow itself) need a compatible runtime
   or explicitly configured toolchain setup. Neither image implies project dependencies.
 - **Isolation:** each pod gets a fresh checkout. Uncommitted files and dependency

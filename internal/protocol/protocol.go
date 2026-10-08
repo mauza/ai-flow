@@ -94,7 +94,11 @@ type SkillDir struct {
 	Files map[string]string `json:"files"`
 }
 
+// CheckSpec is a check node's command. Inputs are the node's rendered inputs;
+// the runner exports each as AI_FLOW_INPUT_<NAME> (upper case), so commands can
+// use values from earlier steps without templating shell text.
 type CheckSpec struct {
+	Inputs    map[string]string `json:"inputs,omitempty"`
 	Run       string            `json:"run"`
 	ExitCodes map[string]string `json:"exit_codes"`
 }

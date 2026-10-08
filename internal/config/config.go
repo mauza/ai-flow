@@ -47,6 +47,13 @@ type Environment struct {
 	Linear      Linear      `json:"linear"`
 	MCP         MCP         `json:"mcp"`
 	Notify      Notify      `json:"notify"`
+	Metrics     Metrics     `json:"metrics"`
+}
+
+// Metrics is a Prometheus-compatible query API (VictoriaMetrics, Prometheus)
+// that check_health reads.
+type Metrics struct {
+	URL string `json:"url,omitempty"`
 }
 
 type Server struct {
@@ -279,6 +286,33 @@ type ProjectSpec struct {
 	Budget      *ProjBudget  `json:"budget,omitempty"`
 	Planner     PlannerGuide `json:"planner,omitempty"`
 	Defaults    *flow.Node   `json:"defaults,omitempty"`
+	Deploy      *Deploy      `json:"deploy,omitempty"`
+}
+
+// Deploy says that merging a PR into Branch ships the project to production
+// (its CI/CD builds and rolls out main). wait_for_deploy and check_health read
+// the rest; the validator then requires CI before a merge and monitoring after.
+type Deploy struct {
+	Branch   string         `json:"branch,omitempty"`   // default: the project base
+	URL      string         `json:"url,omitempty"`      // check_health probes it (expects 2xx)
+	Versions []VersionProbe `json:"versions,omitempty"` // wait_for_deploy: all must report the merged commit
+	Health   []HealthQuery  `json:"health,omitempty"`   // check_health: PromQL, value above max is a violation
+}
+
+// VersionProbe is an endpoint reporting the deployed commit: the whole body, or
+// a top-level JSON field.
+type VersionProbe struct {
+	URL   string `json:"url"`
+	Field string `json:"field,omitempty"`
+}
+
+// HealthQuery is a PromQL instant query; the highest series value must stay at
+// or below Max. An empty result counts as 0, so write queries where no data is
+// healthy (e.g. a 5xx rate).
+type HealthQuery struct {
+	Name  string  `json:"name"`
+	Query string  `json:"query"`
+	Max   float64 `json:"max"`
 }
 
 type LinearLink struct {
@@ -485,10 +519,13 @@ func (c *Config) applyDefaults() {
 	if cat.Planner.MaxAttempts == 0 {
 		cat.Planner.MaxAttempts = 3
 	}
-	cat.Actions = []string{"open_pull_request", "comment_task"}
+	cat.Actions = flow.ActionNames()
 	for _, p := range c.Projects {
 		def(&p.Spec.Base, "main")
 		def(&p.Spec.Start, "manual")
+		if p.Spec.Deploy != nil {
+			def(&p.Spec.Deploy.Branch, p.Spec.Base)
+		}
 	}
 }
 
@@ -571,6 +608,21 @@ func (c *Config) check() error {
 		}
 		if p.Spec.Start != "manual" && p.Spec.Start != "auto" {
 			errs = append(errs, fmt.Sprintf("project %s: start must be manual or auto", name))
+		}
+		if d := p.Spec.Deploy; d != nil {
+			if len(d.Health) > 0 && c.Env.Metrics.URL == "" {
+				errs = append(errs, fmt.Sprintf("project %s: deploy.health needs metrics.url in the environment", name))
+			}
+			for i, h := range d.Health {
+				if h.Name == "" || h.Query == "" {
+					errs = append(errs, fmt.Sprintf("project %s: deploy.health[%d] needs name and query", name, i))
+				}
+			}
+			for i, v := range d.Versions {
+				if v.URL == "" {
+					errs = append(errs, fmt.Sprintf("project %s: deploy.versions[%d] needs url", name, i))
+				}
+			}
 		}
 	}
 	if n := c.Env.Notify.Ntfy; n != nil && (n.URL == "" || n.Topic == "") {

@@ -35,6 +35,9 @@ func (r *Runner) runCheck(ctx context.Context) *protocol.Result {
 	cmd := exec.CommandContext(ctx, "bash", "-o", "pipefail", "-c", c.Run)
 	cmd.Dir = dir
 	cmd.Env = append(cleanEnv(r.b.SecretEnv...), "HOME="+filepath.Join(r.work, "flow", "home"), "CI=true", "NO_COLOR=1", "AI_FLOW_OUTPUTS="+outputsFile)
+	for k, v := range c.Inputs {
+		cmd.Env = append(cmd.Env, "AI_FLOW_INPUT_"+strings.ToUpper(k)+"="+v)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second

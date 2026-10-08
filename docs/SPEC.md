@@ -126,7 +126,7 @@ spec:
 |---|---|---|
 | `llm` | pod | One chat completion with a JSON-schema response format (`{outcome, summary, outputs}`); the branch diff is included. |
 | `agent` | pod | pi session in the repo; ends with the `flow_finish` tool. One nudge if the agent forgets. |
-| `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`, plus any declared `outputs` the command writes as one JSON object to `$AI_FLOW_OUTPUTS` (type-checked; undeclared fields fail the step; no file means none). |
+| `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`, plus any declared `outputs` the command writes as one JSON object to `$AI_FLOW_OUTPUTS` (type-checked; undeclared fields fail the step; no file means none). Rendered `inputs` arrive as `$AI_FLOW_INPUT_<NAME>` (never spliced into the command text). |
 | `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
 | `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
@@ -279,6 +279,10 @@ no stray `next` keys, targets exist, reachability, every node can reach a
 terminal, every cycle bounded (`max_visits` or a gate), models/runtimes/harnesses/
 skills/presets/actions exist, grants and models allowed by the project, CEL
 compiles, template references resolve, output types valid, budget ≤ project cap.
+When the project's `deploy.branch` is the flow's base (merging deploys), every
+`merge_pull_request` must follow a passing `wait_for_checks` with no repo-writing
+step in between, and after `merged` the run can only succeed through
+`wait_for_deploy` (deployed) and then `check_health` (healthy).
 Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
 an llm node, `thinking` on a non-reasoning model, `spec.budget.wall`, …) produce
 a *declared but not enforced* warning rather than silently looking like they work.

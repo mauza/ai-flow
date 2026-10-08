@@ -563,6 +563,126 @@ presets:
       body: 'Run ${{ run.id }} on branch ${{ run.branch }}. Pull request: ${{ run.pr_url ?? "not opened" }}'
     outcomes: [done]
 
+  # ---- release: test, ship on merge, watch, roll back ----
+  ci-checks:
+    category: verification
+    when_to_use: A PR is open and the repo has GitHub CI; required before merging when merging deploys.
+    requires: [GitHub-backed repo with CI on pull requests, An open PR (open-pull-request) so PR workflows run]
+    type: action
+    max_visits: 4
+    on_exhausted: $fail
+    description: Wait for the repo's GitHub CI (check runs and statuses) on the PR head and report failures.
+    action: wait_for_checks
+    outputs: { ref: string, failed: [string], checks: [string] }
+    outcomes: [passed, failed, none, timeout]
+
+  local-stack-test:
+    category: verification
+    when_to_use: The repo can start its app (or a local stack) and run scenario/integration tests in one command.
+    requires: [Configure run with the project's local-stack command (e.g. make test-local), A runtime with the stack's dependencies]
+    type: check
+    max_visits: 4
+    on_exhausted: $fail
+    description: Start the app's local stack inside the pod, run its scenario tests, and tear it down.
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
+  qa-test:
+    category: verification
+    when_to_use: A user-facing change should be exercised end to end before release, beyond the automated tests.
+    requires: [Project repo read access, A runtime that can build and start the app locally]
+    type: agent
+    min_size: medium
+    max_visits: 3
+    on_exhausted: $fail
+    description: Act as QA - run the app locally, exercise the changed behavior and its edge cases, report defects. No edits.
+    prompt: |
+      You are QA for the change on this branch. Do not edit tracked files.
+      Read how to build and run the app (README, Makefile, docs), start it locally inside this workspace, and
+      exercise the user-facing behavior the task changed: the main path first, then edge cases, error states,
+      and anything nearby the diff could have broken. Prefer real requests (curl, the CLI, a headless browser
+      if available) over reading code. Stop what you started before finishing.
+      Return passed when the change works as the task asks, defects with one concrete repro per problem
+      (steps, expected, actual), or blocked if the app cannot be started here (say exactly why).
+    outputs: { defects: [string], tested: [string] }
+    outcomes: [passed, defects, blocked]
+
+  deploy:
+    category: release
+    when_to_use: CI passed on the PR and the project deploys on merge; this merge ships to production.
+    requires: [An open PR whose CI passed (ci-checks) with no commits after it, Project deploy config (merging into deploy.branch runs CI/CD)]
+    type: action
+    max_visits: 2
+    on_exhausted: $fail
+    description: Merge the PR into the deploy branch; the project's CI/CD builds and rolls it out.
+    action: merge_pull_request
+    outputs: { sha: string, number: integer, url: string }
+    outcomes: [merged, conflict, blocked, timeout]
+
+  wait-for-deploy:
+    category: release
+    when_to_use: Right after deploy merged, before judging production health.
+    requires: [Project deploy.versions endpoints that report the running commit]
+    type: action
+    max_visits: 2
+    on_exhausted: $fail
+    description: Wait until production reports the merged commit (CI built it and the rollout finished).
+    action: wait_for_deploy
+    outputs: { version: string }
+    outcomes: [deployed, timeout]
+
+  monitor-deploy:
+    category: operations
+    when_to_use: The new version is live (wait-for-deploy); watch it before calling the release done.
+    requires: [Project deploy.health PromQL queries and metrics.url, or a deploy.url to probe]
+    type: action
+    max_visits: 2
+    on_exhausted: $fail
+    description: Soak production for 10 minutes on the project's health queries and URL; degraded on a sustained violation.
+    action: check_health
+    with: { duration: 10m }
+    outputs: { violations: [string], polls: integer }
+    outcomes: [healthy, degraded, timeout]
+
+  deploy-triage:
+    category: operations
+    when_to_use: monitor-deploy reported degraded (or timed out) and a diagnosis should accompany the rollback.
+    requires: [The failed health check as the previous step, Branch diff of the release]
+    type: llm
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Playbook - relate the health violations to the released diff and write the incident note.
+    prompt: |
+      Production degraded after this release. The previous step lists the violated health checks; the diff of
+      the release is included. Explain the most likely cause in the diff (file and change), the evidence that
+      links them, how confident you are, and what to fix before shipping again. Be concrete and brief.
+    outputs: { cause: string, evidence: [string], fix: string }
+    outcomes: [diagnosed]
+
+  revert-deploy:
+    category: operations
+    when_to_use: A deploy degraded production; revert it on the run branch, then open-pull-request, ci-checks and deploy ship the revert.
+    requires: [Repo write grant on this node, The release merged with method merge (the default)]
+    type: check
+    max_visits: 2
+    on_exhausted: $fail
+    description: Reset the run branch to the deploy branch and revert the release merge commit (a fast-forward push).
+    inputs:
+      sha: ${{ run.merged_sha }}
+      base: ${{ run.base }}
+    run: |
+      set -e
+      git fetch --quiet origin "$AI_FLOW_INPUT_BASE"
+      git reset --quiet --hard "origin/$AI_FLOW_INPUT_BASE"
+      if [ "$(git rev-list --parents -n1 "$AI_FLOW_INPUT_SHA" | wc -w)" -gt 2 ]; then
+        git revert --no-edit -m 1 "$AI_FLOW_INPUT_SHA"
+      else
+        git revert --no-edit "$AI_FLOW_INPUT_SHA"
+      fi
+    outputs: { exit_code: integer, log_tail: string }
+    outcomes: [pass, fail]
+
 planner:
   model: gpt-6.1-sol
   stream: true

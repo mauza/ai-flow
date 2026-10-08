@@ -50,7 +50,7 @@ spec:
 			got = append(got, i.Node+"."+i.Field)
 		}
 	}
-	want := []string{".spec.budget.wall", "classify.skills", "classify.llm.thinking", "test.inputs", "test.prompt", "route.model", "route.timeout"}
+	want := []string{".spec.budget.wall", "classify.skills", "classify.llm.thinking", "test.prompt", "route.model", "route.timeout"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("warnings\n got %v\nwant %v", got, want)
 	}
