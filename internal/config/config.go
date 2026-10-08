@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -27,6 +28,34 @@ type Config struct {
 	Catalog  Catalog
 	Projects map[string]*Project
 	Dir      string
+
+	// current is shared by every version of a loaded config; see Current.
+	current *atomic.Pointer[Config]
+	// The YAML documents this version was built from (see Docs).
+	catalogDoc  []byte
+	projectDocs map[string][]byte
+}
+
+// Current returns the latest published version of this config. The UI edits
+// the catalog and projects at runtime by publishing a new version, so
+// long-lived components keep the config they were built with and read through
+// Current. A config built as a literal (tests) is its own current version.
+func (c *Config) Current() *Config {
+	if c.current == nil {
+		return c
+	}
+	return c.current.Load()
+}
+
+// Publish makes next the current version for everything sharing c. next must
+// come from c.WithDocs, which validates it.
+func (c *Config) Publish(next *Config) {
+	if c.current == nil {
+		c.current = &atomic.Pointer[Config]{}
+		c.current.Store(c)
+	}
+	next.current = c.current
+	c.current.Store(next)
 }
 
 type header struct {
@@ -98,12 +127,12 @@ type ObjectStore struct {
 	// admin API, so no S3 credentials need to be configured.
 	AdminEndpoint string `json:"adminEndpoint,omitempty"`
 	AdminTokenEnv string `json:"adminTokenEnv,omitempty"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	Bucket       string `json:"bucket,omitempty"`
-	Region       string `json:"region,omitempty"`
-	Secure       bool   `json:"secure,omitempty"`
-	AccessKeyEnv string `json:"accessKeyEnv,omitempty"`
-	SecretKeyEnv string `json:"secretKeyEnv,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	Bucket        string `json:"bucket,omitempty"`
+	Region        string `json:"region,omitempty"`
+	Secure        bool   `json:"secure,omitempty"`
+	AccessKeyEnv  string `json:"accessKeyEnv,omitempty"`
+	SecretKeyEnv  string `json:"secretKeyEnv,omitempty"`
 }
 
 // Git configures the upstream credentials the git proxy injects, per host.
@@ -367,7 +396,7 @@ type PlannerGuide struct {
 // earlier one, so a local override file can follow the shared directory.
 // Relative skill paths and prompt files resolve against the catalog's directory.
 func Load(paths ...string) (*Config, error) {
-	cfg := &Config{Projects: map[string]*Project{}}
+	cfg := &Config{Projects: map[string]*Project{}, projectDocs: map[string][]byte{}}
 	var files []string
 	for _, p := range paths {
 		st, err := os.Stat(p)
@@ -419,6 +448,7 @@ func Load(paths ...string) (*Config, error) {
 					return nil, fmt.Errorf("%s: %w", where, err)
 				}
 				cfg.Dir = filepath.Dir(f)
+				cfg.catalogDoc = doc
 				haveCatalog = true
 			case "Project":
 				var p Project
@@ -429,6 +459,7 @@ func Load(paths ...string) (*Config, error) {
 					return nil, fmt.Errorf("%s: metadata.name is required", where)
 				}
 				cfg.Projects[p.Metadata.Name] = &p
+				cfg.projectDocs[p.Metadata.Name] = doc
 			case "":
 				continue
 			default:
@@ -449,7 +480,92 @@ func Load(paths ...string) (*Config, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
+	inlined, err := inlineFiles(cfg.catalogDoc, &cfg.Catalog)
+	if err != nil {
+		return nil, err
+	}
+	cfg.catalogDoc = inlined
+	cfg.current = &atomic.Pointer[Config]{}
+	cfg.current.Store(cfg)
 	return cfg, nil
+}
+
+// WithDocs builds and checks a new version of c that keeps c's environment
+// but takes its catalog and projects from YAML documents. It does not publish
+// the result.
+func (c *Config) WithDocs(catalog []byte, projects [][]byte) (*Config, error) {
+	next := &Config{Env: c.Env, Dir: c.Dir, Projects: map[string]*Project{}, current: c.current,
+		catalogDoc: catalog, projectDocs: map[string][]byte{}}
+	if err := yaml.UnmarshalStrict(catalog, &next.Catalog); err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
+	}
+	for _, doc := range projects {
+		var p Project
+		if err := yaml.UnmarshalStrict(doc, &p); err != nil {
+			return nil, fmt.Errorf("project: %w", err)
+		}
+		if p.Metadata.Name == "" {
+			return nil, fmt.Errorf("project: metadata.name is required")
+		}
+		if _, dup := next.Projects[p.Metadata.Name]; dup {
+			return nil, fmt.Errorf("project %s is defined twice", p.Metadata.Name)
+		}
+		next.Projects[p.Metadata.Name] = &p
+		next.projectDocs[p.Metadata.Name] = doc
+	}
+	next.applyDefaults()
+	if err := next.loadFiles(); err != nil {
+		return nil, err
+	}
+	if err := next.check(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// Docs returns the documents this version was built from: the catalog (with
+// prompt files and skill directories inlined, so it stands alone) and each
+// project. They are the source documents, not a re-rendering, so explicit
+// empty values such as `grants: []` keep their meaning.
+func (c *Config) Docs() (catalog []byte, projects map[string][]byte) {
+	projects = make(map[string][]byte, len(c.projectDocs))
+	for name, d := range c.projectDocs {
+		projects[name] = slices.Clone(d)
+	}
+	return slices.Clone(c.catalogDoc), projects
+}
+
+// inlineFiles rewrites a catalog document so that presets carry their prompt
+// instead of prompt_file and skills carry their files instead of path, using
+// the contents loadFiles read.
+func inlineFiles(doc []byte, cat *Catalog) ([]byte, error) {
+	var m map[string]any
+	if err := yaml.Unmarshal(doc, &m); err != nil {
+		return nil, err
+	}
+	changed := false
+	presets, _ := m["presets"].(map[string]any)
+	for name, raw := range presets {
+		p, _ := raw.(map[string]any)
+		if _, ok := p["prompt_file"]; ok && cat.Presets[name] != nil {
+			p["prompt"] = cat.Presets[name].Prompt
+			delete(p, "prompt_file")
+			changed = true
+		}
+	}
+	skills, _ := m["skills"].(map[string]any)
+	for name, raw := range skills {
+		s, _ := raw.(map[string]any)
+		if _, ok := s["path"]; ok && cat.Skills[name] != nil {
+			s["files"] = cat.Skills[name].Files
+			delete(s, "path")
+			changed = true
+		}
+	}
+	if !changed {
+		return doc, nil
+	}
+	return yaml.Marshal(m)
 }
 
 func splitDocs(data []byte) [][]byte {

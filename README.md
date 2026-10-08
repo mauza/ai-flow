@@ -62,9 +62,17 @@ Linear / UI ──▶ planner ──▶ flow YAML (versioned) ──▶ engine �
 - **Grants**: a step gets exactly the repo access (read, or write to its run
   branch only), MCP tools, secrets and egress it lists. Pods reach nothing but
   the control plane's pod port.
-- **Config** lives in [`deploy/config`](deploy/config): the environment (where
+- **Config** starts in [`deploy/config`](deploy/config): the environment (where
   things run), the catalog (the menu the planner picks from) and projects (repo,
-  allow-lists, budgets, start mode, planner guidance, Linear link).
+  allow-lists, budgets, start mode, planner guidance, Linear link). On first
+  start the server copies the catalog and projects into its database, and
+  **Settings** edits them live from then on; the environment stays in files.
+- **Product work**: link a GitHub repository, write product docs and user story
+  maps in its `product/` directory, and send user tasks, activities or phases
+  to flows. Edits stay in a scratch checkout until you commit
+  ([docs/PRODUCT.md](docs/PRODUCT.md)).
+- **Run review**: an LLM reads a run's record and suggests changes to the flow,
+  the catalog or ai-flow's primitives.
 
 Read [docs/SPEC.md](docs/SPEC.md) for the design, the security model and what
 changed from the original draft.

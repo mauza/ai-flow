@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Box, Cpu, FolderGit2, KeyRound, Puzzle, Sparkles, Wand2 } from "lucide-react";
 import { api, type Overview } from "../api";
 import { useResource } from "../hooks";
@@ -13,6 +14,10 @@ export default function Catalog() {
       <div className="page-head">
         <h1>Catalog</h1>
         <span className="sub">Choose reusable steps for your workflow, then add them in the flow editor.</span>
+        <span className="spacer" />
+        <Link className="btn sm" to="/settings">
+          Edit in Settings
+        </Link>
       </div>
 
       <Section icon={Wand2} title="Node library">

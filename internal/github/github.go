@@ -50,7 +50,9 @@ type APIError struct {
 	Body   string
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("github: HTTP %d: %s", e.Status, strings.TrimSpace(e.Body)) }
+func (e *APIError) Error() string {
+	return fmt.Sprintf("github: HTTP %d: %s", e.Status, strings.TrimSpace(e.Body))
+}
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
@@ -307,4 +309,141 @@ func (c *Client) Run(ctx context.Context, r Repo, id int64) (*WorkflowRun, error
 	var run WorkflowRun
 	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/actions/runs/%d", r.Owner, r.Name, id), nil, &run)
 	return &run, err
+}
+
+// RepoInfo is a repository the token can see.
+type RepoInfo struct {
+	FullName      string `json:"full_name"`
+	Description   string `json:"description"`
+	DefaultBranch string `json:"default_branch"`
+	HTMLURL       string `json:"html_url"`
+	CloneURL      string `json:"clone_url"`
+	Private       bool   `json:"private"`
+	Archived      bool   `json:"archived"`
+	PushedAt      string `json:"pushed_at"`
+}
+
+// Repos lists the repositories the token's user owns or collaborates on,
+// most recently pushed first (up to 500).
+func (c *Client) Repos(ctx context.Context) ([]RepoInfo, error) {
+	var all []RepoInfo
+	for page := 1; page <= 5; page++ {
+		var batch []RepoInfo
+		path := fmt.Sprintf("/user/repos?per_page=100&page=%d&sort=pushed&affiliation=owner,collaborator,organization_member", page)
+		if err := c.do(ctx, "GET", path, nil, &batch); err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+// Repository returns one repository's details.
+func (c *Client) Repository(ctx context.Context, r Repo) (*RepoInfo, error) {
+	var out RepoInfo
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s", r.Owner, r.Name), nil, &out)
+	return &out, err
+}
+
+// TreeEntry is a file in a commit's tree.
+type TreeEntry struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+// Files lists the blobs under prefix in commit sha's tree.
+func (c *Client) Files(ctx context.Context, r Repo, sha, prefix string) ([]TreeEntry, error) {
+	var out struct {
+		Tree      []TreeEntry `json:"tree"`
+		Truncated bool        `json:"truncated"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", r.Owner, r.Name, sha), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Truncated {
+		return nil, fmt.Errorf("%s: the repository tree is too large for GitHub to list in one response", r)
+	}
+	var files []TreeEntry
+	for _, e := range out.Tree {
+		if e.Type == "blob" && strings.HasPrefix(e.Path, prefix) {
+			files = append(files, e)
+		}
+	}
+	return files, nil
+}
+
+// Blob returns a blob's content.
+func (c *Client) Blob(ctx context.Context, r Repo, sha string) ([]byte, error) {
+	var out struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/git/blobs/%s", r.Owner, r.Name, sha), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Encoding != "base64" {
+		return []byte(out.Content), nil
+	}
+	return base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
+}
+
+// FileChange is one file in a commit: Content nil deletes the path.
+type FileChange struct {
+	Path    string
+	Content []byte
+}
+
+// ErrNotFastForward means the branch moved since the commit's parent was read.
+var ErrNotFastForward = fmt.Errorf("the branch has new commits; pull first")
+
+// CommitFiles commits changes on top of parent and moves branch to the new
+// commit only if branch still points at parent (no force push). It returns
+// the new commit's SHA.
+func (c *Client) CommitFiles(ctx context.Context, r Repo, branch, parent, message string, author map[string]string, changes []FileChange) (string, error) {
+	var parentCommit struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/git/commits/%s", r.Owner, r.Name, parent), nil, &parentCommit); err != nil {
+		return "", err
+	}
+	var entries []map[string]any
+	for _, ch := range changes {
+		e := map[string]any{"path": ch.Path, "mode": "100644", "type": "blob"}
+		if ch.Content == nil {
+			e["sha"] = nil
+		} else {
+			e["content"] = string(ch.Content)
+		}
+		entries = append(entries, e)
+	}
+	var tree struct {
+		SHA string `json:"sha"`
+	}
+	if err := c.do(ctx, "POST", fmt.Sprintf("/repos/%s/%s/git/trees", r.Owner, r.Name), map[string]any{"base_tree": parentCommit.Tree.SHA, "tree": entries}, &tree); err != nil {
+		return "", err
+	}
+	in := map[string]any{"message": message, "tree": tree.SHA, "parents": []string{parent}}
+	if author != nil {
+		in["author"] = author
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := c.do(ctx, "POST", fmt.Sprintf("/repos/%s/%s/git/commits", r.Owner, r.Name), in, &commit); err != nil {
+		return "", err
+	}
+	err := c.do(ctx, "PATCH", fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", r.Owner, r.Name, branch), map[string]any{"sha": commit.SHA, "force": false}, nil)
+	if ae, ok := err.(*APIError); ok && ae.Status == 422 && strings.Contains(strings.ToLower(ae.Body), "fast forward") {
+		return "", ErrNotFastForward
+	}
+	if err != nil {
+		return "", err
+	}
+	return commit.SHA, nil
 }

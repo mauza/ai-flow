@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Clock, Coins, Cpu, FileDiff, GitCommit, Hand, History, ListOrdered, Play, RotateCcw, ScrollText, Square, X } from "lucide-react";
+import { Clock, Coins, Cpu, FileDiff, GitCommit, Hand, History, Lightbulb, ListOrdered, Play, RotateCcw, ScrollText, Square, X } from "lucide-react";
 import { api, type Graph, type Run, type Visit } from "../api";
 import { useEvents, useNow, useResource } from "../hooks";
 import { clock, duration, timeAgo, tokens, usd } from "../format";
 import FlowGraph, { type RunOverlay } from "../graph/FlowGraph";
 import { edgeId } from "../graph/layout";
 import Transcript from "../run/Transcript";
+import Retro from "../run/Retro";
 import { BranchChip, PRLink, Pill, SourceChip, Spinner, StatusIcon, useToast } from "../ui";
 
 export default function RunPage() {
@@ -14,7 +15,7 @@ export default function RunPage() {
   const view = useResource(() => api.run(id), [id], (e) => (e.type === "run" || e.type === "visit") && e.id === id);
   const [progress, setProgress] = useState<Record<number, string>>({});
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
-  const [tab, setTab] = useState<"steps" | "events">("steps");
+  const [tab, setTab] = useState<"steps" | "events" | "review">("steps");
   const toast = useToast();
   const navigate = useNavigate();
   const now = useNow(1000);
@@ -186,13 +187,19 @@ export default function RunPage() {
               <History size={14} />
               Events
             </button>
+            <button className={`tab${tab === "review" ? " active" : ""}`} onClick={() => setTab("review")}>
+              <Lightbulb size={14} />
+              Review
+            </button>
             <span className="spacer" />
             <span style={{ maxWidth: 200, minWidth: 0, display: "flex", alignSelf: "center" }}>
               <BranchChip branch={run.branch} />
             </span>
           </div>
           <div className="side-body">
-            {tab === "events" ? (
+            {tab === "review" ? (
+              <Retro runId={run.id} active={active} />
+            ) : tab === "events" ? (
               <div className="timeline">
                 {data.events.map((e) => (
                   <div key={e.id} className="tl-item" style={{ cursor: "default" }}>

@@ -39,9 +39,9 @@ func NewLinear(cfg *config.Config, a *app.App) (*Linear, error) {
 // WebhookHandler verifies Linear webhooks and triggers an immediate poll, so
 // webhook mode reacts in seconds while polling stays the single code path.
 func (l *Linear) WebhookHandler() (http.HandlerFunc, error) {
-	secret := config.Secret(l.cfg.Env.Linear.WebhookSecretEnv)
+	secret := config.Secret(l.cfg.Current().Env.Linear.WebhookSecretEnv)
 	if secret == "" {
-		return nil, fmt.Errorf("linear webhook mode needs %s", l.cfg.Env.Linear.WebhookSecretEnv)
+		return nil, fmt.Errorf("linear webhook mode needs %s", l.cfg.Current().Env.Linear.WebhookSecretEnv)
 	}
 	return linear.NewWebhookHandler(secret, func(p linear.WebhookPayload) {
 		if p.Type == "Issue" {
@@ -69,13 +69,13 @@ func (l *Linear) client(ctx context.Context, team string) (*linear.Client, error
 
 // Run polls every linked project until ctx ends.
 func (l *Linear) Run(ctx context.Context) {
-	interval := l.cfg.Env.Linear.PollInterval.Duration
-	if l.cfg.Env.Linear.Mode == "webhook" && interval < 5*time.Minute {
+	interval := l.cfg.Current().Env.Linear.PollInterval.Duration
+	if l.cfg.Current().Env.Linear.Mode == "webhook" && interval < 5*time.Minute {
 		interval = 5 * time.Minute // webhooks trigger polls; this is only a safety net
 	}
-	slog.Info("linear intake", "mode", l.cfg.Env.Linear.Mode, "poll_every", interval)
+	slog.Info("linear intake", "mode", l.cfg.Current().Env.Linear.Mode, "poll_every", interval)
 	for {
-		for name, p := range l.cfg.Projects {
+		for name, p := range l.cfg.Current().Projects {
 			if p.Spec.Linear == nil {
 				continue
 			}
@@ -158,7 +158,7 @@ func (l *Linear) link(t *store.Task) *config.LinearLink {
 	if t.Source != "linear" || t.ExternalID == "" {
 		return nil
 	}
-	p := l.cfg.Projects[t.Project]
+	p := l.cfg.Current().Projects[t.Project]
 	if p == nil {
 		return nil
 	}
@@ -200,7 +200,7 @@ func (l *Linear) comment(ctx context.Context, t *store.Task, body string) {
 }
 
 func (l *Linear) url(path string) string {
-	return strings.TrimSuffix(l.cfg.Env.Server.PublicURL, "/") + path
+	return strings.TrimSuffix(l.cfg.Current().Env.Server.PublicURL, "/") + path
 }
 
 // ---- app.Notifier ----
@@ -245,7 +245,7 @@ func (l *Linear) PlanFinished(ctx context.Context, t *store.Task, flowName strin
 }
 
 func (l *Linear) startMode(t *store.Task) string {
-	if p := l.cfg.Projects[t.Project]; p != nil {
+	if p := l.cfg.Current().Projects[t.Project]; p != nil {
 		return p.Spec.Start
 	}
 	return "manual"

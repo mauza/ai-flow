@@ -42,6 +42,7 @@ import (
 	"github.com/mauza/ai-flow/internal/runner"
 	"github.com/mauza/ai-flow/internal/server"
 	"github.com/mauza/ai-flow/internal/store"
+	"github.com/mauza/ai-flow/internal/workspace"
 	"github.com/mauza/ai-flow/web"
 )
 
@@ -126,15 +127,24 @@ func serverCmd(ctx context.Context, args []string) error {
 	if *local {
 		cfg.Env.Runs.Local = true
 	}
-	env := &cfg.Env
-	if err := os.MkdirAll(env.Server.DataDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Env.Server.DataDir, 0o755); err != nil {
 		return err
 	}
-	st, err := store.Open(filepath.Join(env.Server.DataDir, "ai-flow.db"))
+	st, err := store.Open(filepath.Join(cfg.Env.Server.DataDir, "ai-flow.db"))
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	// The catalog and projects come from the database from now on; the
+	// environment still comes from the files.
+	cfg, seeded, err := app.LoadStoredConfig(ctx, st, cfg)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		slog.Info("catalog and projects seeded into the database from the config files; edit them in the UI from now on")
+	}
+	env := &cfg.Env
 	go st.Backups(ctx, filepath.Join(env.Server.DataDir, "backups"), 14)
 	signer, err := grant.LoadOrCreate(env.Server.DataDir)
 	if err != nil {
@@ -173,7 +183,9 @@ func serverCmd(ctx context.Context, args []string) error {
 		eng.SetNotifier(n)
 		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events)
 	}
-	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llm.New(cfg), gh), Hub: h}
+	llmc := llm.New(cfg)
+	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llmc, gh), Hub: h, LLM: llmc, GitHub: gh,
+		Workspaces: workspace.New(filepath.Join(env.Server.DataDir, "workspaces"), gh, store.Now)}
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
 
 	ui, err := server.New(a, obj, web.FS())

@@ -1,0 +1,10 @@
+title: See every game on the home page
+activity: browse
+release: mvp
+order: 1
+story: As a player I want to see all games at once so that I can pick one quickly.
+acceptance:
+  - every game has a tile with a title and picture
+  - the grid works on a phone
+metrics: [weekly-players]
+status: done

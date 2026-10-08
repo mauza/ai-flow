@@ -26,7 +26,7 @@ type executionSnapshot struct {
 func (e *Engine) snapshot(res *resolve.Resolved) ([]byte, error) {
 	images := map[string]string{}
 	for _, n := range res.Nodes {
-		images[n.Runtime] = e.cfg.Catalog.Runtimes[n.Runtime].Image
+		images[n.Runtime] = e.cfg.Current().Catalog.Runtimes[n.Runtime].Image
 	}
 	deps, err := e.executionDependencies(res)
 	if err != nil {
@@ -38,11 +38,11 @@ func (e *Engine) snapshot(res *resolve.Resolved) ([]byte, error) {
 func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
 	deps := map[string]any{}
 	addGrant := func(name string) {
-		g := e.cfg.Catalog.Grants[name]
+		g := e.cfg.Current().Catalog.Grants[name]
 		deps["grant/"+name] = g
 		if g != nil && g.Kind == config.GrantMCP {
 			// Headers and their secret values remain current authorization.
-			deps["mcp/"+g.Server] = e.cfg.Env.MCP.Servers[g.Server].URL
+			deps["mcp/"+g.Server] = e.cfg.Current().Env.MCP.Servers[g.Server].URL
 		}
 	}
 	addGrant(res.Repo)
@@ -52,30 +52,30 @@ func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
 			addGrant(name)
 		}
 		for _, s := range n.Skills {
-			deps["skill/"+s] = e.cfg.Catalog.Skills[s]
+			deps["skill/"+s] = e.cfg.Current().Catalog.Skills[s]
 		}
 		if n.LLM != nil {
 			for _, name := range append([]string{n.LLM.Model}, n.LLM.Fallbacks...) {
-				m := e.cfg.Catalog.Models[name]
+				m := e.cfg.Current().Catalog.Models[name]
 				if m != nil {
 					// max_concurrency is admission control, like runs.maxConcurrent:
 					// tuning it must not fail pinned runs as configuration drift.
 					pinned := *m
 					pinned.MaxConcurrency = 0
 					deps["model/"+name] = pinned
-					deps["upstream/"+m.Upstream] = e.cfg.Env.LLM.Upstreams[m.Upstream].BaseURL
+					deps["upstream/"+m.Upstream] = e.cfg.Current().Env.LLM.Upstreams[m.Upstream].BaseURL
 				} else {
 					deps["model/"+name] = m
 				}
 			}
 		}
 	}
-	runs := e.cfg.Env.Runs
+	runs := e.cfg.Current().Env.Runs
 	runs.MaxConcurrent = 0           // admission control is intentionally current
 	runs.DefaultTimeout.Duration = 0 // already resolved per node
 	deps["runs"] = runs
-	deps["git_author"] = []string{e.cfg.Env.Git.AuthorName, e.cfg.Env.Git.AuthorEmail}
-	deps["github_api"] = e.cfg.Env.GitHub.APIURL
+	deps["git_author"] = []string{e.cfg.Current().Env.Git.AuthorName, e.cfg.Current().Env.Git.AuthorEmail}
+	deps["github_api"] = e.cfg.Current().Env.GitHub.APIURL
 	data, err := json.Marshal(deps)
 	if err != nil {
 		return "", err
@@ -141,8 +141,8 @@ func (e *Engine) Resolved(ctx context.Context, r *store.Run) (*resolve.Resolved,
 	}
 	res := snap.Resolved
 	current := *res
-	current.Project = e.cfg.Projects[res.Flow.Metadata.Project]
-	if issues := resolve.Validate(&current, e.cfg); resolve.HasErrors(issues) {
+	current.Project = e.cfg.Current().Projects[res.Flow.Metadata.Project]
+	if issues := resolve.Validate(&current, e.cfg.Current()); resolve.HasErrors(issues) {
 		return nil, rejectf("pinned execution is not currently authorized/valid: %v", issues)
 	}
 	deps, err := e.executionDependencies(res)

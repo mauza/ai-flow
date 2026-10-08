@@ -88,7 +88,7 @@ func (e *Engine) repoOf(res *resolve.Resolved) (github.Repo, error) {
 	if e.gh == nil {
 		return github.Repo{}, rejectf("github is not configured")
 	}
-	g := e.cfg.Catalog.Grants[res.Repo]
+	g := e.cfg.Current().Catalog.Grants[res.Repo]
 	if g == nil {
 		return github.Repo{}, rejectf("flow has no repo")
 	}
@@ -398,7 +398,7 @@ func maxCount(m map[string]int) int {
 }
 
 func (e *Engine) deployOf(r *store.Run) (*config.Deploy, error) {
-	p := e.cfg.Projects[r.Project]
+	p := e.cfg.Current().Projects[r.Project]
 	if p == nil || p.Spec.Deploy == nil {
 		return nil, rejectf("project %q has no deploy configuration", r.Project)
 	}
@@ -408,7 +408,7 @@ func (e *Engine) deployOf(r *store.Run) (*config.Deploy, error) {
 // promQuery runs a PromQL instant query and returns the highest value (0 for
 // an empty result).
 func (e *Engine) promQuery(ctx context.Context, q string) (float64, error) {
-	base := strings.TrimSuffix(e.cfg.Env.Metrics.URL, "/")
+	base := strings.TrimSuffix(e.cfg.Current().Env.Metrics.URL, "/")
 	if base == "" {
 		return 0, fmt.Errorf("metrics.url is not configured")
 	}

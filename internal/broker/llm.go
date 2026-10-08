@@ -46,12 +46,12 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		limitErr(w, 403, "model_not_allowed", fmt.Sprintf("model %q is not granted to this node (allowed: %s)", name, strings.Join(c.Models, ", ")))
 		return
 	}
-	model := b.cfg.Catalog.Models[name]
+	model := b.cfg.Current().Catalog.Models[name]
 	if model == nil {
 		httpErr(w, 503, "model "+name+" is unavailable")
 		return
 	}
-	up, ok := b.cfg.Env.LLM.Upstreams[model.Upstream]
+	up, ok := b.cfg.Current().Env.LLM.Upstreams[model.Upstream]
 	if !ok {
 		httpErr(w, 500, "model "+name+" has no upstream")
 		return

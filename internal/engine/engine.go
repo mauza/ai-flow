@@ -168,7 +168,7 @@ func (e *Engine) tick(ctx context.Context) {
 		slog.Error("list queued runs", "err", err)
 		return
 	}
-	slots := e.cfg.Env.Runs.MaxConcurrent - occupied
+	slots := e.cfg.Current().Env.Runs.MaxConcurrent - occupied
 	for i := len(queued) - 1; i >= 0 && slots > 0; i-- { // oldest first
 		r := queued[i]
 		if err := e.begin(ctx, r); err != nil {
@@ -227,7 +227,7 @@ func (e *Engine) CreateRun(ctx context.Context, flowName string, version int, ta
 	if err != nil {
 		return nil, err
 	}
-	if issues := resolve.Validate(res, e.cfg); resolve.HasErrors(issues) {
+	if issues := resolve.Validate(res, e.cfg.Current()); resolve.HasErrors(issues) {
 		var msgs []string
 		for _, i := range issues {
 			if i.Severity == resolve.Error {
@@ -262,7 +262,7 @@ func (e *Engine) resolve(fv *store.FlowVersion) (*resolve.Resolved, error) {
 	if err != nil {
 		return nil, rejection{err}
 	}
-	return resolve.Resolve(f, e.cfg), nil
+	return resolve.Resolve(f, e.cfg.Current()), nil
 }
 
 func (e *Engine) begin(ctx context.Context, r *store.Run) error {
@@ -696,7 +696,7 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 	}
 	for _, g := range n.Grants {
 		name, _, _ := strings.Cut(g, ":")
-		grant := e.cfg.Catalog.Grants[name]
+		grant := e.cfg.Current().Catalog.Grants[name]
 		if grant == nil {
 			continue
 		}
@@ -721,7 +721,7 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 		if st.State != JobMissing {
 			return e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"job_name": name, "launch_state": "launched"})
 		}
-		if e.cfg.Env.Runs.Local {
+		if e.cfg.Current().Env.Runs.Local {
 			return e.visitError(ctx, r, v, "local launch delivery uncertain after interruption; refusing to start a duplicate process")
 		}
 	}
@@ -984,7 +984,7 @@ func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*st
 	if err != nil {
 		return nil, err
 	}
-	if max := e.cfg.Env.Runs.MaxConcurrent; len(active) >= max {
+	if max := e.cfg.Current().Env.Runs.MaxConcurrent; len(active) >= max {
 		return nil, fmt.Errorf("all %d run slots are busy; resume when one frees up", max)
 	}
 	note = strings.TrimSpace(note)
@@ -1073,7 +1073,7 @@ func contains(xs []string, x string) bool {
 // alert pushes a notification about r in the background. Delivery is best
 // effort: a failed push is logged and never affects the run.
 func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, body string, priority int, tags ...string) {
-	if e.notifier == nil || !e.cfg.Env.Notify.Sends(event) {
+	if e.notifier == nil || !e.cfg.Current().Env.Notify.Sends(event) {
 		return
 	}
 	label := r.FlowName
@@ -1084,7 +1084,7 @@ func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, bo
 	if m.Body == "" {
 		m.Body = fmt.Sprintf("Run %s of %s v%d", r.ID, r.FlowName, r.FlowVersion)
 	}
-	if base := strings.TrimSuffix(e.cfg.Env.Server.PublicURL, "/"); base != "" {
+	if base := strings.TrimSuffix(e.cfg.Current().Env.Server.PublicURL, "/"); base != "" {
 		m.Click = base + "/runs/" + r.ID
 	}
 	go func() {
@@ -1113,8 +1113,8 @@ func shortDuration(d time.Duration) string {
 // alertStuck sends one reminder per gate visit that has waited longer than
 // notify.stuckAfter. The kv marker keeps restarts from repeating it.
 func (e *Engine) alertStuck(ctx context.Context, r *store.Run, v *store.Visit) error {
-	after := e.cfg.Env.Notify.StuckAfter.Duration
-	if e.notifier == nil || !e.cfg.Env.Notify.Sends(config.NotifyStuck) || v.StartedAt == 0 || store.Now()-v.StartedAt < after.Milliseconds() {
+	after := e.cfg.Current().Env.Notify.StuckAfter.Duration
+	if e.notifier == nil || !e.cfg.Current().Env.Notify.Sends(config.NotifyStuck) || v.StartedAt == 0 || store.Now()-v.StartedAt < after.Milliseconds() {
 		return nil
 	}
 	key := fmt.Sprintf("notify/stuck/%s/%d", r.ID, v.Seq)

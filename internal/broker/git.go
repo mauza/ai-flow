@@ -45,7 +45,7 @@ func (b *Broker) git(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host, _, _ := strings.Cut(repo, "/")
-	hostCfg, ok := b.cfg.Env.Git.Hosts[host]
+	hostCfg, ok := b.cfg.Current().Env.Git.Hosts[host]
 	if !ok {
 		http.Error(w, "no credentials configured for "+host, 403)
 		return

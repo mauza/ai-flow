@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/runs/{id}/visits/{seq}/transcript", s.transcript)
 
 	api("GET /api/events", s.events)
+	s.productRoutes(api)
 	for pattern, h := range s.extras {
 		mux.Handle(pattern, h)
 	}
@@ -116,7 +117,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "operational summary unavailable")
 		return
 	}
-	cfg := s.app.Cfg
+	cfg := s.app.Cfg.Current()
 	cat := cfg.Catalog
 	type named struct {
 		Name string `json:"name"`
@@ -295,8 +296,8 @@ func (s *Server) analyze(src string) (*resolve.Graph, []resolve.Issue) {
 	if err != nil {
 		return &resolve.Graph{Nodes: []resolve.GraphNode{}, Edges: []resolve.GraphEdge{}}, []resolve.Issue{{Severity: resolve.Error, Message: err.Error()}}
 	}
-	res := resolve.Resolve(f, s.app.Cfg)
-	issues := resolve.Validate(res, s.app.Cfg)
+	res := resolve.Resolve(f, s.app.Cfg.Current())
+	issues := resolve.Validate(res, s.app.Cfg.Current())
 	if issues == nil {
 		issues = []resolve.Issue{}
 	}

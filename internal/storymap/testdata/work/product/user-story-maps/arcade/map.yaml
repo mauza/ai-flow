@@ -1,0 +1,41 @@
+title: Arcade
+description: Casual browser games anyone can pick up.
+personas:
+  - id: player
+    name: Casual player
+    description: plays on a phone during a break
+journey:
+  - id: discover
+    title: Discover
+    activities:
+      - id: browse
+        title: Browse games
+        persona: player
+  - id: play
+    title: Play
+    activities:
+      - id: play-game
+        title: Play a game
+      - id: compete
+        title: Compete
+releases:
+  - id: mvp
+    title: MVP
+    goal: one great game loop
+    status: in_progress
+  - id: next
+    title: Next
+metrics:
+  - id: weekly-players
+    title: Weekly players
+    kind: product
+    query: sum(increase(games_started_total[7d]))
+    target: 100
+    direction: up
+  - id: mvp-done
+    title: MVP done
+    kind: delivery
+    measure: done_ratio
+    release: mvp
+    target: 100
+    unit: "%"

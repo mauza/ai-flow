@@ -374,7 +374,7 @@ func (e *Engine) openPR(ctx context.Context, r *store.Run, res *resolve.Resolved
 	if e.gh == nil {
 		return nil, rejectf("github is not configured")
 	}
-	g := e.cfg.Catalog.Grants[res.Repo]
+	g := e.cfg.Current().Catalog.Grants[res.Repo]
 	if g == nil {
 		return nil, rejectf("flow has no repo")
 	}
@@ -420,7 +420,7 @@ func (e *Engine) openPR(ctx context.Context, r *store.Run, res *resolve.Resolved
 func (e *Engine) prFooter(ctx context.Context, r *store.Run, t *store.Task) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "Made by [ai-flow](%s/runs/%s) · flow `%s` v%d", strings.TrimSuffix(e.cfg.Env.Server.PublicURL, "/"), r.ID, r.FlowName, r.FlowVersion)
+	fmt.Fprintf(&sb, "Made by [ai-flow](%s/runs/%s) · flow `%s` v%d", strings.TrimSuffix(e.cfg.Current().Env.Server.PublicURL, "/"), r.ID, r.FlowName, r.FlowVersion)
 	if t != nil && t.URL != "" {
 		fmt.Fprintf(&sb, " · task [%s](%s)", firstNonEmpty(t.Identifier, t.Title), t.URL)
 	}
