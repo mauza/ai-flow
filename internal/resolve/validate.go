@@ -299,7 +299,7 @@ var consumers = map[string][]string{
 	"retry":      {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"timeout":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate},
 	"prompt":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate},
-	"inputs":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate, flow.TypeSwitch, flow.TypeAction},
+	"inputs":     {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate, flow.TypeSwitch, flow.TypeAction},
 	"outputs":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"run":        {flow.TypeCheck},
 	"exit_codes": {flow.TypeCheck},

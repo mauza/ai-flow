@@ -74,3 +74,15 @@ func toJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+func TestCheckInputsBecomeEnvironment(t *testing.T) {
+	r := runtimeRunner(t)
+	r.b.Check = &protocol.CheckSpec{
+		Run:       `test "$AI_FLOW_INPUT_SHA" = "abc123" && test "$AI_FLOW_INPUT_NOTE" = 'it'"'"'s $(not) run'`,
+		ExitCodes: map[string]string{"0": "pass", "default": "fail"},
+		Inputs:    map[string]string{"sha": "abc123", "note": "it's $(not) run"},
+	}
+	if res := r.runCheck(context.Background()); res.Outcome != "pass" {
+		t.Fatalf("inputs not exported verbatim: %+v", res)
+	}
+}
