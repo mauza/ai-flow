@@ -98,6 +98,7 @@ secrets:
 	$(KUBECTL) -n $(NAMESPACE) create secret generic ai-flow-secrets \
 		--from-literal=GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null)}" \
 		--from-literal=LINEAR_API_KEY="$${LINEAR_API_KEY}" \
+		--from-literal=LITELLM_API_KEY="$${LITELLM_API_KEY}" \
 		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 deploy:
