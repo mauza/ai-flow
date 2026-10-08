@@ -157,7 +157,7 @@ be wired with a complete map:
   Earlier streaming smoke tests covered GPT-6 Sol (the previous version) and Luna with the existing
   OpenCode login; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for setup and limits.
 - **Images:** `agent-base` includes bash, git, ripgrep, Python 3, Node 22/npm,
-  jq, and curl. `agent-go` adds Go 1.25 in the checked-in Dockerfile. Projects
+  jq, and curl. `agent-go` adds Go 1.26 in the checked-in Dockerfile. Projects
   needing a newer Go version (including ai-flow itself) need a compatible runtime
   or explicitly configured toolchain setup. Neither image implies project dependencies.
 - **Isolation:** each pod gets a fresh checkout. Uncommitted files and dependency
