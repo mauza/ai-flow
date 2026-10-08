@@ -108,6 +108,7 @@ func Validate(r *Resolved, cfg *config.Config) []Issue {
 		v.checkNode(r.Nodes[id], f.Spec.Nodes[id])
 	}
 	v.checkParallel()
+	v.checkDeploySafety()
 	v.checkGraph()
 	return v.sorted()
 }
@@ -695,6 +696,114 @@ func (v *validator) checkGraph() {
 	for _, id := range r.Order {
 		if !bounded(id) && state[id] == 0 {
 			dfs(id)
+		}
+	}
+}
+
+// checkDeploySafety applies when merging this flow's PR ships to production
+// (the project's deploy.branch is the flow base). Every merge must follow a
+// passing wait_for_checks with no repo-writing step in between, and after a
+// merge the run may only succeed once wait_for_deploy has seen the new version
+// and check_health has found it healthy.
+func (v *validator) checkDeploySafety() {
+	r := v.r
+	if r.Project == nil || r.Project.Spec.Deploy == nil || r.Project.Spec.Deploy.Branch != r.Base {
+		return
+	}
+	writes := func(n *Node) bool {
+		for _, g := range n.Grants {
+			name, mode, _ := strings.Cut(g, ":")
+			if grant := v.cfg.Catalog.Grants[name]; grant != nil && grant.Kind == config.GrantGit && mode == "write" {
+				return true
+			}
+		}
+		return false
+	}
+	isAction := func(n *Node, a string) bool { return n != nil && n.Type == flow.TypeAction && n.Action == a }
+	type edge struct{ outcome, to string }
+	edges := func(n *Node) []edge {
+		var out []edge
+		for _, o := range n.Outcomes {
+			if t, ok := n.Next[o]; ok && !(n.Type == flow.TypeParallel && o == flow.OutcomeJoined) {
+				out = append(out, edge{o, t})
+			}
+		}
+		for _, b := range n.Branches {
+			out = append(out, edge{"", b})
+		}
+		if n.Type == flow.TypeParallel && n.Join != "" {
+			out = append(out, edge{flow.OutcomeJoined, n.Join})
+		}
+		if n.MaxVisits > 0 && n.OnExhausted != "" {
+			out = append(out, edge{"exhausted", n.OnExhausted})
+		}
+		return out
+	}
+
+	// Rule 1: (node, verified) where verified = a CI pass covers every commit.
+	type ciState struct {
+		id       string
+		verified bool
+	}
+	reported := map[string]bool{}
+	seen := map[ciState]bool{}
+	queue := []ciState{{r.Flow.Spec.Start, false}}
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
+		n := r.Nodes[s.id]
+		if n == nil || seen[s] {
+			continue
+		}
+		seen[s] = true
+		if writes(n) {
+			s.verified = false
+		}
+		if isAction(n, "merge_pull_request") && !s.verified && !reported[s.id] {
+			reported[s.id] = true
+			v.errf(s.id, "", "merging deploys to production (%s), but a path reaches this merge without a passing wait_for_checks after the last commit: put wait_for_checks (passed → here) after every step that writes to the repo", r.Base)
+		}
+		for _, e := range edges(n) {
+			queue = append(queue, ciState{e.to, s.verified || (isAction(n, "wait_for_checks") && e.outcome == "passed")})
+		}
+	}
+
+	// Rules 2 and 3, from every merge's `merged` target.
+	type postState struct {
+		id                string
+		deployed, healthy bool
+	}
+	for _, id := range r.Order {
+		m := r.Nodes[id]
+		if !isAction(m, "merge_pull_request") {
+			continue
+		}
+		seen := map[postState]bool{}
+		queue := []postState{{id: m.Next["merged"]}}
+		for len(queue) > 0 {
+			s := queue[0]
+			queue = queue[1:]
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+			if s.id == flow.Success && !s.healthy {
+				v.errf(id, "next.merged", "after this deploy the run can reach %s without check_health reporting healthy: follow merged with wait_for_deploy → check_health (healthy → %s)", flow.Success, flow.Success)
+				break
+			}
+			n := r.Nodes[s.id]
+			if n == nil {
+				continue
+			}
+			if isAction(n, "check_health") && !s.deployed && !reported["health:"+s.id] {
+				reported["health:"+s.id] = true
+				v.errf(s.id, "", "checks health before wait_for_deploy has seen the new version: put wait_for_deploy (deployed → here) after %s", id)
+			}
+			for _, e := range edges(n) {
+				queue = append(queue, postState{e.to,
+					s.deployed || (isAction(n, "wait_for_deploy") && e.outcome == "deployed"),
+					s.healthy || (isAction(n, "check_health") && e.outcome == "healthy")})
+			}
 		}
 	}
 }
