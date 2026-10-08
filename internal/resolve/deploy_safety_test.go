@@ -65,6 +65,9 @@ func TestDeploySafetyRules(t *testing.T) {
 `, "node ship: merging deploys to production"},
 		{"no monitoring", strings.Replace(implement+shipTail, "next: { merged: live,", "next: { merged: $success,", 1),
 			"node ship.next.merged: after this deploy the run can reach $success without check_health reporting healthy"},
+		{"rollback without workflow", strings.Replace(implement+shipTail, "degraded: revert,", "degraded: rb,", 1) +
+			"    rb: { type: action, action: rollback_deploy, next: { rolled_back: revert, failed: revert, timeout: revert } }\n",
+			"node rb.action: rollback_deploy needs the project's deploy.rollback workflow"},
 		{"health before deploy", strings.Replace(strings.Replace(implement+shipTail, "next: { merged: live,", "next: { merged: soak,", 1), "healthy: $success, degraded: revert", "healthy: live, degraded: revert", 1) +
 			"", "node soak: checks health before wait_for_deploy has seen the new version"},
 	} {

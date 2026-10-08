@@ -66,6 +66,10 @@ func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *
 			if sha, _ := outputs["sha"].(string); sha != "" {
 				runCtx["merged_sha"] = sha
 			}
+			// run.previous_sha: what was live before that merge (rollback target).
+			if prev, _ := outputs["previous_sha"].(string); prev != "" {
+				runCtx["previous_sha"] = prev
+			}
 		}
 		nodes[v.Node] = map[string]any{"outcome": v.Outcome, "summary": v.Summary, "outputs": outputs, "visit": v.Visit}
 		lastDone = v
@@ -345,6 +349,8 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 		return e.waitForDeploy(ctx, r, res, with)
 	case "check_health":
 		return e.checkHealth(ctx, r, v, with)
+	case "rollback_deploy":
+		return e.rollbackDeploy(ctx, r, res, v, with)
 	case "open_pull_request":
 		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":

@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -289,4 +290,14 @@ func first(xs authv1.ExtraValue) string {
 		return ""
 	}
 	return xs[0]
+}
+
+// RefreshArgoApp sets Argo CD's refresh annotation on an Application, which
+// makes Argo re-read its sources now instead of at the next git poll. It needs
+// get/patch on applications.argoproj.io in that namespace.
+func (k *Kube) RefreshArgoApp(ctx context.Context, namespace, app string) error {
+	patch := []byte(`{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"normal"}}}`)
+	return k.cs.CoreV1().RESTClient().Patch(types.MergePatchType).
+		AbsPath("/apis/argoproj.io/v1alpha1/namespaces", namespace, "applications", app).
+		Body(patch).Do(ctx).Error()
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -124,8 +125,15 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 		return nil, err
 	}
 	merged := func(sha string) *actionResult {
-		return &actionResult{outcome: "merged", summary: fmt.Sprintf("Merged #%d as %s", number, short(sha)),
-			outputs: map[string]any{"sha": sha, "number": number, "url": r.PRURL}}
+		out := map[string]any{"sha": sha, "number": number, "url": r.PRURL}
+		// The merge's first parent is what the deploy branch held (and ran)
+		// before this release: the target of a rollback.
+		if prev, err := e.gh.FirstParent(ctx, repo, sha); err == nil {
+			out["previous_sha"] = prev
+		} else {
+			slog.Warn("merge parent", "run", r.ID, "sha", sha, "err", err)
+		}
+		return &actionResult{outcome: "merged", summary: fmt.Sprintf("Merged #%d as %s", number, short(sha)), outputs: out}
 	}
 	switch {
 	case pr.Merged:
@@ -263,6 +271,7 @@ func (e *Engine) waitForDeploy(ctx context.Context, r *store.Run, res *resolve.R
 		}
 	}
 	if len(pending) > 0 {
+		e.refreshArgo(ctx, d)
 		return waiting("Waiting for %s to go live; %s", short(expect), strings.Join(pending, "; ")), nil
 	}
 	return &actionResult{outcome: "deployed", summary: fmt.Sprintf("%s is live on every version endpoint", short(expect)), outputs: map[string]any{"version": version}}, nil
@@ -488,4 +497,115 @@ func short(sha string) string {
 
 func fieldsOf(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' })
+}
+
+// refreshArgo asks Argo CD to re-read the project's app now rather than at its
+// next git poll, so a write-back (deploy or rollback) rolls out sooner.
+func (e *Engine) refreshArgo(ctx context.Context, d *config.Deploy) {
+	if e.refresher == nil || d.ArgoCDApp == "" {
+		return
+	}
+	if err := e.refresher(ctx, d.ArgoCDNamespace, d.ArgoCDApp); err != nil {
+		slog.Warn("argo refresh", "app", d.ArgoCDApp, "err", err)
+	}
+}
+
+// rollbackDeploy dispatches the project's rollback workflow for a release and
+// waits for it. The dispatch is recorded in kv first-thing after it succeeds,
+// so polls and restarts never dispatch twice.
+func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
+	d, err := e.deployOf(r)
+	if err != nil {
+		return nil, err
+	}
+	if d.Rollback == nil {
+		return nil, rejectf("project %s has no deploy.rollback workflow", r.Project)
+	}
+	repo, err := e.repoOf(res)
+	if err != nil {
+		return nil, err
+	}
+	sha := strings.ToLower(strings.TrimSpace(with["sha"]))
+	if sha == "" {
+		if sha, err = e.lastMerge(ctx, r, res); err != nil {
+			return nil, err
+		}
+	}
+	previous := e.lastPrevious(ctx, r, res)
+	key := fmt.Sprintf("dispatch/%s/%d", r.ID, v.Seq)
+	state, err := e.store.GetKV(ctx, key)
+	if errors.Is(err, store.ErrNotFound) {
+		at := time.Now()
+		err := e.gh.DispatchWorkflow(ctx, repo, d.Rollback.Workflow, d.Branch, map[string]string{"sha": sha})
+		var api *github.APIError
+		if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
+			return &actionResult{outcome: "failed", summary: fmt.Sprintf("GitHub refused to start %s: %s", d.Rollback.Workflow, strings.TrimSpace(api.Body))}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
+			return nil, err
+		}
+		return waiting("Dispatched %s to roll back %s", d.Rollback.Workflow, short(sha)), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	at, runID := state, int64(0)
+	if i := strings.IndexByte(state, ':'); i >= 0 {
+		at = state[:i]
+		runID, _ = strconv.ParseInt(state[i+1:], 10, 64)
+	}
+	ms, _ := strconv.ParseInt(at, 10, 64)
+	if runID == 0 {
+		runs, err := e.gh.DispatchedRuns(ctx, repo, d.Rollback.Workflow, d.Branch)
+		if err != nil {
+			return nil, err
+		}
+		// The oldest run created after the dispatch (allowing for clock skew).
+		since := time.UnixMilli(ms).Add(-15 * time.Second)
+		for _, run := range runs {
+			if !run.CreatedAt.Before(since) && (runID == 0 || run.ID < runID) {
+				runID = run.ID
+			}
+		}
+		if runID == 0 {
+			return waiting("Waiting for GitHub to start %s", d.Rollback.Workflow), nil
+		}
+		if err := e.store.SetKV(ctx, key, fmt.Sprintf("%d:%d", ms, runID)); err != nil {
+			return nil, err
+		}
+	}
+	run, err := e.gh.Run(ctx, repo, runID)
+	if err != nil {
+		return nil, err
+	}
+	outputs := map[string]any{"url": run.HTMLURL, "previous": previous}
+	if run.Status != "completed" {
+		return waiting("%s %s (%s)", d.Rollback.Workflow, strings.ReplaceAll(run.Status, "_", " "), run.HTMLURL), nil
+	}
+	if run.Conclusion != "success" {
+		return &actionResult{outcome: "failed", summary: fmt.Sprintf("%s ended %s: %s", d.Rollback.Workflow, run.Conclusion, run.HTMLURL), outputs: outputs}, nil
+	}
+	return &actionResult{outcome: "rolled_back", summary: fmt.Sprintf("Rolled back %s; %s should go live again", short(sha), short(previous)), outputs: outputs}, nil
+}
+
+// lastPrevious is the previous_sha of the run's latest merge ("" if unknown).
+func (e *Engine) lastPrevious(ctx context.Context, r *store.Run, res *resolve.Resolved) string {
+	visits, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return ""
+	}
+	for i := len(visits) - 1; i >= 0; i-- {
+		v := visits[i]
+		if n := res.Nodes[v.Node]; n != nil && n.Action == "merge_pull_request" && v.Outcome == "merged" {
+			var out struct {
+				Previous string `json:"previous_sha"`
+			}
+			json.Unmarshal(v.Outputs, &out)
+			return out.Previous
+		}
+	}
+	return ""
 }

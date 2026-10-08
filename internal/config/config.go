@@ -297,6 +297,19 @@ type Deploy struct {
 	URL      string         `json:"url,omitempty"`      // check_health probes it (expects 2xx)
 	Versions []VersionProbe `json:"versions,omitempty"` // wait_for_deploy: all must report the merged commit
 	Health   []HealthQuery  `json:"health,omitempty"`   // check_health: PromQL, value above max is a violation
+	// Rollback, when set, restores the previous release without a rebuild:
+	// rollback_deploy dispatches this GitHub Actions workflow (input `sha`, the
+	// release to undo) and waits for it.
+	Rollback *RollbackSpec `json:"rollback,omitempty"`
+	// ArgoCDApp, when set, is the Argo CD Application that deploys the project.
+	// While wait_for_deploy waits, ai-flow asks Argo to refresh it instead of
+	// waiting for its next git poll (needs get/patch on that Application).
+	ArgoCDApp       string `json:"argocd_app,omitempty"`
+	ArgoCDNamespace string `json:"argocd_namespace,omitempty"` // default argocd
+}
+
+type RollbackSpec struct {
+	Workflow string `json:"workflow"` // file name under .github/workflows, e.g. rollback.yml
 }
 
 // VersionProbe is an endpoint reporting the deployed commit: the whole body, or
@@ -525,6 +538,9 @@ func (c *Config) applyDefaults() {
 		def(&p.Spec.Start, "manual")
 		if p.Spec.Deploy != nil {
 			def(&p.Spec.Deploy.Branch, p.Spec.Base)
+			if p.Spec.Deploy.ArgoCDApp != "" {
+				def(&p.Spec.Deploy.ArgoCDNamespace, "argocd")
+			}
 		}
 	}
 }
@@ -622,6 +638,9 @@ func (c *Config) check() error {
 				if v.URL == "" {
 					errs = append(errs, fmt.Sprintf("project %s: deploy.versions[%d] needs url", name, i))
 				}
+			}
+			if d.Rollback != nil && d.Rollback.Workflow == "" {
+				errs = append(errs, fmt.Sprintf("project %s: deploy.rollback needs workflow", name))
 			}
 		}
 	}

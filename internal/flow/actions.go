@@ -30,7 +30,7 @@ var Actions = map[string]ActionSpec{
 	},
 	"merge_pull_request": {
 		Outcomes: []string{"merged", "conflict", "blocked"}, With: []string{"method"},
-		Outputs: map[string]any{"sha": "string", "number": "integer", "url": "string"},
+		Outputs: map[string]any{"sha": "string", "previous_sha": "string", "number": "integer", "url": "string"},
 		Waits:   true, Timeout: 10 * time.Minute,
 		Doc: "merges the run's PR (method: merge by default, so it can be reverted). In a project whose deploy branch is the PR base, merging IS the production deploy. Outcomes: merged (outputs.sha), conflict, blocked, timeout.",
 	},
@@ -45,6 +45,12 @@ var Actions = map[string]ActionSpec{
 		Outputs: map[string]any{"version": "string"},
 		Waits:   true, Timeout: 20 * time.Minute,
 		Doc: "waits until every version endpoint of the project's deploy target reports the expected commit (default: the run's latest merge). Outcomes: deployed, timeout.",
+	},
+	"rollback_deploy": {
+		Outcomes: []string{"rolled_back", "failed"}, With: []string{"sha"},
+		Outputs: map[string]any{"url": "string", "previous": "string"},
+		Waits:   true, Timeout: 10 * time.Minute,
+		Doc: "fast rollback without a rebuild: dispatches the project's deploy.rollback workflow for the release (default: the run's latest merge) and waits for it. Follow with wait_for_deploy expecting ${{ run.previous_sha }}. Outcomes: rolled_back, failed, timeout.",
 	},
 	"check_health": {
 		Outcomes: []string{"healthy", "degraded"}, With: []string{"duration"},

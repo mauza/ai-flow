@@ -706,4 +706,9 @@ func writeDeploy(sb *strings.Builder, base string, d *config.Deploy) {
 
 The validator enforces that every deploy follows a passing ci-checks with no repo-writing step after it, and that after a deploy the run only succeeds through wait-for-deploy then monitor-deploy (healthy). Tasks that should not ship (investigations, drafts) end before deploy.
 `)
+	if d.Rollback != nil {
+		sb.WriteString(`
+This project has a fast rollback (deploy.rollback), which restores the previous release in about a minute without a rebuild. Use it first in step 4: degraded or timeout → rollback-release → wait-for-rollback → deploy-triage → revert-deploy → … as above, so production recovers before the source revert ships at normal speed. rollback-release failed or timeout, and wait-for-rollback timeout → deploy-triage (the revert path still recovers).
+`)
+	}
 }
