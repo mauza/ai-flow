@@ -285,7 +285,7 @@ func validateCmd(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: ai-flow validate -config dir flow.yaml...")
+		return fmt.Errorf("usage: ai-flow validate -config dir flow.yaml [flow.yaml...]")
 	}
 	bad := false
 	for _, path := range fs.Args() {

@@ -2,7 +2,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Box, Cpu, FolderGit2, KeyRound, Plug, Plus, Puzzle, Settings2, Sparkles, Trash2, Wand2, Wrench } from "lucide-react";
 import { parse } from "yaml";
-import { api, type ConfigEdit, type ConfigView } from "../api";
+import { api, ApiError, type ConfigEdit, type ConfigView } from "../api";
 import { useResource } from "../hooks";
 import { Modal, Spinner, useToast } from "../ui";
 
@@ -83,6 +83,22 @@ function chips(tab: TabID, src: string): string[] {
   return [];
 }
 
+/**
+ * Apply edits; when the server says they would fail active runs (409), ask
+ * before forcing them through. Returns null if the user declined.
+ */
+async function applyEdits(edits: ConfigEdit[]): Promise<{ warnings: string[] } | null> {
+  try {
+    return await api.editConfig(edits);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      if (!window.confirm(`${e.message}.\n\nThose runs will fail. Apply anyway?`)) return null;
+      return api.editConfig(edits, true);
+    }
+    throw e;
+  }
+}
+
 interface Editing {
   section: string;
   name: string;
@@ -101,7 +117,8 @@ export default function Settings() {
   const remove = async (section: string, name: string, noun: string) => {
     if (!window.confirm(`Delete ${noun} ${name}?`)) return;
     try {
-      const r = await api.editConfig([{ section, name, yaml: "" }]);
+      const r = await applyEdits([{ section, name, yaml: "" }]);
+      if (!r) return;
       toast("ok", `Deleted ${name}`);
       r.warnings.forEach((w) => toast("error", w));
       cfg.reload();
@@ -232,8 +249,8 @@ function EntryEditor({ editing, onClose, onSaved }: { editing: Editing; onClose:
     setError("");
     try {
       const edit: ConfigEdit = { section: editing.section, name: name.trim(), yaml };
-      const r = await api.editConfig([edit]);
-      onSaved(r.warnings);
+      const r = await applyEdits([edit]);
+      if (r) onSaved(r.warnings);
     } catch (e) {
       setError((e as Error).message);
     } finally {

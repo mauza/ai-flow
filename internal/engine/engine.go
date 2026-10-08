@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -799,6 +800,7 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 		return err
 	}
 	r.Status, r.Error, r.FinishedAt = status, msg, stamp
+	e.forgetRun(r.ID)
 	switch status {
 	case store.RunSucceeded:
 		e.event(ctx, r, "", "finished", "Run succeeded")
@@ -857,7 +859,7 @@ func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who
 		return err
 	}
 	n := res.Nodes[v.Node]
-	if n == nil || !contains(n.Outcomes, outcome) {
+	if n == nil || !slices.Contains(n.Outcomes, outcome) {
 		return fmt.Errorf("%q is not an outcome of %s", outcome, v.Node)
 	}
 	return e.decide(ctx, r, v, outcome, who, note)
@@ -1057,15 +1059,6 @@ func (e *Engine) publishRun(r *store.Run) {
 
 func (e *Engine) publishVisit(runID string, seq int) {
 	e.hub.Publish(hub.Event{Type: "visit", ID: runID, Seq: seq})
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // ---- notifications ----

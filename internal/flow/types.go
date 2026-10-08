@@ -4,6 +4,7 @@ package flow
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -268,7 +269,7 @@ func (f *Flow) NodeIDs() []string {
 		}
 		var rest []string
 		for o, t := range n.Next {
-			if !contains(n.Outcomes, o) {
+			if !slices.Contains(n.Outcomes, o) {
 				rest = append(rest, t)
 			}
 		}
@@ -286,15 +287,6 @@ func (f *Flow) NodeIDs() []string {
 	}
 	sort.Strings(rest)
 	return append(out, rest...)
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // Terminal reports whether a transition target ends the run.

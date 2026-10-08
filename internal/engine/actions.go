@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
-	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/hub"
+	"github.com/mauza/ai-flow/internal/metrics"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
 )
@@ -63,6 +63,22 @@ func (e *Engine) forget(key string) {
 	delete(e.polls, key)
 	delete(e.health, key)
 	delete(e.passes, key)
+}
+
+// forgetRun drops the poll state of every waiting action of a finished run
+// (one canceled or failed mid-wait never reaches forget).
+func (e *Engine) forgetRun(runID string) {
+	prefix := runID + "/"
+	for k := range e.polls {
+		if strings.HasPrefix(k, prefix) {
+			e.forget(k)
+		}
+	}
+	for k := range e.health {
+		if strings.HasPrefix(k, prefix) {
+			e.forget(k)
+		}
+	}
 }
 
 func (e *Engine) finishAction(ctx context.Context, r *store.Run, v *store.Visit, out *actionResult) error {
@@ -197,7 +213,7 @@ func (e *Engine) waitForChecks(ctx context.Context, r *store.Run, res *resolve.R
 	var checks []github.Check
 	seen := map[string]bool{}
 	for _, c := range all {
-		if len(want) == 0 || contains(want, c.Name) {
+		if len(want) == 0 || slices.Contains(want, c.Name) {
 			checks = append(checks, c)
 			seen[c.Name] = true
 		}
@@ -405,60 +421,14 @@ func (e *Engine) deployOf(r *store.Run) (*config.Deploy, error) {
 	return p.Spec.Deploy, nil
 }
 
-// promQuery runs a PromQL instant query and returns the highest value (0 for
-// an empty result).
+// promQuery runs a PromQL instant query and returns the highest value across
+// its series (0 for an empty result).
 func (e *Engine) promQuery(ctx context.Context, q string) (float64, error) {
-	base := strings.TrimSuffix(e.cfg.Current().Env.Metrics.URL, "/")
-	if base == "" {
-		return 0, fmt.Errorf("metrics.url is not configured")
-	}
-	body, err := e.get(ctx, base+"/api/v1/query?query="+url.QueryEscape(q))
-	if err != nil {
+	values, err := metrics.Instant(ctx, e.HTTP, e.cfg.Current().Env.Metrics.URL, q)
+	if err != nil || len(values) == 0 {
 		return 0, err
 	}
-	var resp struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
-		Data   struct {
-			ResultType string          `json:"resultType"`
-			Result     json.RawMessage `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return 0, fmt.Errorf("bad response")
-	}
-	if resp.Status != "success" {
-		return 0, fmt.Errorf("%s", resp.Error)
-	}
-	var values [][2]any
-	switch resp.Data.ResultType {
-	case "vector":
-		var series []struct {
-			Value [2]any `json:"value"`
-		}
-		json.Unmarshal(resp.Data.Result, &series)
-		for _, s := range series {
-			values = append(values, s.Value)
-		}
-	case "scalar":
-		var v [2]any
-		json.Unmarshal(resp.Data.Result, &v)
-		values = append(values, v)
-	default:
-		return 0, fmt.Errorf("unsupported result type %q", resp.Data.ResultType)
-	}
-	best := 0.0
-	for i, v := range values {
-		s, _ := v[1].(string)
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil || math.IsNaN(f) {
-			continue
-		}
-		if i == 0 || f > best {
-			best = f
-		}
-	}
-	return best, nil
+	return slices.Max(values), nil
 }
 
 func (e *Engine) get(ctx context.Context, u string) ([]byte, error) {

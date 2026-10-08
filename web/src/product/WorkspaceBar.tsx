@@ -3,7 +3,7 @@ import { ArrowDownToLine, GitCommitHorizontal, Undo2 } from "lucide-react";
 import { api, ApiError, type WorkspaceStatus } from "../api";
 import { timeAgo } from "../format";
 import { Modal, Spinner, useToast } from "../ui";
-import DiffView from "./DiffView";
+import DiffView, { diffRows } from "../DiffView";
 
 /**
  * The scratch checkout's state: edits stay on ai-flow's disk until "Commit &
@@ -147,7 +147,7 @@ function CommitDialog({ project, status, defaultMessage, onClose, onDone }: { pr
                 Discard
               </button>
             </summary>
-            <DiffView before={c.base ?? ""} after={c.work ?? ""} />
+            <DiffView rows={diffRows(c.base ?? "", c.work ?? "")} />
           </details>
         ))}
       </div>

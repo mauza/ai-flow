@@ -28,7 +28,7 @@ make test-templates
 
 The test loads [`config/fixture.yaml`](../examples/templates/config/fixture.yaml)
 and runs the actual strict flow parser, resolver, grant/model checks, reference
-checks and graph validation on all three templates. It requires zero warnings
+checks and graph validation on every template. It requires zero warnings
 or errors. It does not launch nodes, resolve DNS, connect to models or clone repos.
 
 **The fixture config is validation-only.** Its `.invalid` repository/image and
@@ -46,17 +46,11 @@ templates were format-validated, not executed against models or real repositorie
    branch or commit. For review-repair this must be the branch/commit you actually
    want reviewed; a new run starts its own branch from that base. A fresh run has
    no run diff, so the first review uses an **agent** to inspect the checkout.
-3. **Models.** The catalog offers three aliases: `gpt-6.1-sol`, `gpt-6-luna`, and
-   `gpt-6-astra`. Templates use an illustrative subset: Sol for coding/investigation
-   and Luna for review/proposals. All three use `home` with matching upstream aliases;
-   the validation fixture includes only Sol/Luna and points `home` to an inert
-   endpoint. Sol remains the default streaming planner; Luna and Astra are additional
-   choices. Earlier live smoke tests covered GPT-6 Sol (the previous version) and Luna with existing
-   OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md).
-   All three declare frontier size, reasoning, good tool use, and subscription cost
-   as selection metadata, not performance claims; the 100,000-token working
-   limit is conservative, not full capacity. Choose the smallest sufficient
-   configured model based on acceptance evaluations. The proposal `llm` step
+3. **Models.** Templates use Sol (`gpt-6.1-sol`) for coding and investigation
+   and Luna (`gpt-6-luna`) for review and proposals; the validation fixture
+   defines only those two and points them at an inert endpoint. Replace them with
+   the smallest sufficient models in your catalog, chosen by acceptance
+   evaluations. The proposal `llm` step
    consumes explicit evidence and cannot independently browse source. No model
    fallback is configured by default. Record confirmed upstream versions and any
    explicit per-flow fallback policy for experiments; catalog aliases and presets

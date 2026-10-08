@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -385,7 +386,7 @@ func cleanEnv(approved ...string) []string {
 		case "PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_PATH", "GOPATH", "GOCACHE", "GOMODCACHE", "PYTHONPATH":
 			out = append(out, kv)
 		default:
-			if contains(approved, k) {
+			if slices.Contains(approved, k) {
 				out = append(out, kv)
 			}
 		}

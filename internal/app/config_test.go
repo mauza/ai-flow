@@ -60,7 +60,7 @@ func TestFileChangesReachTheStoredCatalog(t *testing.T) {
 	if !stored.Seeded {
 		t.Fatal("first start seeds")
 	}
-	if _, err := a.EditConfig(t.Context(), app.ConfigEdit{Section: "models", Name: "gpt-6-luna", YAML: "upstream: home\nmodel: gpt-6-luna\nnotes: edited in the UI\n"}); err != nil {
+	if _, err := a.EditConfig(t.Context(), false, app.ConfigEdit{Section: "models", Name: "gpt-6-luna", YAML: "upstream: home\nmodel: gpt-6-luna\nnotes: edited in the UI\n"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +92,7 @@ func TestFileChangesReachTheStoredCatalog(t *testing.T) {
 		t.Fatal("the files' change to an entry must win")
 	}
 	// And a later restart does not re-apply it over a new UI edit.
-	a.EditConfig(t.Context(), app.ConfigEdit{Section: "models", Name: "gpt-6-luna", YAML: "upstream: home\nmodel: gpt-6-luna\nnotes: edited again\n"})
+	a.EditConfig(t.Context(), false, app.ConfigEdit{Section: "models", Name: "gpt-6-luna", YAML: "upstream: home\nmodel: gpt-6-luna\nnotes: edited again\n"})
 	a, stored = start(t, st, dir)
 	if len(stored.FromFiles) != 0 || a.Cfg.Current().Catalog.Models["gpt-6-luna"].Notes != "edited again" {
 		t.Fatalf("re-applied: %+v", stored)
@@ -108,7 +108,7 @@ func TestFileChangesThatConflictAreReported(t *testing.T) {
 	defer st.Close()
 	a, _ := start(t, st, dir)
 	// The UI points the planner at Luna and deletes Sol...
-	if _, err := a.EditConfig(t.Context(),
+	if _, err := a.EditConfig(t.Context(), false,
 		app.ConfigEdit{Section: "settings", Name: "planner", YAML: "model: gpt-6-luna\nstream: true\n"},
 		app.ConfigEdit{Section: "models", Name: "gpt-6.1-sol"},
 	); err != nil {

@@ -36,13 +36,26 @@ func (e *Engine) snapshot(res *resolve.Resolved) ([]byte, error) {
 }
 
 func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
+	return executionDependencies(res, e.cfg.Current())
+}
+
+// executionDependencies hashes the live settings a run depends on beyond its
+// snapshot. Only what changes execution counts: descriptions, notes and other
+// planner hints can be edited in Settings without failing active runs.
+func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, error) {
 	deps := map[string]any{}
 	addGrant := func(name string) {
-		g := e.cfg.Current().Catalog.Grants[name]
-		deps["grant/"+name] = g
-		if g != nil && g.Kind == config.GrantMCP {
+		g := cfg.Catalog.Grants[name]
+		if g == nil {
+			deps["grant/"+name] = nil
+			return
+		}
+		pinned := *g
+		pinned.Description = ""
+		deps["grant/"+name] = pinned
+		if g.Kind == config.GrantMCP {
 			// Headers and their secret values remain current authorization.
-			deps["mcp/"+g.Server] = e.cfg.Current().Env.MCP.Servers[g.Server].URL
+			deps["mcp/"+g.Server] = cfg.Env.MCP.Servers[g.Server].URL
 		}
 	}
 	addGrant(res.Repo)
@@ -52,35 +65,68 @@ func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
 			addGrant(name)
 		}
 		for _, s := range n.Skills {
-			deps["skill/"+s] = e.cfg.Current().Catalog.Skills[s]
+			if sk := cfg.Catalog.Skills[s]; sk != nil {
+				deps["skill/"+s] = sk.Files
+			} else {
+				deps["skill/"+s] = nil
+			}
 		}
 		if n.LLM != nil {
 			for _, name := range append([]string{n.LLM.Model}, n.LLM.Fallbacks...) {
-				m := e.cfg.Current().Catalog.Models[name]
-				if m != nil {
-					// max_concurrency is admission control, like runs.maxConcurrent:
-					// tuning it must not fail pinned runs as configuration drift.
-					pinned := *m
-					pinned.MaxConcurrency = 0
-					deps["model/"+name] = pinned
-					deps["upstream/"+m.Upstream] = e.cfg.Current().Env.LLM.Upstreams[m.Upstream].BaseURL
-				} else {
-					deps["model/"+name] = m
+				m := cfg.Catalog.Models[name]
+				if m == nil {
+					deps["model/"+name] = nil
+					continue
 				}
+				deps["model/"+name] = pinnedModel(m)
+				deps["upstream/"+m.Upstream] = cfg.Env.LLM.Upstreams[m.Upstream].BaseURL
 			}
 		}
 	}
-	runs := e.cfg.Current().Env.Runs
+	runs := cfg.Env.Runs
 	runs.MaxConcurrent = 0           // admission control is intentionally current
 	runs.DefaultTimeout.Duration = 0 // already resolved per node
 	deps["runs"] = runs
-	deps["git_author"] = []string{e.cfg.Current().Env.Git.AuthorName, e.cfg.Current().Env.Git.AuthorEmail}
-	deps["github_api"] = e.cfg.Current().Env.GitHub.APIURL
+	deps["git_author"] = []string{cfg.Env.Git.AuthorName, cfg.Env.Git.AuthorEmail}
+	deps["github_api"] = cfg.Env.GitHub.APIURL
 	data, err := json.Marshal(deps)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// pinnedModel keeps the model fields that change what a run executes: the
+// upstream and model id, the context size and reasoning flag the runner uses,
+// and the model's own llm defaults. Planner hints (size, tool use, cost
+// label, notes), prices (accounting) and max_concurrency (admission control)
+// may change while runs are active.
+func pinnedModel(m *config.Model) config.Model {
+	return config.Model{Upstream: m.Upstream, Model: m.Model, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning, LLM: m.LLM}
+}
+
+// DriftedRuns lists the queued, running and waiting runs that cfg would fail
+// with configuration drift.
+func (e *Engine) DriftedRuns(ctx context.Context, cfg *config.Config) ([]string, error) {
+	runs, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunQueued, store.RunRunning, store.RunWaiting}, Limit: -1})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range runs {
+		snap, err := e.loadSnapshot(ctx, r)
+		if err != nil {
+			continue // fails on its own; not caused by this change
+		}
+		deps, err := executionDependencies(snap.Resolved, cfg)
+		if err != nil {
+			return nil, err
+		}
+		if deps != snap.Dependencies {
+			out = append(out, r.ID)
+		}
+	}
+	return out, nil
 }
 
 func (e *Engine) loadSnapshot(ctx context.Context, r *store.Run) (*executionSnapshot, error) {

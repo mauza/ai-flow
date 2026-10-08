@@ -1,10 +1,11 @@
-// Package metrics reads a Prometheus-compatible query API (VictoriaMetrics)
-// for the product metrics on story maps.
+// Package metrics reads a Prometheus-compatible query API (VictoriaMetrics):
+// the engine's health checks and the product metrics on story maps.
 package metrics
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,7 +17,8 @@ import (
 	"time"
 )
 
-var client = &http.Client{Timeout: 20 * time.Second}
+// DefaultClient is used when a caller passes a nil client.
+var DefaultClient = &http.Client{Timeout: 20 * time.Second}
 
 type response struct {
 	Status string `json:"status"`
@@ -27,12 +29,18 @@ type response struct {
 	} `json:"data"`
 }
 
-func get(ctx context.Context, base, path string, q url.Values) (*response, error) {
+func get(ctx context.Context, c *http.Client, base, path string, q url.Values) (*response, error) {
+	if base == "" {
+		return nil, fmt.Errorf("metrics.url is not configured")
+	}
+	if c == nil {
+		c = DefaultClient
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimSuffix(base, "/")+path+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +51,7 @@ func get(ctx context.Context, base, path string, q url.Values) (*response, error
 		return nil, fmt.Errorf("metrics: HTTP %d", resp.StatusCode)
 	}
 	if out.Status != "success" {
-		return nil, fmt.Errorf("metrics: %s", out.Error)
+		return nil, errors.New(out.Error) // the backend's own message
 	}
 	return &out, nil
 }
@@ -54,14 +62,14 @@ func parse(v any) (float64, bool) {
 	return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
-// Query runs an instant query and returns the sum over the result's series
-// (nil when the result is empty).
-func Query(ctx context.Context, base, q string) (*float64, error) {
-	resp, err := get(ctx, base, "/api/v1/query", url.Values{"query": {q}})
+// Instant runs an instant query and returns one value per series (a scalar
+// is one value; NaN and unparsable values are left out).
+func Instant(ctx context.Context, c *http.Client, base, q string) ([]float64, error) {
+	resp, err := get(ctx, c, base, "/api/v1/query", url.Values{"query": {q}})
 	if err != nil {
 		return nil, err
 	}
-	var values [][2]any
+	var raw [][2]any
 	switch resp.Data.ResultType {
 	case "vector":
 		var series []struct {
@@ -69,34 +77,29 @@ func Query(ctx context.Context, base, q string) (*float64, error) {
 		}
 		json.Unmarshal(resp.Data.Result, &series)
 		for _, s := range series {
-			values = append(values, s.Value)
+			raw = append(raw, s.Value)
 		}
 	case "scalar":
 		var v [2]any
 		json.Unmarshal(resp.Data.Result, &v)
-		values = append(values, v)
+		raw = append(raw, v)
 	default:
 		return nil, fmt.Errorf("metrics: unsupported result type %q", resp.Data.ResultType)
 	}
-	var sum float64
-	n := 0
-	for _, v := range values {
+	var out []float64
+	for _, v := range raw {
 		if f, ok := parse(v[1]); ok {
-			sum += f
-			n++
+			out = append(out, f)
 		}
 	}
-	if n == 0 {
-		return nil, nil
-	}
-	return &sum, nil
+	return out, nil
 }
 
 // Range runs a range query over the last window seconds and returns
 // [unix seconds, value] points summed across series.
-func Range(ctx context.Context, base, q string, window, step int64) ([][2]float64, error) {
+func Range(ctx context.Context, c *http.Client, base, q string, window, step int64) ([][2]float64, error) {
 	end := time.Now().Unix()
-	resp, err := get(ctx, base, "/api/v1/query_range", url.Values{
+	resp, err := get(ctx, c, base, "/api/v1/query_range", url.Values{
 		"query": {q}, "start": {strconv.FormatInt(end-window, 10)}, "end": {strconv.FormatInt(end, 10)}, "step": {strconv.FormatInt(step, 10)},
 	})
 	if err != nil {

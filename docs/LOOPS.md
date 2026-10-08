@@ -13,13 +13,8 @@ lets a human choose whether another pass is useful.
 
 Both use actual catalog presets (`implement`, `python-unittest`, `code-review`,
 `human-decision`) and the checked-in `sandbox` project. Work uses `gpt-6.1-sol`;
-the automated assessor uses the alternate `gpt-6-luna`. The three configured
-model options are `gpt-6.1-sol`, `gpt-6-luna`, and `gpt-6-astra`, routed through
-`home` with matching aliases. Sol remains the default streaming planner; the
-examples use Sol and Luna as an illustrative subset. Their catalog fields are
-selection hints, not performance claims. Earlier live smoke tests covered GPT-6 Sol
-(the previous version) and Luna using the [existing OpenCode login](CHATGPT-PROVIDER.md). The 100,000-token
-catalog limit is conservative, not a full-capacity claim. Before real execution,
+the automated assessor uses a different model, `gpt-6-luna`, so it does not
+grade its own work. Before real execution,
 provide concrete task criteria and specialize the project, repo write grant,
 models, verification command, and runtime for the target repository. Python's
 standard-library tests must be discoverable from the repo root; the preset fails

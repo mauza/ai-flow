@@ -3,6 +3,7 @@ package resolve
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -153,7 +154,7 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			v.errf(id, "uses", "unknown preset %q", raw.Uses)
 		}
 	}
-	if !contains(flow.NodeTypes, n.Type) {
+	if !slices.Contains(flow.NodeTypes, n.Type) {
 		if n.Type == "" {
 			v.errf(id, "type", "required (one of %s)", strings.Join(flow.NodeTypes, ", "))
 		} else {
@@ -218,7 +219,7 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 					v.errf(id, "exit_codes", "key %q must be an exit code or \"default\"", code)
 				}
 			}
-			if !contains(n.Outcomes, o) {
+			if !slices.Contains(n.Outcomes, o) {
 				v.errf(id, "exit_codes", "maps to %q, which is not an outcome", o)
 			}
 		}
@@ -260,13 +261,13 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			if err := CompileCEL(c.When); err != nil {
 				v.errf(id, fmt.Sprintf("cases[%d].when", i), "%v", err)
 			}
-			if !contains(n.Outcomes, c.Outcome) {
+			if !slices.Contains(n.Outcomes, c.Outcome) {
 				v.errf(id, fmt.Sprintf("cases[%d].outcome", i), "%q is not an outcome", c.Outcome)
 			}
 		}
 		if n.Default == "" {
 			v.errf(id, "default", "required: the outcome when no case matches")
-		} else if !contains(n.Outcomes, n.Default) {
+		} else if !slices.Contains(n.Outcomes, n.Default) {
 			v.errf(id, "default", "%q is not an outcome", n.Default)
 		}
 	case flow.TypeAction:
@@ -281,17 +282,17 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			allowed = append(allowed, flow.OutcomeTimeout)
 		}
 		for _, o := range n.Outcomes {
-			if !contains(allowed, o) {
+			if !slices.Contains(allowed, o) {
 				v.errf(id, "outcomes", "%q is not an outcome of %s (%s)", o, n.Action, strings.Join(allowed, ", "))
 			}
 		}
 		for _, o := range allowed {
-			if !contains(n.Outcomes, o) {
+			if !slices.Contains(n.Outcomes, o) {
 				v.errf(id, "outcomes", "%s can emit %q: declare and route it", n.Action, o)
 			}
 		}
 		for k := range n.With {
-			if !contains(spec.With, k) {
+			if !slices.Contains(spec.With, k) {
 				v.warnf(id, "with."+k, "declared but not enforced: %s ignores %q (accepts %s)", n.Action, k, strings.Join(spec.With, ", "))
 			}
 		}
@@ -349,7 +350,7 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 		"branches": len(raw.Branches) > 0, "join": raw.Join != "",
 	}
 	for _, field := range sortedKeys(consumers) {
-		if set[field] && !contains(consumers[field], n.Type) {
+		if set[field] && !slices.Contains(consumers[field], n.Type) {
 			v.warnf(n.ID, field, "declared but not enforced: %s nodes ignore %s", n.Type, field)
 		}
 	}
@@ -411,15 +412,15 @@ func (v *validator) checkModelNode(n *Node) {
 		}
 	}
 	for kind, ol := range n.LLM.OnLimit {
-		if !contains(flow.LimitKinds, kind) {
+		if !slices.Contains(flow.LimitKinds, kind) {
 			v.errf(id, "llm.on_limit."+kind, "unknown limit kind (one of %s)", strings.Join(flow.LimitKinds, ", "))
 			continue
 		}
-		if ol == nil || !contains(flow.LimitActions, ol.Action) {
+		if ol == nil || !slices.Contains(flow.LimitActions, ol.Action) {
 			v.errf(id, "llm.on_limit."+kind, "action must be one of %s", strings.Join(flow.LimitActions, ", "))
 			continue
 		}
-		if ol.Then != "" && !contains(flow.LimitActions, ol.Then) {
+		if ol.Then != "" && !slices.Contains(flow.LimitActions, ol.Then) {
 			v.errf(id, "llm.on_limit."+kind+".then", "must be one of %s", strings.Join(flow.LimitActions, ", "))
 		}
 		if (ol.Action == flow.ActFallback || ol.Then == flow.ActFallback) && len(n.LLM.Fallbacks) == 0 {
@@ -475,7 +476,7 @@ func (v *validator) checkGrants(n *Node) {
 			}
 			if mode != "read" && mode != "write" {
 				v.errf(n.ID, "grants", "%q: git mode must be read or write", g)
-			} else if len(grant.Modes) > 0 && !contains(grant.Modes, mode) {
+			} else if len(grant.Modes) > 0 && !slices.Contains(grant.Modes, mode) {
 				v.errf(n.ID, "grants", "%q: grant only allows %s", g, strings.Join(grant.Modes, ", "))
 			}
 			if name != v.r.Repo {
@@ -514,7 +515,7 @@ var refRoots = []string{"task", "run", "nodes", "inputs"}
 
 func (v *validator) checkRef(n *Node, field string, ref tmpl.Ref) {
 	root := ref.Path[0]
-	if !contains(refRoots, root) {
+	if !slices.Contains(refRoots, root) {
 		v.errf(n.ID, field, "%s: unknown root %q (one of %s)", ref.Raw, root, strings.Join(refRoots, ", "))
 		return
 	}

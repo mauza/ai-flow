@@ -83,8 +83,11 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/runs/{id}/resume", s.resumeRun)
 	api("POST /api/runs/{id}/gates/{seq}", s.decideGate)
 	api("GET /api/runs/{id}/visits/{seq}/transcript", s.transcript)
+	api("GET /api/runs/{id}/retro", s.getRetro)
+	api("POST /api/runs/{id}/retro", s.startRetro)
 
 	api("GET /api/events", s.events)
+	s.configRoutes(api)
 	s.productRoutes(api)
 	for pattern, h := range s.extras {
 		mux.Handle(pattern, h)

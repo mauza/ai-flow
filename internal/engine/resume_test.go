@@ -145,8 +145,21 @@ func TestMaxConcurrencyIsNotConfigurationDrift(t *testing.T) {
 	if _, err := h.e.Resolved(h.ctx, h.run(id)); err != nil {
 		t.Fatalf("tuning max_concurrency drifted a pinned run: %v", err)
 	}
-	h.cfg.Catalog.Models[testModel].ContextTokens++
+	// Planner hints, prices and descriptions are editable in Settings while
+	// runs are active.
+	m := h.cfg.Catalog.Models[testModel]
+	m.Notes, m.Size, m.ToolUse, m.Cost, m.InputPer1M = "edited", "large", "great", "cheap", 9
+	if _, err := h.e.Resolved(h.ctx, h.run(id)); err != nil {
+		t.Fatalf("editing a model's descriptive fields drifted a pinned run: %v", err)
+	}
+	if drifted, err := h.e.DriftedRuns(h.ctx, h.cfg); err != nil || len(drifted) != 0 {
+		t.Fatalf("drifted: %v %v", drifted, err)
+	}
+	m.ContextTokens++
 	if _, err := h.e.Resolved(h.ctx, h.run(id)); err == nil || !strings.Contains(err.Error(), "drift") {
 		t.Fatalf("a real model change must still be drift: %v", err)
+	}
+	if drifted, _ := h.e.DriftedRuns(h.ctx, h.cfg); len(drifted) != 1 || drifted[0] != id {
+		t.Fatalf("DriftedRuns must name the run: %v", drifted)
 	}
 }

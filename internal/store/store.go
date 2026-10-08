@@ -160,15 +160,6 @@ func (s *Store) Ping(ctx context.Context) error {
 
 func now() int64 { return time.Now().UnixMilli() }
 
-// Time converts a stored millisecond timestamp.
-func Time(ms int64) *time.Time {
-	if ms == 0 {
-		return nil
-	}
-	t := time.UnixMilli(ms)
-	return &t
-}
-
 // ---- tasks ----
 
 const (

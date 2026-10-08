@@ -4,6 +4,7 @@
 package resolve
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -274,7 +275,7 @@ func effectiveLLM(n *flow.Node, cfg *config.Config) *flow.LLMConfig {
 func effectiveOutcomes(n *flow.Node) []string {
 	var out []string
 	add := func(o string) {
-		if o != "" && !contains(out, o) {
+		if o != "" && !slices.Contains(out, o) {
 			out = append(out, o)
 		}
 	}
@@ -339,15 +340,6 @@ func CheckExitCodes(n *flow.Node) map[string]string {
 		return n.ExitCodes
 	}
 	return map[string]string{"0": "pass", "default": "fail"}
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // Targets returns every transition target of n, including on_exhausted.

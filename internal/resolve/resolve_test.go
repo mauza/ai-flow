@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,10 +54,10 @@ func TestGoodFlowValidates(t *testing.T) {
 	if l := r.Nodes["reproduce"].LLM.Limits; l == nil || l.Tokens != 500000 || l.Turns != 80 {
 		t.Errorf("catalog default limits not applied: %+v", l)
 	}
-	if !contains(fix.Outcomes, "limit") {
+	if !slices.Contains(fix.Outcomes, "limit") {
 		t.Errorf("limit outcome not added: %v", fix.Outcomes)
 	}
-	if !contains(r.Nodes["ask_human"].Outcomes, "timeout") {
+	if !slices.Contains(r.Nodes["ask_human"].Outcomes, "timeout") {
 		t.Errorf("gate timeout outcome missing")
 	}
 	if got := r.Order[0]; got != "reproduce" {

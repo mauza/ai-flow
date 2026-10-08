@@ -28,8 +28,13 @@ Sensitive environment values are not copied into snapshots. Dependencies still
 read from live configuration (such as model definitions, repository grants,
 skills and endpoint identities) are fingerprinted. Changed dependencies cause
 an explicit configuration-drift failure instead of silent execution changes.
-Current project/catalog authorization is checked when resolving pinned settings.
-Concurrency admission remains current.
+The fingerprint covers only what changes execution: a model's upstream, model
+id, context size, reasoning flag and `llm` defaults; a grant's access; a
+skill's files. Descriptions, notes, planner hints (size, tool use, cost
+label), prices and `max_concurrency` can change while runs are active.
+Settings refuses an edit that would fail active runs, naming them, unless you
+confirm it. Current project/catalog authorization is checked when resolving
+pinned settings. Concurrency admission remains current.
 
 Existing databases migrate automatically. Legacy runs adopt the current
 configuration once, recording a `snapshot_adopted` event; their original

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/grant"
@@ -268,9 +267,4 @@ func (f flushWriter) Write(p []byte) (int, error) {
 		fl.Flush()
 	}
 	return n, err
-}
-
-func monthStart() int64 {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).UnixMilli()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mauza/ai-flow/internal/flow"
@@ -126,7 +127,7 @@ func parseResult(content string, outcomes []string) (*protocol.Result, error) {
 	if err := json.Unmarshal([]byte(s), &res); err != nil {
 		return nil, fmt.Errorf("not a JSON object (%v)", err)
 	}
-	if !contains(outcomes, res.Outcome) || res.Outcome == flow.OutcomeLimit || res.Outcome == flow.OutcomeTimeout {
+	if !slices.Contains(outcomes, res.Outcome) || res.Outcome == flow.OutcomeLimit || res.Outcome == flow.OutcomeTimeout {
 		return nil, fmt.Errorf("outcome %q is not one of %s", res.Outcome, strings.Join(llmOutcomes(outcomes), ", "))
 	}
 	if res.Outputs == nil {

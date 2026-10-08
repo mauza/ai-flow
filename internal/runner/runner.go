@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +76,7 @@ func Main(ctx context.Context) error {
 	defer cancel()
 
 	res := r.run(nodeCtx)
-	if res.Error == "" && !contains(b.Outcomes, res.Outcome) {
+	if res.Error == "" && !slices.Contains(b.Outcomes, res.Outcome) {
 		res.Error = fmt.Sprintf("node produced outcome %q, not one of %v", res.Outcome, b.Outcomes)
 	}
 	slog.Info("node done", "outcome", res.Outcome, "error", res.Error)
@@ -251,15 +252,6 @@ func (r *Runner) uploadTranscript(data []byte) {
 		return
 	}
 	r.finalTranscriptKey = protocol.FinalTranscriptKey(r.b.RunID, r.b.Seq, r.b.Node, data)
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 func tail(s string, n int) string {
