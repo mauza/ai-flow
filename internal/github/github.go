@@ -258,3 +258,53 @@ func (c *Client) Checks(ctx context.Context, r Repo, ref string) ([]Check, error
 	}
 	return out, nil
 }
+
+// FirstParent returns a commit's first parent: for a merge commit, the tip
+// of the branch it was merged into (what was deployed before the merge).
+func (c *Client) FirstParent(ctx context.Context, r Repo, sha string) (string, error) {
+	var commit struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s", r.Owner, r.Name, url.PathEscape(sha)), nil, &commit); err != nil {
+		return "", err
+	}
+	if len(commit.Parents) == 0 {
+		return "", fmt.Errorf("github: commit %s has no parent", sha)
+	}
+	return commit.Parents[0].SHA, nil
+}
+
+// DispatchWorkflow starts a workflow_dispatch run of workflow (a file name
+// under .github/workflows) on ref.
+func (c *Client) DispatchWorkflow(ctx context.Context, r Repo, workflow, ref string, inputs map[string]string) error {
+	return c.do(ctx, "POST", fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/dispatches", r.Owner, r.Name, url.PathEscape(workflow)),
+		map[string]any{"ref": ref, "inputs": inputs}, nil)
+}
+
+// WorkflowRun is one run of a GitHub Actions workflow.
+type WorkflowRun struct {
+	ID         int64     `json:"id"`
+	Status     string    `json:"status"`     // queued | in_progress | completed
+	Conclusion string    `json:"conclusion"` // success | failure | cancelled | ...
+	CreatedAt  time.Time `json:"created_at"`
+	HTMLURL    string    `json:"html_url"`
+}
+
+// DispatchedRuns lists recent workflow_dispatch runs of workflow on branch,
+// newest first.
+func (c *Client) DispatchedRuns(ctx context.Context, r Repo, workflow, branch string) ([]WorkflowRun, error) {
+	var out struct {
+		Runs []WorkflowRun `json:"workflow_runs"`
+	}
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?event=workflow_dispatch&branch=%s&per_page=20",
+		r.Owner, r.Name, url.PathEscape(workflow), url.QueryEscape(branch)), nil, &out)
+	return out.Runs, err
+}
+
+func (c *Client) Run(ctx context.Context, r Repo, id int64) (*WorkflowRun, error) {
+	var run WorkflowRun
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/actions/runs/%d", r.Owner, r.Name, id), nil, &run)
+	return &run, err
+}

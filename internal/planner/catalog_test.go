@@ -164,4 +164,12 @@ func TestDeployingProjectGetsTheReleasePipeline(t *testing.T) {
 			t.Errorf("missing %q", cue)
 		}
 	}
+	if strings.Contains(prompt, "fast rollback (deploy.rollback)") {
+		t.Error("fast rollback offered without deploy.rollback")
+	}
+	cfg.Projects["sandbox"].Spec.Deploy.Rollback = &config.RollbackSpec{Workflow: "rollback.yml"}
+	prompt = p.systemPrompt(cfg.Projects["sandbox"])
+	if !strings.Contains(prompt, "rollback-release → wait-for-rollback → deploy-triage") {
+		t.Error("fast rollback path missing")
+	}
 }

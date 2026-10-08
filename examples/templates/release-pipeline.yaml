@@ -1,6 +1,8 @@
 # Release pipeline for a project that deploys on merge (its deploy.branch is
 # the flow base): verify locally and in CI, ship by merging, confirm the
-# rollout, soak on health checks, and roll back automatically if degraded.
+# rollout, soak on health checks, and roll back automatically if degraded:
+# first the fast rollback (redeploy the previous release, no rebuild), then the
+# source revert at normal pace.
 # Copy and specialize project, runtime, grants and the test command.
 apiVersion: ai-flow/v1alpha1
 kind: Flow
@@ -79,14 +81,24 @@ spec:
     live:
       type: action
       action: wait_for_deploy
-      next: { deployed: soak, timeout: triage }
+      next: { deployed: soak, timeout: rollback }
     soak:
       type: action
       action: check_health
       with: { duration: 10m }
-      next: { healthy: $success, degraded: triage, timeout: triage }
+      next: { healthy: $success, degraded: rollback, timeout: rollback }
 
-    # Automatic rollback: diagnose, revert the merge, ship the revert, fail the run.
+    # Automatic rollback: restore the previous release now, then diagnose,
+    # revert the merge, ship the revert, and fail the run.
+    rollback:
+      type: action
+      action: rollback_deploy
+      next: { rolled_back: restored, failed: triage, timeout: triage }
+    restored:
+      type: action
+      action: wait_for_deploy
+      with: { expect: "${{ run.previous_sha }}" }
+      next: { deployed: triage, timeout: triage }
     triage:
       type: llm
       model: gpt-6.1-sol

@@ -287,7 +287,8 @@ compiles, template references resolve, output types valid, budget ≤ project ca
 When the project's `deploy.branch` is the flow's base (merging deploys), every
 `merge_pull_request` must follow a passing `wait_for_checks` with no repo-writing
 step in between, and after `merged` the run can only succeed through
-`wait_for_deploy` (deployed) and then `check_health` (healthy).
+`wait_for_deploy` (deployed) and then `check_health` (healthy). A
+`rollback_deploy` node needs the project's `deploy.rollback` workflow.
 Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
 an llm node, `thinking` on a non-reasoning model, `spec.budget.wall`, …) produce
 a *declared but not enforced* warning rather than silently looking like they work.

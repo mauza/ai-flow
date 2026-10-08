@@ -60,3 +60,7 @@ spec:
     versions: [{ url: "https://example.invalid/version", field: commit }]
     health:
       - { name: 5xx rate, query: 'sum(rate(http_requests_total{code=~"5.."}[5m])) or vector(0)', max: 0.05 }
+    # Fast rollback: a workflow_dispatch workflow (input: sha) that redeploys
+    # the release before that sha; argocd_app gets refreshed while waiting.
+    rollback: { workflow: rollback.yml }
+    argocd_app: template-app

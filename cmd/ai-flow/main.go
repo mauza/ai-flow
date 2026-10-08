@@ -149,6 +149,7 @@ func serverCmd(ctx context.Context, args []string) error {
 
 	var launch engine.Launcher
 	var pods broker.PodIdentifier
+	var refresh func(ctx context.Context, namespace, app string) error
 	if env.Runs.Local {
 		podURL := "http://127.0.0.1" + portOf(env.Server.PodListen)
 		env.Server.PodURL = podURL
@@ -161,9 +162,13 @@ func serverCmd(ctx context.Context, args []string) error {
 		}
 		k := launcher.NewKube(cs, env)
 		launch, pods = k, k
+		refresh = k.RefreshArgoApp
 	}
 
 	eng := engine.New(cfg, st, launch, h, gh)
+	if refresh != nil {
+		eng.SetArgoRefresher(refresh)
+	}
 	if n := notify.New(env.Notify); n != nil {
 		eng.SetNotifier(n)
 		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events)

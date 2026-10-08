@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,6 +29,9 @@ type fakeWorld struct {
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
 	appStatus int
+
+	dispatches  []map[string]any // rollback workflow dispatch bodies
+	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
 }
 
 func (w *fakeWorld) handler(t *testing.T) http.Handler {
@@ -44,6 +48,21 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			w.merges++
 			w.merged = true
 			reply(map[string]any{"sha": "mergedsha0000001", "merged": true})
+		case p == "/repos/mauza/ai-flow-sandbox/commits/mergedsha0000001":
+			reply(map[string]any{"sha": "mergedsha0000001", "parents": []any{map[string]any{"sha": "oldsha0000000"}, map[string]any{"sha": "headsha"}}})
+		case p == "/repos/mauza/ai-flow-sandbox/actions/workflows/rollback.yml/dispatches" && r.Method == "POST":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			w.dispatches = append(w.dispatches, body)
+			rw.WriteHeader(204)
+		case p == "/repos/mauza/ai-flow-sandbox/actions/workflows/rollback.yml/runs":
+			runs := []any{map[string]any{"id": 1, "status": "completed", "conclusion": "success", "created_at": "2020-01-01T00:00:00Z"}}
+			if w.rollbackRun != nil {
+				runs = append(runs, w.rollbackRun)
+			}
+			reply(map[string]any{"workflow_runs": runs})
+		case p == "/repos/mauza/ai-flow-sandbox/actions/runs/42":
+			reply(w.rollbackRun)
 		case strings.HasPrefix(p, "/repos/mauza/ai-flow-sandbox/branches/"):
 			reply(map[string]any{"commit": map[string]any{"sha": "headsha"}})
 		case strings.HasSuffix(p, "/check-runs"):
@@ -76,6 +95,26 @@ func (w *fakeWorld) set(f func(*fakeWorld)) {
 
 func releaseHarness(t *testing.T, w *fakeWorld, soak string) (*harness, string) {
 	t.Helper()
+	return releaseFlow(t, w, nil, `    ship:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: $fail }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: `+soak+` }
+      next: { healthy: $success, degraded: $fail, timeout: $fail }
+`)
+}
+
+// releaseFlow runs a flow that starts with a passing-CI gate (ci → ship) and
+// continues with the given nodes, against the fake world.
+func releaseFlow(t *testing.T, w *fakeWorld, deploy func(*config.Deploy), nodes string) (*harness, string) {
+	t.Helper()
 	srv := httptest.NewServer(w.handler(t))
 	t.Cleanup(srv.Close)
 	h := newHarness(t)
@@ -87,6 +126,9 @@ func releaseHarness(t *testing.T, w *fakeWorld, soak string) (*harness, string) 
 		Versions: []config.VersionProbe{{URL: srv.URL + "/version", Field: "commit"}},
 		Health:   []config.HealthQuery{{Name: "5xx rate", Query: `sum(rate(x[5m]))`, Max: 0.05}},
 	}
+	if deploy != nil {
+		deploy(h.cfg.Projects["sandbox"].Spec.Deploy)
+	}
 	if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", Project: "sandbox", YAML: header + `  start: ci
   nodes:
     ci:
@@ -94,20 +136,7 @@ func releaseHarness(t *testing.T, w *fakeWorld, soak string) (*harness, string) 
       action: wait_for_checks
       with: { settle: 1h }
       next: { passed: ship, failed: $fail, none: $fail, timeout: $fail }
-    ship:
-      type: action
-      action: merge_pull_request
-      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
-    live:
-      type: action
-      action: wait_for_deploy
-      next: { deployed: soak, timeout: $fail }
-    soak:
-      type: action
-      action: check_health
-      with: { duration: ` + soak + ` }
-      next: { healthy: $success, degraded: $fail, timeout: $fail }
-`}); err != nil {
+` + nodes}); err != nil {
 		t.Fatal(err)
 	}
 	r, err := h.e.CreateRun(h.ctx, "f", 0, "")
@@ -247,6 +276,109 @@ func TestNoCIReportedWithinSettleIsNone(t *testing.T) {
 		t.Fatalf("path %s", got)
 	}
 	if !strings.Contains(h.current(id).Summary, fmt.Sprintf("No CI reported on %s", "headsha")) {
+		t.Errorf("summary %q", h.current(id).Summary)
+	}
+}
+
+const rollbackNodes = `    ship:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: rollback }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: 1h }
+      next: { healthy: $success, degraded: rollback, timeout: rollback }
+    rollback:
+      type: action
+      action: rollback_deploy
+      next: { rolled_back: restored, failed: $fail, timeout: $fail }
+    restored:
+      type: action
+      action: wait_for_deploy
+      with: { expect: "${{ run.previous_sha }}" }
+      next: { deployed: $fail, timeout: $fail }
+`
+
+func TestFastRollbackRestoresThePreviousRelease(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "oldsha0000000", metric: "0.5", appStatus: 200,
+		checks: []map[string]any{{"name": "test", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, func(d *config.Deploy) {
+		d.Rollback = &config.RollbackSpec{Workflow: "rollback.yml"}
+		d.ArgoCDApp, d.ArgoCDNamespace = "sandbox-app", "argocd"
+	}, rollbackNodes)
+	var refreshes []string
+	h.e.SetArgoRefresher(func(_ context.Context, ns, app string) error {
+		refreshes = append(refreshes, ns+"/"+app)
+		return nil
+	})
+
+	h.e.Tick(h.ctx) // ci → ship merges → live waits (and asks Argo to refresh)
+	h.e.Tick(h.ctx)
+	if v := h.current(id); v.Node != "live" || v.Status != store.VisitRunning {
+		t.Fatalf("live should wait: %+v (%s)", v, h.path(id))
+	}
+	if len(refreshes) == 0 || refreshes[0] != "argocd/sandbox-app" {
+		t.Fatalf("argo refreshes %v", refreshes)
+	}
+	vs, _ := h.st.Visits(h.ctx, id)
+	if !strings.Contains(string(vs[1].Outputs), `"previous_sha":"oldsha0000000"`) {
+		t.Fatalf("merge outputs %s", vs[1].Outputs)
+	}
+
+	w.set(func(w *fakeWorld) { w.version = "mergedsha0000001" })
+	for i := 0; i < 8 && len(w.dispatches) == 0; i++ {
+		h.e.Tick(h.ctx) // deployed → soak degrades → rollback dispatches
+	}
+	if len(w.dispatches) != 1 {
+		t.Fatalf("dispatches %v (%s)", w.dispatches, h.path(id))
+	}
+	if inputs, _ := w.dispatches[0]["inputs"].(map[string]any); w.dispatches[0]["ref"] != "main" || inputs["sha"] != "mergedsha0000001" {
+		t.Errorf("dispatch %v", w.dispatches[0])
+	}
+	h.e.Tick(h.ctx) // GitHub has not listed the run yet: keep waiting, never re-dispatch
+	if v := h.current(id); v.Node != "rollback" || !strings.Contains(v.Progress, "Waiting for GitHub to start") {
+		t.Fatalf("%+v", v)
+	}
+	w.set(func(w *fakeWorld) {
+		w.rollbackRun = map[string]any{"id": 42, "status": "in_progress", "html_url": "https://gh/run/42", "created_at": time.Now().UTC().Format(time.RFC3339)}
+	})
+	h.e.Tick(h.ctx)
+	if v := h.current(id); v.Node != "rollback" || !strings.Contains(v.Progress, "in progress") {
+		t.Fatalf("%+v", v)
+	}
+	w.set(func(w *fakeWorld) { w.rollbackRun["status"], w.rollbackRun["conclusion"] = "completed", "success" })
+	h.e.Tick(h.ctx) // rolled back → restored waits for the previous commit
+	h.e.Tick(h.ctx)
+	if v := h.current(id); v.Node != "restored" || !strings.Contains(v.Progress, "Waiting for oldsha0") {
+		t.Fatalf("restored should wait for the previous release: %+v (%s)", v, h.path(id))
+	}
+	w.set(func(w *fakeWorld) { w.version = "oldsha0000000" })
+	h.e.Tick(h.ctx)
+	if got := h.path(id); !strings.HasSuffix(got, "soak:degraded rollback:rolled_back restored:deployed") {
+		t.Fatalf("path %s", got)
+	}
+	if len(w.dispatches) != 1 {
+		t.Errorf("dispatched %d times", len(w.dispatches))
+	}
+}
+
+func TestFailedRollbackWorkflowIsFailed(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.5", appStatus: 200,
+		checks:      []map[string]any{{"name": "test", "status": "completed", "conclusion": "success"}},
+		rollbackRun: map[string]any{"id": 42, "status": "completed", "conclusion": "failure", "html_url": "https://gh/run/42", "created_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339)}}
+	h, id := releaseFlow(t, w, func(d *config.Deploy) { d.Rollback = &config.RollbackSpec{Workflow: "rollback.yml"} }, rollbackNodes)
+	for i := 0; i < 10 && !store.RunDone(h.run(id).Status); i++ {
+		h.e.Tick(h.ctx)
+	}
+	if got := h.path(id); !strings.HasSuffix(got, "rollback:failed") {
+		t.Fatalf("path %s", got)
+	}
+	if !strings.Contains(h.current(id).Summary, "rollback.yml ended failure: https://gh/run/42") {
 		t.Errorf("summary %q", h.current(id).Summary)
 	}
 }

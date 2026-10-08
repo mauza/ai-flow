@@ -96,6 +96,8 @@ type Engine struct {
 	// HTTP probes deploy targets and queries metrics.
 	HTTP *http.Client
 
+	refresher func(ctx context.Context, namespace, app string) error
+
 	polls  map[string]time.Time      // run/seq → last poll of a waiting action
 	health map[string]map[string]int // run/seq → check → consecutive violations
 	passes map[string]map[string]int // run/seq → check → successful evaluations
@@ -111,6 +113,12 @@ func New(cfg *config.Config, st *store.Store, l Launcher, h *hub.Hub, gh *github
 func (e *Engine) Tick(ctx context.Context) { e.tick(ctx) }
 
 func (e *Engine) SetHooks(h Hooks) { e.hooks = h }
+
+// SetArgoRefresher lets wait_for_deploy ask Argo CD to refresh a project's
+// app (deploy.argocd_app) instead of waiting for its git poll.
+func (e *Engine) SetArgoRefresher(f func(ctx context.Context, namespace, app string) error) {
+	e.refresher = f
+}
 
 // SetNotifier enables push notifications for the configured events.
 func (e *Engine) SetNotifier(n notify.Sender) { e.notifier = n }

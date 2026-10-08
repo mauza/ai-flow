@@ -19,7 +19,7 @@ Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipel
 | Control | `human-decision`, `has-changes`, `large-change` | Optional human decisions or deterministic routing on the cumulative branch diff. |
 | Delivery | `summarize-change`, `release-notes`, `open-pull-request`, `comment-task` | Prepare evidence-based text, then publish through existing actions when appropriate. |
 | Release | `ci-checks`, `local-stack-test`, `qa-test`, `deploy`, `wait-for-deploy` | Verify in CI and locally (QA exercises the app), then ship by merging. |
-| Operations | `monitor-deploy`, `deploy-triage`, `revert-deploy` | Soak production on health queries; on degradation diagnose and revert. |
+| Operations | `monitor-deploy`, `rollback-release`, `wait-for-rollback`, `deploy-triage`, `revert-deploy` | Soak production on health queries; on degradation restore the previous release, diagnose and revert. |
 
 ## Release: ship on merge, watch, roll back
 
@@ -35,6 +35,8 @@ deploy:
   health:                               # PromQL against Environment metrics.url
     - { name: 5xx rate, query: 'sum(rate(traefik_service_requests_total{service=~"games.*",code=~"5.."}[5m])) or vector(0)', max: 0.05 }
     - { name: restarts, query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="games"}[10m]))', max: 0 }
+  rollback: { workflow: rollback.yml }  # optional fast rollback (below)
+  argocd_app: games                     # optional: refresh this Argo CD app while waiting
 ```
 
 The release pipeline, in catalog terms:
@@ -42,7 +44,8 @@ The release pipeline, in catalog terms:
 ```
 work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-request → ci-checks
   → deploy → wait-for-deploy → monitor-deploy → healthy: $success
-                                              → degraded: deploy-triage → revert-deploy
+                                              → degraded: [rollback-release → wait-for-rollback →]
+                                                deploy-triage → revert-deploy
                                                 → open-pull-request → ci-checks → deploy → $fail
 ```
 
@@ -56,6 +59,17 @@ work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-re
   ends in `timeout`, not a rollback). Write queries where no data means healthy.
 - `revert-deploy` reads `run.merged_sha` (the run's latest merge) and `run.base`
   through `$AI_FLOW_INPUT_*`; give it the repo write grant.
+- `rollback-release` (`rollback_deploy`) is the fast path when the project sets
+  `deploy.rollback`: it dispatches that GitHub Actions workflow on the deploy
+  branch with input `sha` (the bad release) and waits for it. The workflow must
+  make the previous release's build current again without rebuilding (web-games
+  deletes the bad build's registry tags, so Image Updater falls back to the
+  previous one). `wait-for-rollback` then waits for `run.previous_sha`, the merge's
+  first parent. The source revert still follows, so `main` matches production.
+- With `deploy.argocd_app`, `wait_for_deploy` sets Argo CD's refresh annotation on
+  that Application each poll, so a write-back rolls out in seconds instead of at
+  Argo's next git poll. The server's service account needs get/patch on that
+  Application.
 
 When merging deploys, the validator rejects a flow in which any merge can be
 reached without a passing `ci-checks` after the last repo-writing step, or in which

@@ -644,6 +644,31 @@ presets:
     outputs: { violations: [string], polls: integer }
     outcomes: [healthy, degraded, timeout]
 
+  rollback-release:
+    category: operations
+    when_to_use: monitor-deploy reported degraded (or wait-for-deploy timed out) in a project with deploy.rollback; restores the previous release in about a minute, before any diagnosis or source revert.
+    requires: [Project deploy.rollback workflow, The release merged in this run (run.merged_sha)]
+    type: action
+    max_visits: 1
+    on_exhausted: $fail
+    description: Fast rollback - dispatch the project's rollback workflow, which redeploys the previous release's images (no rebuild).
+    action: rollback_deploy
+    outputs: { url: string, previous: string }
+    outcomes: [rolled_back, failed, timeout]
+
+  wait-for-rollback:
+    category: operations
+    when_to_use: Right after rollback-release rolled_back; confirms production runs the previous release again.
+    requires: [Project deploy.versions endpoints, The release merged in this run (run.previous_sha)]
+    type: action
+    max_visits: 1
+    on_exhausted: $fail
+    description: Wait until production reports the commit that was live before this release.
+    action: wait_for_deploy
+    with: { expect: "${{ run.previous_sha }}" }
+    outputs: { version: string }
+    outcomes: [deployed, timeout]
+
   deploy-triage:
     category: operations
     when_to_use: monitor-deploy reported degraded (or timed out) and a diagnosis should accompany the rollback.

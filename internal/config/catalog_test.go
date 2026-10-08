@@ -64,6 +64,9 @@ func TestCatalogModelOptions(t *testing.T) {
 
 func TestCatalogPresetsResolve(t *testing.T) {
 	cfg := loadCatalog(t)
+	// A deploy target that this flow's base does not ship to: rollback_deploy
+	// needs deploy.rollback, and merges stay ordinary merges.
+	cfg.Projects["sandbox"].Spec.Deploy = &config.Deploy{Branch: "production", Rollback: &config.RollbackSpec{Workflow: "rollback.yml"}}
 	categories, types := map[string]bool{}, map[string]bool{}
 	for name, preset := range cfg.Catalog.Presets {
 		t.Run(name, func(t *testing.T) {
@@ -239,7 +242,7 @@ func exampleOutput(t *testing.T, typ any) any {
 func exampleContext(files, lines float64) map[string]any {
 	return map[string]any{
 		"task": map[string]any{"title": "Fix parsing", "body": "Handle empty input"},
-		"run": map[string]any{"id": "run-1", "branch": "ai-flow/test", "base": "main", "pr_url": "https://example.test/pr/1", "merged_sha": "0123456789abcdef",
+		"run": map[string]any{"id": "run-1", "branch": "ai-flow/test", "base": "main", "pr_url": "https://example.test/pr/1", "merged_sha": "0123456789abcdef", "previous_sha": "fedcba9876543210",
 			"diff": map[string]any{"files_changed": files, "lines_changed": lines}},
 		"nodes": map[string]any{}, "inputs": map[string]any{},
 	}
