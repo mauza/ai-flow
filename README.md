@@ -1,22 +1,19 @@
 # ai-flow
 
-Every task gets its own state machine. A planner model turns a task (from Linear
-or the UI) into a **flow** — small steps like *write a failing test → fix it →
-run the tests → review the diff → open a PR*, with loops and human gates where
-they make sense. Each step runs as an isolated Kubernetes Job with only the
-model, tools, MCP tools and repo access it declares; git, LLM and MCP traffic go
-through the control plane, so pods never hold credentials.
+Every task gets its own state machine. A planner model turns a task (from Linear,
+the UI, or a user story map) into a **flow**: small steps like *write a failing
+test → fix it → run the tests → review the diff → open a PR → merge → watch the
+deploy*, with loops and human gates where they make sense. Each step runs as an
+isolated Kubernetes Job with only the model, tools, MCP tools, secrets and repo
+access it declares; git, LLM and MCP traffic go through the control plane, so
+pods never hold those credentials.
 
-Small steps keep work focused and verifiable. The only configured model options
-are **GPT-6.1 Sol** (`gpt-6.1-sol`), **GPT-6 Luna** (`gpt-6-luna`), and **GPT-6 Astra**
-(`gpt-6-astra`). Sol remains the default planner with streaming enabled; Luna and
-Astra are additional choices.
-
-All three use the existing `home` LiteLLM upstream with matching subscription aliases.
-See [ChatGPT provider setup](docs/CHATGPT-PROVIDER.md) for the gateway-owned login
-and OpenCode client configuration. The catalog's capability fields are
-selection hints, not performance claims; `context_tokens: 100000` is a conservative working limit,
-not a claim about full model capacity. No model fallback is configured.
+Models come from any OpenAI-compatible endpoint. The example catalog in
+[`deploy/config`](deploy/config) offers GPT-6.1 Sol (the default planner), GPT-6
+Luna and GPT-6 Astra through a LiteLLM gateway
+([setup](docs/CHATGPT-PROVIDER.md)); a deployment adds its own, such as local
+models. A model's capability fields are hints for the planner, not performance
+claims.
 
 ![flow editor and run view](docs/screenshots/run.png)
 
@@ -25,17 +22,17 @@ not a claim about full model capacity. No model fallback is configured.
 Needs Docker, kind, kubectl, helm, Go, Node, and `gh` logged in.
 
 ```sh
-cp .env.example .env          # LINEAR_API_KEY (optional); GITHUB_TOKEN defaults to `gh auth token`
+cp .env.example .env          # GITHUB_TOKEN defaults to `gh auth token`; LINEAR_API_KEY, LITELLM_API_KEY optional
 make dev-up                   # kind cluster + images + Helm release
 open http://localhost:8080
 ```
 
-With the gateway configured, press **New task**, or add the trigger label to a
-Linear issue. Change code
-and run `make dev-reload`. `make dev-down` deletes the cluster but keeps its
-state (tasks, flows, runs, transcripts) in `~/.local/share/ai-flow/ai-flow`, so
-the next `make dev-up` picks up where you left off. `make dev-reset` deletes the
-cluster and that state.
+Set `LITELLM_API_KEY` in `.env` if your model gateway needs a key. Press **New
+task**, add the trigger label to a Linear issue, or link a repository under
+**Products**. Change code and run `make dev-reload`. `make dev-down` deletes the
+cluster but keeps its state (tasks, flows, runs, transcripts) in
+`~/.local/share/ai-flow/ai-flow`, so the next `make dev-up` picks up where you
+left off. `make dev-reset` deletes the cluster and that state.
 
 No cluster? `make dev-local` runs the control plane on your machine and each
 step as a child process (no isolation; good for iterating).
@@ -43,19 +40,23 @@ step as a child process (no isolation; good for iterating).
 ## How it fits together
 
 ```
-Linear / UI ──▶ planner ──▶ flow YAML (versioned) ──▶ engine ──▶ Job per step
-                                                        ▲            │
-                              gates · switches · PRs ───┘            ▼
-                                                     broker: git · LLM · MCP proxies
+Linear / UI / story map ──▶ planner ──▶ flow YAML (versioned) ──▶ engine ──▶ Job per step
+                                                                    ▲            │
+                         gates · switches · PRs · deploys ──────────┘            ▼
+                                                                 broker: git · LLM · MCP proxies
 ```
 
 - **Flows** are YAML ([format](docs/SPEC.md#4-flow-format), [examples](examples/)).
   The UI edits them as a graph, as YAML, or by chatting with the planner.
 - **Node types**: `llm` (one structured call), `agent` (pi coding agent),
   `check` (shell command, optionally with structured JSON outputs), `gate` (human
-  decision with an optional note), `switch` (CEL), `action` (open a PR, comment on
-  the task), and `parallel` + `join` (run read-only branches at once, then route
-  on all their results).
+  decision with an optional note), `switch` (CEL), `action` (built-in: open,
+  merge or comment on a PR, wait for CI, a deploy or a health soak, roll back),
+  and `parallel` + `join` (run read-only branches at once, then route on all
+  their results). The [node catalog](docs/NODE-CATALOG.md) lists the presets.
+- **Release pipelines**: for a project whose `deploy` config says merging
+  ships it, the validator requires CI before a merge and a deploy check plus a
+  health soak after it; a failed soak can roll back without a rebuild.
 - **Per-step models and limits**: each step picks a model from the catalog and
   says what happens on rate limits, quota, context overflow or budget:
   retry, wait, fall back to another model, route to another node, or fail.
@@ -64,9 +65,10 @@ Linear / UI ──▶ planner ──▶ flow YAML (versioned) ──▶ engine �
   the control plane's pod port.
 - **Config** starts in [`deploy/config`](deploy/config): the environment (where
   things run), the catalog (the menu the planner picks from) and projects (repo,
-  allow-lists, budgets, start mode, planner guidance, Linear link). On first
-  start the server copies the catalog and projects into its database, and
-  **Settings** edits them live from then on; the environment stays in files.
+  allow-lists, budgets, start mode, planner guidance, Linear link, deploy). On
+  first start the server copies the catalog and projects into its database, and
+  **Settings** edits them live from then on; entries changed in the files still
+  apply at the next start, and the environment stays in files.
 - **Product work**: link a GitHub repository, write product docs and user story
   maps in its `product/` directory, and send user tasks, activities or phases
   to flows. Edits stay in a scratch checkout until you commit
@@ -80,11 +82,11 @@ changed from the original draft.
 ## Templates and evaluations
 
 Start with a reusable [flow template](docs/TEMPLATES.md): **test → implement →
-verify**, **investigate → propose → approve**, or **review → repair**. Replace
-the validation-only project/runtime/grant placeholders with your catalog
-choices; model aliases already use Sol/Luna. Then validate against your config.
-`make test-templates` validates all
-three offline using the actual flow parser and resolver.
+verify**, **investigate → propose → approve**, **review → repair**, or a
+**release pipeline** (CI → merge → deploy → health soak → rollback). Replace the
+validation-only project/runtime/grant placeholders with your catalog choices,
+then validate against your config. `make test-templates` validates them all
+offline with the real flow parser and resolver.
 
 The standalone [`ai-flow-eval`](docs/EVALUATIONS.md) command scores exported
 run/visit API JSON against pinned flow versions, explicit outcome/output checks
@@ -123,18 +125,29 @@ execution snapshots, readiness, budget semantics and transcript limits.
 | `ai-flow validate -config deploy/config flow.yaml` | validate a flow |
 | `ai-flow plan -config deploy/config -project sandbox -title "..."` | try the planner |
 | `cd web && npm run dev` | UI with hot reload, proxied to a control plane on :8080 |
-| `cd web && npx playwright install chromium && npm test` | desktop/mobile editor regressions, using mocked API responses |
+| `cd web && npx playwright install chromium && npm test` | desktop/mobile UI regressions against a mocked API (or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) |
 
 ## Layout
 
 ```
 cmd/ai-flow        main binary: server, node (pod entrypoint), validate, plan, mcp-demo
 cmd/ai-flow-eval   standalone offline export evaluator and baseline comparison
-internal/          engine, broker (git/LLM/MCP proxies), runner (node-runner + limit shim),
-                   planner, resolve (validation), intake (Linear), store (SQLite), ...
+internal/
+  app              use cases shared by the API and intake: tasks, planning, config
+                   edits, product work, map assistant, run review
+  engine           the state-machine interpreter and built-in actions
+  broker           the pod-facing port: token exchange, results, git/LLM/MCP proxies
+  runner           the pod entrypoint (node-runner) and its limit shim
+  planner, resolve task → flow; presets/defaults resolution and validation
+  config, store    config documents; SQLite (tasks, flows, runs, visits, kv)
+  server           HTTP API, SSE and the embedded UI
+  workspace        scratch checkouts of a repo's product/ through the GitHub API
+  storymap         user story map files
+  github, linear, metrics, launcher, mcpx, objstore, notify, ...   integrations
 pi-ext/            pi extension: flow_finish + granted MCP tools
 web/               React UI (embedded into the binary)
-deploy/            Helm chart, kind config, images, config for kind and local mode
+deploy/            Helm chart, kind config, images, config for kind, local and prod
 examples/          flows: MCP grant, token limits, sandbox red-team probe
                    templates/ (reusable flows), evals/ (synthetic evaluation fixtures)
+docs/              SPEC (design), PRODUCT, NODE-CATALOG, RELIABILITY, LOOPS, TEMPLATES, EVALUATIONS
 ```

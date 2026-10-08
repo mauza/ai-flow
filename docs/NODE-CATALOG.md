@@ -162,14 +162,9 @@ be wired with a complete map:
 ## Runtime constraints
 
 - **Models:** `llm` has no tools; repository discovery belongs in an `agent`.
-  Choose the smallest sufficient configured model for each step. The only model
-  options are `gpt-6.1-sol` (default planner, `planner.stream: true`), `gpt-6-luna`,
-  and `gpt-6-astra`, all using `home` with matching upstream aliases. No model fallback
-  is configured. All three declare `size: frontier`, `reasoning: true`, `tool_use: good`,
-  and `cost: subscription` as selection metadata, not performance claims.
-  Their `context_tokens: 100000` is a conservative working limit, not full capacity.
-  Earlier streaming smoke tests covered GPT-6 Sol (the previous version) and Luna with the existing
-  OpenCode login; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for setup and limits.
+  Choose the smallest sufficient configured model for each step; the catalog's
+  `size`, `tool_use`, `cost` and `context_tokens` are selection hints, not
+  performance claims. No model fallback is configured by default.
 - **Images:** `agent-base` includes bash, git, ripgrep, Python 3, Node 22/npm,
   jq, and curl. `agent-go` adds Go 1.26 in the checked-in Dockerfile. Projects
   needing a newer Go version (including ai-flow itself) need a compatible runtime

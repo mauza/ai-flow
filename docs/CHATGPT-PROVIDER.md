@@ -32,8 +32,10 @@ OpenCode uses a **distinct provider ID**, `litellm-openai`, with
 `@ai-sdk/openai-compatible` and `http://litellm:4000/v1`. Its built-in `openai`
 provider is disabled. Overriding the native provider's base URL would be wrong:
 its OAuth hook can rewrite requests back to the direct Codex endpoint.
-The current tailnet gateway does not require a client API key; the configured
-`dummy` value is only an SDK placeholder, not an OpenAI credential.
+The gateway requires a client key: ai-flow sends `LITELLM_API_KEY` (the
+upstream's `apiKeyEnv`; in the cluster it lives in `ai-flow-secrets`, locally
+in `.env`), and OpenCode needs its own key. It is a gateway key, not an
+OpenAI credential.
 
 **Restart OpenCode after configuration changes.** A resumed conversation may
 retain its old model choice; select one of:

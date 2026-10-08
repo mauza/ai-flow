@@ -1,6 +1,6 @@
 # ai-flow — Task Flows as State Machines
 
-Status: implemented (v2) · 2026-09-25
+Status: implemented · updated 2026-10-08
 
 ## 1. What it is
 
@@ -8,7 +8,7 @@ Every task gets its own small state machine — a **flow**. A model (the planner
 drafts the flow; each node is one narrow step: a single LLM call, a coding-agent
 session (pi), a deterministic check, a human gate, a CEL switch, or a built-in
 action. Steps are focused and verifiable, using the smallest sufficient configured
-model. The current menu contains only GPT-6.1 Sol, GPT-6 Luna, and GPT-6 Astra. Flows are
+model from the catalog. Flows are
 YAML; the UI shows them as a graph you can edit by hand or by chatting with the
 planner. Runs execute each pod step as a Kubernetes Job with exactly the tools,
 skills, MCP tools, models and repo access that step declares — and no raw
@@ -30,7 +30,8 @@ are plain URLs in config.
 | **Visit** | One execution of a node in a run. Loops create `fix#1`, `fix#2`, … |
 | **Catalog** | The menu: models, runtimes (images), grants, skills, presets, planner settings. |
 | **Grant** | A named capability: git repo (read/write), MCP server + tool subset, k8s secret, egress. |
-| **Project** | Repo, allowed grants/models, budgets, start mode, planner guidance, Linear link. |
+| **Project** | Repo, allowed grants/models, budgets, start mode, planner guidance, Linear link, deploy settings. |
+| **Story map** | A product's user journey (phases → activities → user tasks, sliced into releases) kept in its repo's `product/`; parts of it become tasks. See [PRODUCT.md](PRODUCT.md). |
 
 ## 3. Architecture
 
@@ -51,7 +52,7 @@ flowchart LR
   GP --> GH[(GitHub)]
   LP --> UP[(OpenAI-compatible upstreams)]
   MP --> MCPS[(MCP servers)]
-  BR --> S3[(Garage / S3)]
+  BR --> S3[(object store: Garage / S3 / local disk)]
 ```
 
 Components (all in `ai-flow`, one binary and image, plus the agent runtime image):
@@ -67,7 +68,10 @@ Components (all in `ai-flow`, one binary and image, plus the agent runtime image
 | Planner | `internal/planner` | Task → flow YAML with a validator repair loop; chat revisions. |
 | Validator | `internal/resolve` | Presets/defaults resolution, validation, graph projection. Shared by planner, UI, CLI, engine. |
 | Intake | `internal/intake` | Linear polling, status + comment mirroring. |
-| Store | `internal/store` | SQLite: tasks, flow versions, runs, visits, events, chat. |
+| App | `internal/app` | Use cases shared by the API and intake: tasks and planning, live config edits, repository linking, sending story-map work to flows, the map assistant, run reviews. |
+| Workspace | `internal/workspace` | Scratch checkouts of each project's `product/` through the GitHub API; one-commit pushes that never force. |
+| Story maps | `internal/storymap` | Map and user-task files: load, validate, scope and brief. |
+| Store | `internal/store` | SQLite: tasks, flow versions, runs, visits, events, chat, and a kv table (stored catalog and projects, story-map scopes, chats, reviews). |
 | UI | `web/` | React + React Flow + ELK + CodeMirror, embedded in the binary. |
 
 ### Off the shelf
@@ -116,7 +120,7 @@ spec:
       exit_codes: { "0": pass, default: fail }   # check (this is the default)
       cases: [{ when: "run.diff.files_changed > 15", outcome: big }]   # switch
       default: small                # switch
-      action: open_pull_request     # action: open_pull_request | comment_task
+      action: open_pull_request     # action: see NODE-CATALOG.md (PRs, merge, CI, deploy, health, rollback)
       with: { title: "${{ task.title }}", body: "...", draft: false }
 ```
 
@@ -129,7 +133,7 @@ spec:
 | `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`, plus any declared `outputs` the command writes as one JSON object to `$AI_FLOW_OUTPUTS` (type-checked; undeclared fields fail the step; no file means none). Rendered `inputs` arrive as `$AI_FLOW_INPUT_<NAME>` (never spliced into the command text). |
 | `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
-| `action` | control plane | `open_pull_request` (idempotent; PR body includes a step table) or `comment_task`. |
+| `action` | control plane | Built-in: `open_pull_request` (idempotent; PR body includes a step table), `comment_task`, and the waiting actions `merge_pull_request`, `wait_for_checks`, `wait_for_deploy`, `check_health`, `rollback_deploy`, which the engine polls until they finish or time out (`timeout` outcome). [NODE-CATALOG.md](NODE-CATALOG.md) has their outcomes and outputs. |
 | `parallel` | control plane | Starts every node in `branches` at once; emits `joined` when all branches have reached its `join`. |
 | `join` | control plane | Runs after every branch of its parallel node arrived; routes like a switch over any branch's results (no cases → `done`). |
 
@@ -238,20 +242,25 @@ Secrets are env vars named by `*Env` fields, never inlined.
   node defaults, planner (model, stream, guidance, attempts).
 - **Project** — repo grant, base branch, `start: manual|auto`, allow-lists for
   grants and models (glob patterns), budgets, planner guidance, Linear link:
-  team, optional project filter, trigger label + states, state mapping, comments.
+  team, optional project filter, trigger label + states, state mapping, comments;
+  and `deploy` when merging to a branch ships the project: version endpoints,
+  health queries and URL, an optional rollback workflow and Argo CD app.
+
+**Where it lives at runtime.** On its first start the server copies the
+catalog and projects into its database and serves them from there; the UI's
+Settings page edits them, each change checked against the whole config and
+applied live. On later starts, every entry that changed in the files since the
+previous start (a release bumping a runtime image, a synced preset) replaces
+that entry in the database. The environment always comes from the files.
 
 The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
 
-The checked-in model menu is `gpt-6.1-sol`, `gpt-6-luna`, and `gpt-6-astra`, all on the
-existing `home` upstream with matching upstream aliases. Sol remains the default
-planner with `planner.stream: true`; Luna and Astra are additional choices. All three use `size: frontier`,
-`reasoning: true`, `tool_use: good`, and `cost: subscription` as selection metadata
-without performance claims. `context_tokens: 100000` is a conservative working limit,
-not a full-capacity claim. Earlier verification covered GPT-6 Sol (the previous version) and Luna with existing
-OpenCode authentication; see [CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md) for access
-synchronization and the separate ai-flow application rollout. The original
-local-model premise is historical, not the current model policy.
+The checked-in catalog offers `gpt-6.1-sol` (the streaming default planner),
+`gpt-6-luna` and `gpt-6-astra` on the `home` upstream, a LiteLLM gateway (see
+[CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md)). Their `size`, `tool_use`, `cost`
+and `context_tokens` are selection metadata for the planner, not performance
+claims; deployments add their own models, such as local GPUs.
 
 ## 6. Planning
 
@@ -410,7 +419,16 @@ effort and never affects the run.
   failed, not reached; taken edges in green; visit counts), gate decisions,
   step timeline with progress, and step detail (result, outputs, rendered prompt,
   transcript with tool calls).
-- **Catalog** — models, presets, grants, skills, runtimes, projects and guidance.
+- **Catalog** — the node library and a reference of models, grants, skills,
+  runtimes and projects.
+- **Settings** — edit every catalog entry and project as YAML; Connections shows
+  which tokens and endpoints are set without revealing them.
+- **Products** — linked repositories (link from your GitHub repositories); per
+  product, Markdown docs and user story maps from its `product/` directory, a
+  scratch checkout with pull, diff review, discard and commit & push, a map
+  grid with a task panel, sending work to flows, metrics and an assistant.
+- **Run review** — on the run view, an LLM review of the run's record with
+  suggestions for the flow, presets, prompts, models, config or primitives.
 
 ## 11. Environments
 
@@ -428,7 +446,7 @@ secrets via an existing Secret (`ai-flow-secrets`).
   seconds after a pod starts; use Calico/Cilium where that gap matters.
 - **local processes** — `make dev-local`: no cluster, no isolation; for fast iteration.
 - **prod** — same chart with real values: images from a registry, sealed secrets,
-  ingress, `linear.mode: webhook` optional, S3/R2 or Garage.
+  ingress, `linear.mode: webhook` optional, S3/R2, Garage or the local data volume (`objectStore.type: local`).
 
 ## 12. Changes from the draft spec
 
@@ -445,9 +463,9 @@ secrets via an existing Secret (`ai-flow-secrets`).
 
 - `map` (fan-out over a list) and sub-flow nodes; parallel branches that write
   to the repo.
-- Claude Code / opencode harnesses; cloud models and subscription proxies (config
-  supports any OpenAI-compatible upstream already).
-- GitLab forge.
+- Claude Code / opencode harnesses.
+- GitLab forge (Git hosting is GitHub only, including product workspaces).
 - Egress domain allowlists (today: none or public internet).
 - Planner exploration by an agent; multi-repo flows.
-- Auth for the UI beyond an optional shared token (`server.authTokenEnv`).
+- Auth for the UI beyond an optional shared token (`server.authTokenEnv`); no
+  per-user identity, so product commits are authored as ai-flow.
