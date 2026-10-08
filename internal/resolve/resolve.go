@@ -65,6 +65,17 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 		if proj != nil {
 			fillDefaults(&n.Node, proj.Spec.Defaults)
 		}
+		// A model's own llm settings (e.g. a larger token budget for a free
+		// local model) are more specific than the catalog-wide defaults.
+		if n.Type == flow.TypeLLM || n.Type == flow.TypeAgent {
+			name := n.Model
+			if n.LLM != nil && n.LLM.Model != "" {
+				name = n.LLM.Model
+			}
+			if m := cfg.Catalog.Models[name]; m != nil && m.LLM != nil {
+				fillDefaults(&n.Node, &flow.Node{LLM: m.LLM})
+			}
+		}
 		fillDefaults(&n.Node, cfg.Catalog.Defaults)
 		if n.Harness == "" && n.Type == flow.TypeAgent {
 			n.Harness = "pi"
@@ -182,8 +193,9 @@ func fill(dst, src *flow.Node) {
 	}
 	if src.LLM != nil {
 		if dst.LLM == nil {
-			l := *src.LLM
-			dst.LLM = &l
+			// Deep copy: later layers merge into Limits and OnLimit, which must
+			// never write through to a preset, model or defaults block.
+			dst.LLM = cloneLLM(src.LLM)
 		} else {
 			fillLLM(dst.LLM, src.LLM)
 		}
@@ -203,8 +215,20 @@ func fillLLM(dst, src *flow.LLMConfig) {
 	if dst.Thinking == "" {
 		dst.Thinking = src.Thinking
 	}
-	if dst.Limits == nil {
-		dst.Limits = src.Limits
+	if dst.Limits == nil && src.Limits != nil {
+		l := *src.Limits
+		dst.Limits = &l
+	} else if dst.Limits != nil && src.Limits != nil {
+		// Limits merge per field: raising tokens keeps the default turn cap.
+		if dst.Limits.Tokens == 0 {
+			dst.Limits.Tokens = src.Limits.Tokens
+		}
+		if dst.Limits.USD == 0 {
+			dst.Limits.USD = src.Limits.USD
+		}
+		if dst.Limits.Turns == 0 {
+			dst.Limits.Turns = src.Limits.Turns
+		}
 	}
 	if len(src.OnLimit) > 0 {
 		if dst.OnLimit == nil {
@@ -338,4 +362,20 @@ func (n *Node) Targets() []string {
 		t = append(t, n.OnExhausted)
 	}
 	return t
+}
+
+func cloneLLM(src *flow.LLMConfig) *flow.LLMConfig {
+	l := *src
+	l.Fallbacks = append([]string(nil), src.Fallbacks...)
+	if src.Limits != nil {
+		limits := *src.Limits
+		l.Limits = &limits
+	}
+	if src.OnLimit != nil {
+		l.OnLimit = map[string]*flow.OnLimit{}
+		for k, v := range src.OnLimit {
+			l.OnLimit[k] = v
+		}
+	}
+	return &l
 }
