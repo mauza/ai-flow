@@ -143,13 +143,20 @@ func (a *App) MapMetrics(ctx context.Context, project string, l *storymap.Loaded
 				v.Error = "metrics.url is not configured"
 				break
 			}
-			now, err := metrics.Query(ctx, url, m.Query)
+			// A product metric is the sum over the query's series.
+			values, err := metrics.Instant(ctx, nil, url, m.Query)
 			if err != nil {
 				v.Error = err.Error()
 				break
 			}
-			v.Value = now
-			v.Series, _ = metrics.Range(ctx, url, m.Query, 7*24*3600, 3600)
+			if len(values) > 0 {
+				sum := 0.0
+				for _, x := range values {
+					sum += x
+				}
+				v.Value = &sum
+			}
+			v.Series, _ = metrics.Range(ctx, nil, url, m.Query, 7*24*3600, 3600)
 		case "delivery":
 			v.Value, v.Detail = delivery(m, l, works)
 		}
@@ -276,7 +283,7 @@ func (a *App) LinkRepo(ctx context.Context, fullName, name, description string) 
 			"allow": map[string]any{"grants": []string{grant + ":*"}},
 		}})},
 	}
-	if _, err := a.EditConfig(ctx, edits...); err != nil {
+	if _, err := a.EditConfig(ctx, false, edits...); err != nil {
 		return "", err
 	}
 	return name, nil

@@ -99,6 +99,8 @@ async function setup(page: Page) {
     if (path === "/api/config") {
       s.configEdits.push(...body.edits);
       if (body.edits[0].yaml.includes("upstream: nowhere")) return route.fulfill({ status: 400, json: { error: 'config: model broken: unknown upstream "nowhere"' } });
+      if (body.edits[0].yaml.includes("context_tokens: 1\n") && !body.force)
+        return route.fulfill({ status: 409, json: { error: "this change would fail 1 active run(s) with configuration drift: r-9", runs: ["r-9"] } });
       return route.fulfill({ json: { warnings: [] } });
     }
     if (path === "/api/repos") return route.fulfill({ json: b.repos });
@@ -197,6 +199,22 @@ test("settings edits a catalog entry and shows validation errors", async ({ page
   await expect(page.getByText("token set").first()).toBeVisible();
   await noHorizontalScroll(page);
   await page.screenshot({ path: info.outputPath("settings-connections.png"), fullPage: true });
+});
+
+test("settings asks before an edit that would fail active runs", async ({ page }) => {
+  const s = await setup(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Edit gpt-6.1-sol" }).click();
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("upstream: home\nmodel: gpt-6.1-sol\ncontext_tokens: 1\n");
+  let asked = "";
+  page.once("dialog", (d) => ((asked = d.message()), d.accept()));
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => s.configEdits.length).toBe(2);
+  expect(asked).toContain("r-9");
+  expect(s.posts.filter((p) => p.path === "/api/config").map((p) => p.body.force)).toEqual([false, true]);
+  await expect(page.getByRole("dialog")).toBeHidden();
 });
 
 test("link a repository from the products page", async ({ page }, info) => {

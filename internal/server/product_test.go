@@ -12,6 +12,7 @@ import (
 
 	"github.com/mauza/ai-flow/internal/app"
 	"github.com/mauza/ai-flow/internal/config"
+	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/github/githubtest"
 	"github.com/mauza/ai-flow/internal/hub"
@@ -234,5 +235,47 @@ func TestRetroOfUnknownRun(t *testing.T) {
 	json.Unmarshal(e.call(t, "GET", "/api/runs/nope/retro", nil, 200), &out)
 	if out.Retro != nil {
 		t.Fatal("no retro expected")
+	}
+}
+
+func TestConfigEditsThatWouldFailActiveRunsNeedForce(t *testing.T) {
+	e := productServer(t)
+	e.app.Engine = engine.New(e.app.Cfg, e.app.Store, nil, e.app.Hub, nil)
+	src := `apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: ask, project: sandbox }
+spec:
+  start: ask
+  nodes:
+    ask:
+      type: llm
+      model: gpt-6-luna
+      prompt: Say hi.
+      outcomes: [done]
+      next: { done: $success }
+`
+	if _, issues, err := e.app.SaveFlow(t.Context(), "ask", src, "test", ""); err != nil || len(issues) > 0 {
+		t.Fatalf("save: %v %v", issues, err)
+	}
+	run, err := e.app.Engine.CreateRun(t.Context(), "ask", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	luna := "upstream: home\nmodel: gpt-6-luna\ncontext_tokens: 100000\nreasoning: true\n"
+	// Descriptive edits never affect runs.
+	e.call(t, "POST", "/api/config", map[string]any{"edits": []app.ConfigEdit{{Section: "models", Name: "gpt-6-luna", YAML: luna + "notes: just a note\n"}}}, 200)
+	// A change the run executes is refused, naming the run...
+	changed := strings.Replace(luna, "context_tokens: 100000", "context_tokens: 50000", 1)
+	body := e.call(t, "POST", "/api/config", map[string]any{"edits": []app.ConfigEdit{{Section: "models", Name: "gpt-6-luna", YAML: changed}}}, 409)
+	if !strings.Contains(string(body), run.ID) {
+		t.Fatalf("409 must name the run: %s", body)
+	}
+	if e.app.Cfg.Current().Catalog.Models["gpt-6-luna"].ContextTokens != 100000 {
+		t.Fatal("a refused edit must not apply")
+	}
+	// ...unless forced.
+	e.call(t, "POST", "/api/config", map[string]any{"force": true, "edits": []app.ConfigEdit{{Section: "models", Name: "gpt-6-luna", YAML: changed}}}, 200)
+	if e.app.Cfg.Current().Catalog.Models["gpt-6-luna"].ContextTokens != 50000 {
+		t.Fatal("a forced edit must apply")
 	}
 }

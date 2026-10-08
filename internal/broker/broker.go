@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -257,7 +258,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	}
 	for _, gr := range n.Grants {
 		name, _, _ := strings.Cut(gr, ":")
-		if g := b.cfg.Current().Catalog.Grants[name]; g != nil && g.Kind == config.GrantSecret && g.Env != "" && !contains(bundle.SecretEnv, g.Env) {
+		if g := b.cfg.Current().Catalog.Grants[name]; g != nil && g.Kind == config.GrantSecret && g.Env != "" && !slices.Contains(bundle.SecretEnv, g.Env) {
 			bundle.SecretEnv = append(bundle.SecretEnv, g.Env)
 		}
 	}
@@ -323,7 +324,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 				return nil, fmt.Errorf("mcp server %s: %w", g.Server, err)
 			}
 			for _, t := range tools {
-				if len(g.Tools) > 0 && !contains(g.Tools, t.Name) {
+				if len(g.Tools) > 0 && !slices.Contains(g.Tools, t.Name) {
 					continue
 				}
 				claims.MCP = append(claims.MCP, g.Server+"/"+t.Name)
@@ -496,14 +497,3 @@ func str(v any) string {
 	s, _ := v.(string)
 	return s
 }
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
-}
-
-var errBudget = errors.New("budget exceeded")

@@ -285,10 +285,19 @@ type ConfigEdit struct {
 	YAML    string `json:"yaml"`
 }
 
+// RunsAffectedError refuses a config edit that would fail active runs with
+// configuration drift; repeat it with force to apply it anyway.
+type RunsAffectedError struct{ Runs []string }
+
+func (e *RunsAffectedError) Error() string {
+	return fmt.Sprintf("this change would fail %d active run(s) with configuration drift: %s", len(e.Runs), strings.Join(e.Runs, ", "))
+}
+
 // EditConfig applies edits together: they are validated as a whole against
-// the environment, stored, and published to every component at once. The
-// warnings name saved flows that the change breaks.
-func (a *App) EditConfig(ctx context.Context, edits ...ConfigEdit) (warnings []string, err error) {
+// the environment, stored, and published to every component at once. Unless
+// forced, it refuses (*RunsAffectedError) when the change would fail active
+// runs. The warnings name saved flows that the change breaks.
+func (a *App) EditConfig(ctx context.Context, force bool, edits ...ConfigEdit) (warnings []string, err error) {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 	cur := a.Cfg.Current()
@@ -369,6 +378,15 @@ func (a *App) EditConfig(ctx context.Context, edits ...ConfigEdit) (warnings []s
 	next, err := cur.WithDocs(newCat, docs)
 	if err != nil {
 		return nil, err
+	}
+	if !force && a.Engine != nil {
+		drifted, err := a.Engine.DriftedRuns(ctx, next)
+		if err != nil {
+			return nil, err
+		}
+		if len(drifted) > 0 {
+			return nil, &RunsAffectedError{Runs: drifted}
+		}
 	}
 	set := map[string]string{kvCatalog: string(newCat)}
 	var del []string

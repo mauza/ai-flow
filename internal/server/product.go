@@ -12,21 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/mauza/ai-flow/internal/app"
-	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/storymap"
 	"github.com/mauza/ai-flow/internal/workspace"
 )
 
+// productRoutes serves product workspaces, docs and user story maps.
 func (s *Server) productRoutes(api func(string, http.HandlerFunc)) {
-	api("GET /api/config", s.getConfig)
-	api("POST /api/config", s.editConfig)
-	api("GET /api/repos", s.listRepos)
-	api("POST /api/repos/link", s.linkRepo)
-
 	api("GET /api/projects/{p}/product", s.product)
 	api("POST /api/projects/{p}/workspace/pull", s.pull)
 	api("POST /api/projects/{p}/workspace/commit", s.commit)
@@ -46,132 +39,6 @@ func (s *Server) productRoutes(api func(string, http.HandlerFunc)) {
 	api("POST /api/projects/{p}/maps/{map}/chat", s.askMap)
 	api("DELETE /api/projects/{p}/maps/{map}/chat", s.clearMapChat)
 	api("POST /api/projects/{p}/maps/{map}/apply", s.applyChanges)
-
-	api("GET /api/runs/{id}/retro", s.getRetro)
-	api("POST /api/runs/{id}/retro", s.startRetro)
-}
-
-// ---- config ----
-
-func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
-	cfg := s.app.Cfg.Current()
-	catDoc, projDocs := cfg.Docs()
-	var cat map[string]any
-	if err := yaml.Unmarshal(catDoc, &cat); err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	render := func(v any) string {
-		b, _ := yaml.Marshal(v)
-		return string(b)
-	}
-	sections := map[string]map[string]string{}
-	for _, name := range app.CatalogSections {
-		sections[name] = map[string]string{}
-		entries, _ := cat[name].(map[string]any)
-		for k, v := range entries {
-			sections[name][k] = render(v)
-		}
-	}
-	settings := map[string]string{}
-	for _, name := range app.CatalogSettings {
-		if v, ok := cat[name]; ok {
-			settings[name] = render(v)
-		}
-	}
-	projects := map[string]string{}
-	for name, d := range projDocs {
-		var doc map[string]any
-		yaml.Unmarshal(d, &doc)
-		projects[name] = render(map[string]any{"spec": doc["spec"]})
-	}
-	env := cfg.Env
-	hosts := []map[string]any{}
-	for _, h := range sortedKeys(env.Git.Hosts) {
-		g := env.Git.Hosts[h]
-		hosts = append(hosts, map[string]any{"host": h, "token_env": g.TokenEnv, "token_set": config.Secret(g.TokenEnv) != ""})
-	}
-	upstreams := []map[string]string{}
-	for _, name := range sortedKeys(env.LLM.Upstreams) {
-		upstreams = append(upstreams, map[string]string{"name": name, "base_url": env.LLM.Upstreams[name].BaseURL})
-	}
-	mcp := sortedKeys(env.MCP.Servers)
-	writeJSON(w, 200, map[string]any{
-		"sections": sections, "settings": settings, "projects": projects,
-		"seeded_at": s.app.SeededAt(r.Context()), "files_error": s.app.FilesError(r.Context()),
-		"env": map[string]any{
-			"git_hosts": hosts, "git_author": env.Git.AuthorName + " <" + env.Git.AuthorEmail + ">",
-			"github":    map[string]any{"api_url": env.GitHub.APIURL, "token_env": env.GitHub.TokenEnv, "token_set": config.Secret(env.GitHub.TokenEnv) != ""},
-			"upstreams": upstreams, "mcp_servers": nonNil(mcp), "metrics_url": env.Metrics.URL,
-		},
-	})
-}
-
-func (s *Server) editConfig(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Edits []app.ConfigEdit `json:"edits"`
-	}
-	if !readJSON(w, r, &in) {
-		return
-	}
-	if len(in.Edits) == 0 {
-		writeErr(w, 400, "no edits")
-		return
-	}
-	warnings, err := s.app.EditConfig(r.Context(), in.Edits...)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{"warnings": nonNil(warnings)})
-}
-
-// ---- repositories ----
-
-func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
-	repos, err := s.app.GitHub.Repos(r.Context())
-	if err != nil {
-		writeErr(w, 502, err.Error())
-		return
-	}
-	cfg := s.app.Cfg.Current()
-	linked := map[string]string{} // owner/name → project
-	for _, name := range sortedKeys(cfg.Projects) {
-		if g := cfg.Catalog.Grants[cfg.Projects[name].Spec.Repo]; g != nil {
-			if repo, err := github.ParseRepoURL(g.URL); err == nil && repo.Host == "github.com" {
-				key := strings.ToLower(repo.String())
-				if _, ok := linked[key]; !ok {
-					linked[key] = name
-				}
-			}
-		}
-	}
-	type row struct {
-		github.RepoInfo
-		Project string `json:"project,omitempty"`
-	}
-	out := []row{}
-	for _, rp := range repos {
-		out = append(out, row{rp, linked[strings.ToLower(rp.FullName)]})
-	}
-	writeJSON(w, 200, out)
-}
-
-func (s *Server) linkRepo(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		FullName    string `json:"full_name"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if !readJSON(w, r, &in) {
-		return
-	}
-	name, err := s.app.LinkRepo(r.Context(), in.FullName, in.Name, in.Description)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	writeJSON(w, 201, map[string]string{"project": name})
 }
 
 // ---- workspace ----
@@ -623,30 +490,4 @@ func (s *Server) applyChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"problems": after.Problems})
-}
-
-// ---- retrospectives ----
-
-func (s *Server) getRetro(w http.ResponseWriter, r *http.Request) {
-	retro, err := s.app.GetRetro(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{"retro": retro})
-}
-
-func (s *Server) startRetro(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Note string `json:"note"`
-	}
-	if r.ContentLength > 0 && !readJSON(w, r, &in) {
-		return
-	}
-	retro, err := s.app.StartRetro(r.Context(), r.PathValue("id"), in.Note)
-	if err != nil {
-		writeStoreErr(w, err)
-		return
-	}
-	writeJSON(w, 202, map[string]any{"retro": retro})
 }

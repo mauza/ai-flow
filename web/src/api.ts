@@ -470,7 +470,7 @@ export const api = {
   resumeRun: (id: string, node: string, note: string) => request<Run>("POST", `/api/runs/${id}/resume`, { node, note }),
   decide: (id: string, seq: number, outcome: string, note = "") => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome, note }),
   config: () => request<ConfigView>("GET", "/api/config"),
-  editConfig: (edits: ConfigEdit[]) => request<{ warnings: string[] }>("POST", "/api/config", { edits }),
+  editConfig: (edits: ConfigEdit[], force = false) => request<{ warnings: string[] }>("POST", "/api/config", { edits, force }),
   repos: () => request<RepoRow[]>("GET", "/api/repos"),
   linkRepo: (full_name: string, name: string, description: string) =>
     request<{ project: string }>("POST", "/api/repos/link", { full_name, name, description }),

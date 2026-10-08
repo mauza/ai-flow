@@ -4,7 +4,7 @@ import { api, type FileChange, type MapMessage } from "../api";
 import { useResource } from "../hooks";
 import { Spinner, useToast } from "../ui";
 import Markdown from "../product/Markdown";
-import DiffView from "../product/DiffView";
+import DiffView, { diffRows } from "../DiffView";
 
 const SUGGESTIONS = [
   "What is missing from the MVP release?",
@@ -129,7 +129,7 @@ function Changes({ project, changes, issues, applied, onApply }: { project: stri
             {c.content === null ? "delete " : ""}
             {c.path.replace(/^product\/user-story-maps\/[^/]+\//, "")}
           </summary>
-          <DiffView before={before[c.path] ?? ""} after={c.content ?? ""} />
+          <DiffView rows={diffRows(before[c.path] ?? "", c.content ?? "")} />
         </details>
       ))}
       {issues.length > 0 && (

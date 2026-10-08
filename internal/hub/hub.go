@@ -7,8 +7,8 @@ import (
 
 // Event says that something changed; clients refetch what they display.
 type Event struct {
-	Type string `json:"type"` // run | visit | task | flow | progress
-	ID   string `json:"id"`   // run id, task id or flow name
+	Type string `json:"type"` // run | visit | task | flow | progress | config
+	ID   string `json:"id"`   // run id, task id or flow name (config: a timestamp)
 	Seq  int    `json:"seq,omitempty"`
 	Text string `json:"text,omitempty"` // progress line
 }
