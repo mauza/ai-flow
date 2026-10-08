@@ -39,6 +39,11 @@ persistence:
   # and be writable by runAsUser. Switching an existing release between PVC and
   # hostPath needs a fresh install.
   hostPath: ""
+  # Extra PVC metadata, e.g. to opt into an external backup job. The server
+  # writes a verified daily snapshot to <dataDir>/backups (14 kept); back that
+  # up, not the live ai-flow.db, which is locked and mid-write.
+  labels: {}
+  annotations: {}
 
 # UID/GID the control plane runs as. kind sets these to your own uid so the
 # host folder needs no chmod.
