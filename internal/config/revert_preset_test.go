@@ -52,6 +52,9 @@ func TestRevertDeployPresetFastForwards(t *testing.T) {
 	work := filepath.Join(dir, "work")
 	git(dir, "clone", "--quiet", origin, work)
 	git(work, "checkout", "--quiet", "-B", "ai-flow/release", "origin/ai-flow/release")
+	// Like a node pod: the script cannot reach the remote (only the runner's
+	// own git commands carry git-proxy credentials), so any fetch must fail.
+	git(work, "remote", "set-url", "origin", "http://127.0.0.1:1/unreachable.git")
 	cmd := exec.Command("bash", "-o", "pipefail", "-c", script)
 	cmd.Dir = work
 	cmd.Env = append(os.Environ(), "AI_FLOW_INPUT_SHA="+merged, "AI_FLOW_INPUT_BASE=main",
@@ -64,5 +67,6 @@ func TestRevertDeployPresetFastForwards(t *testing.T) {
 	}
 	git(work, "merge-base", "--is-ancestor", runHead, "HEAD") // fast-forward of the run branch
 	git(work, "merge-base", "--is-ancestor", merged, "HEAD")  // and of main
+	git(work, "remote", "set-url", "origin", origin) // the runner pushes with credentials
 	git(work, "push", "--quiet", "origin", "HEAD:refs/heads/ai-flow/release")
 }

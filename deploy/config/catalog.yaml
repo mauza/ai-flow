@@ -671,9 +671,10 @@ presets:
     inputs:
       sha: ${{ run.merged_sha }}
       base: ${{ run.base }}
+    # No git fetch: in a pod only the runner's own git commands can authenticate
+    # to the git proxy, and the pod's fresh clone already has origin/<base>.
     run: |
       set -e
-      git fetch --quiet origin "$AI_FLOW_INPUT_BASE"
       git reset --quiet --hard "origin/$AI_FLOW_INPUT_BASE"
       if [ "$(git rev-list --parents -n1 "$AI_FLOW_INPUT_SHA" | wc -w)" -gt 2 ]; then
         git revert --no-edit -m 1 "$AI_FLOW_INPUT_SHA"

@@ -103,7 +103,8 @@ spec:
       inputs: { sha: "${{ run.merged_sha }}", base: "${{ run.base }}" }
       run: |
         set -e
-        git fetch --quiet origin "$AI_FLOW_INPUT_BASE"
+        # No fetch: only the runner's git commands can authenticate to the git
+        # proxy, and the pod's fresh clone already has origin/<base>.
         git reset --quiet --hard "origin/$AI_FLOW_INPUT_BASE"
         git revert --no-edit -m 1 "$AI_FLOW_INPUT_SHA"
       next: { pass: revert_pr, fail: $fail }
