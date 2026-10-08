@@ -98,7 +98,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	mcp := sortedKeys(env.MCP.Servers)
 	writeJSON(w, 200, map[string]any{
 		"sections": sections, "settings": settings, "projects": projects,
-		"seeded_at": s.app.SeededAt(r.Context()),
+		"seeded_at": s.app.SeededAt(r.Context()), "files_error": s.app.FilesError(r.Context()),
 		"env": map[string]any{
 			"git_hosts": hosts, "git_author": env.Git.AuthorName + " <" + env.Git.AuthorEmail + ">",
 			"github":    map[string]any{"api_url": env.GitHub.APIURL, "token_env": env.GitHub.TokenEnv, "token_set": config.Secret(env.GitHub.TokenEnv) != ""},

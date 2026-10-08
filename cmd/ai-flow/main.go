@@ -137,12 +137,17 @@ func serverCmd(ctx context.Context, args []string) error {
 	defer st.Close()
 	// The catalog and projects come from the database from now on; the
 	// environment still comes from the files.
-	cfg, seeded, err := app.LoadStoredConfig(ctx, st, cfg)
+	cfg, stored, err := app.LoadStoredConfig(ctx, st, cfg)
 	if err != nil {
 		return err
 	}
-	if seeded {
+	switch {
+	case stored.Seeded:
 		slog.Info("catalog and projects seeded into the database from the config files; edit them in the UI from now on")
+	case stored.Error != "":
+		slog.Error("config files", "err", stored.Error)
+	case len(stored.FromFiles) > 0:
+		slog.Info("took entries the config files changed since the last start", "entries", stored.FromFiles)
 	}
 	env := &cfg.Env
 	go st.Backups(ctx, filepath.Join(env.Server.DataDir, "backups"), 14)

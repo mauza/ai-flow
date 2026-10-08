@@ -247,6 +247,7 @@ export interface ConfigView {
   settings: Record<string, string>;
   projects: Record<string, string>;
   seeded_at: number;
+  files_error?: string;
   env: {
     git_hosts: { host: string; token_env: string; token_set: boolean }[];
     git_author: string;

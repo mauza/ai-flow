@@ -39,9 +39,9 @@ func productServer(t *testing.T) *productEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	cfg, seeded, err := app.LoadStoredConfig(t.Context(), st, files)
-	if err != nil || !seeded {
-		t.Fatalf("seed: %v %v", seeded, err)
+	cfg, stored, err := app.LoadStoredConfig(t.Context(), st, files)
+	if err != nil || !stored.Seeded {
+		t.Fatalf("seed: %+v %v", stored, err)
 	}
 	repo := githubtest.New("o", "app", map[string]string{"product/README.md": "# App\nA small app.\n", "main.go": "package main\n"})
 	repo.Description = "The app"
@@ -97,9 +97,9 @@ func TestConfigEditsAreLiveAndStored(t *testing.T) {
 		t.Fatal("overview does not show the edit")
 	}
 	// A restart reads the stored version, not the files.
-	again, seeded, err := app.LoadStoredConfig(t.Context(), e.app.Store, e.files)
-	if err != nil || seeded || !strings.HasPrefix(again.Catalog.Models["gpt-6-luna"].Notes, "Edited in the UI.") {
-		t.Fatalf("restart: seeded=%v err=%v", seeded, err)
+	again, stored, err := app.LoadStoredConfig(t.Context(), e.app.Store, e.files)
+	if err != nil || stored.Seeded || len(stored.FromFiles) != 0 || !strings.HasPrefix(again.Catalog.Models["gpt-6-luna"].Notes, "Edited in the UI.") {
+		t.Fatalf("restart: %+v err=%v", stored, err)
 	}
 
 	// Invalid edits are refused and change nothing.

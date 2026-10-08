@@ -168,5 +168,14 @@ it applies, takes effect immediately without a restart, and warns about saved
 flows it breaks. The environment (endpoints, secrets, runtime settings) still
 comes from the config files.
 
+The files keep working for releases: the server remembers the files as it last
+read them, and on each start every entry that changed in the files since then
+(a runtime image bumped by a release, a preset updated by a catalog sync, a
+project) replaces that entry in the database. Entries the files did not change
+keep their UI edits; when both changed the same entry, the files win. If the
+result would be invalid (the files' planner names a model deleted in the UI,
+say), nothing from the files is applied, the database version is served, and
+**Settings** shows why until it is resolved.
+
 To start over from the files, delete the `config/` keys from the `kv` table
 and restart.
