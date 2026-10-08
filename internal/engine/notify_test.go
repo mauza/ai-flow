@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
+	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/store"
@@ -122,5 +123,57 @@ func TestNoNotificationsForUnselectedEvents(t *testing.T) {
 	}
 	if got := f.titles(t, 1); strings.Join(got, "|") != "f: succeeded" {
 		t.Fatalf("sent %q", got)
+	}
+}
+
+func TestShortDurationReadsNaturally(t *testing.T) {
+	for d, want := range map[time.Duration]string{0: "0s", 300 * time.Millisecond: "300ms", 45 * time.Second: "45s",
+		10 * time.Minute: "10m", 90 * time.Minute: "1h30m", 4 * time.Hour: "4h"} {
+		if got := engine.ShortDuration(d); got != want {
+			t.Errorf("%s: got %q want %q", d, got, want)
+		}
+	}
+}
+
+type linkHooks struct{ posted []string }
+
+func (c *linkHooks) RunStarted(context.Context, *store.Task, *store.Run)  {}
+func (c *linkHooks) RunFinished(context.Context, *store.Task, *store.Run) {}
+func (c *linkHooks) Comment(_ context.Context, t *store.Task, body string) error {
+	c.posted = append(c.posted, t.ID)
+	return nil
+}
+
+func TestCommentTaskOnlyClaimsALinkedTask(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		h := newHarness(t)
+		hooks := &linkHooks{}
+		h.e.SetHooks(hooks)
+		task := &store.Task{ID: "t-1", Source: "manual", Title: "x"}
+		if linked {
+			task.Source, task.ExternalID, task.Identifier = "linear", "uuid", "MAU-9"
+		}
+		if err := h.st.CreateTask(h.ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", Project: "sandbox", YAML: header + `  start: say
+  nodes:
+    say: { type: action, action: comment_task, with: { body: hi }, next: { done: $success } }
+`}); err != nil {
+			t.Fatal(err)
+		}
+		r, err := h.e.CreateRun(h.ctx, "f", 0, "t-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.e.Tick(h.ctx)
+		v := h.current(r.ID)
+		want := "No linked task to comment on"
+		if linked {
+			want = "Commented on MAU-9"
+		}
+		if v.Summary != want || len(hooks.posted) != map[bool]int{false: 0, true: 1}[linked] {
+			t.Errorf("linked=%v: summary %q, posted %v", linked, v.Summary, hooks.posted)
+		}
 	}
 }
