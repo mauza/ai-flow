@@ -135,6 +135,7 @@ func serverCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
+	go st.Backups(ctx, filepath.Join(env.Server.DataDir, "backups"), 14)
 	signer, err := grant.LoadOrCreate(env.Server.DataDir)
 	if err != nil {
 		return err
