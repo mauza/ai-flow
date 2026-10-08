@@ -269,8 +269,30 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			v.errf(id, "default", "%q is not an outcome", n.Default)
 		}
 	case flow.TypeAction:
-		if !contains(cat.Actions, n.Action) {
+		spec, known := flow.Actions[n.Action]
+		if !known {
 			v.errf(id, "action", "unknown action %q (one of %s)", n.Action, strings.Join(cat.Actions, ", "))
+			break
+		}
+		// An action can emit every outcome of its spec, so all must be routed.
+		allowed := append([]string{}, spec.Outcomes...)
+		if spec.Waits {
+			allowed = append(allowed, flow.OutcomeTimeout)
+		}
+		for _, o := range n.Outcomes {
+			if !contains(allowed, o) {
+				v.errf(id, "outcomes", "%q is not an outcome of %s (%s)", o, n.Action, strings.Join(allowed, ", "))
+			}
+		}
+		for _, o := range allowed {
+			if !contains(n.Outcomes, o) {
+				v.errf(id, "outcomes", "%s can emit %q: declare and route it", n.Action, o)
+			}
+		}
+		for k := range n.With {
+			if !contains(spec.With, k) {
+				v.warnf(id, "with."+k, "declared but not enforced: %s ignores %q (accepts %s)", n.Action, k, strings.Join(spec.With, ", "))
+			}
 		}
 		if n.Action == "open_pull_request" && v.r.Repo == "" {
 			v.errf(id, "action", "open_pull_request needs spec.repo or a project repo")
@@ -297,7 +319,7 @@ var consumers = map[string][]string{
 	"skills":     {flow.TypeAgent},
 	"runtime":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"retry":      {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
-	"timeout":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate},
+	"timeout":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate, flow.TypeAction},
 	"prompt":     {flow.TypeLLM, flow.TypeAgent, flow.TypeGate},
 	"inputs":     {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck, flow.TypeGate, flow.TypeSwitch, flow.TypeAction},
 	"outputs":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},

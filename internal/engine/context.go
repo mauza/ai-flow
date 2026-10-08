@@ -295,6 +295,7 @@ func (e *Engine) evalSwitch(ctx context.Context, r *store.Run, res *resolve.Reso
 type actionResult struct {
 	outcome, summary string
 	outputs          map[string]any
+	waiting          bool // not finished: summary is progress, poll again later
 }
 
 func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resolved, n *resolve.Node, v *store.Visit) (*actionResult, error) {
@@ -325,6 +326,14 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 	}
 	e.publishVisit(r.ID, v.Seq)
 	switch n.Action {
+	case "merge_pull_request":
+		return e.mergePR(ctx, r, res, with)
+	case "wait_for_checks":
+		return e.waitForChecks(ctx, r, res, v, with)
+	case "wait_for_deploy":
+		return e.waitForDeploy(ctx, r, res, with)
+	case "check_health":
+		return e.checkHealth(ctx, r, v, with)
 	case "open_pull_request":
 		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":

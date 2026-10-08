@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -90,10 +91,20 @@ type Engine struct {
 	// OrphanGrace is how long a finished job may go without a posted result
 	// before its visit fails (results are posted just before the pod exits).
 	OrphanGrace time.Duration
+	// PollInterval spaces the polls of waiting actions (CI, deploys, health).
+	PollInterval time.Duration
+	// HTTP probes deploy targets and queries metrics.
+	HTTP *http.Client
+
+	polls  map[string]time.Time      // run/seq → last poll of a waiting action
+	health map[string]map[string]int // run/seq → check → consecutive violations
+	passes map[string]map[string]int // run/seq → check → successful evaluations
 }
 
 func New(cfg *config.Config, st *store.Store, l Launcher, h *hub.Hub, gh *github.Client) *Engine {
-	return &Engine{cfg: cfg, store: st, launcher: l, hub: h, gh: gh, wake: make(chan struct{}, 1), orphans: map[string]time.Time{}, OrphanGrace: 15 * time.Second}
+	return &Engine{cfg: cfg, store: st, launcher: l, hub: h, gh: gh, wake: make(chan struct{}, 1), orphans: map[string]time.Time{}, OrphanGrace: 15 * time.Second,
+		PollInterval: 15 * time.Second, HTTP: &http.Client{Timeout: 10 * time.Second},
+		polls: map[string]time.Time{}, health: map[string]map[string]int{}, passes: map[string]map[string]int{}}
 }
 
 // Tick runs one pass over active and queued runs (tests drive the engine with it).
@@ -641,19 +652,7 @@ func (e *Engine) execute(ctx context.Context, r *store.Run, res *resolve.Resolve
 		if n.Action == "comment_task" && v.Status == store.VisitRunning {
 			return e.visitError(ctx, r, v, "comment delivery uncertain after interruption; inspect the task before retrying manually")
 		}
-		out, err := e.runAction(ctx, r, res, n, v)
-		if err != nil {
-			return err
-		}
-		outputs, err := json.Marshal(out.outputs)
-		if err != nil {
-			return err
-		}
-		if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": out.outcome, "summary": out.summary, "outputs": string(outputs), "finished_at": store.Now()}); err != nil {
-			return err
-		}
-		v.Status, v.Outcome = store.VisitSucceeded, out.outcome
-		return e.advance(ctx, r, v)
+		return e.execAction(ctx, r, res, n, v)
 	}
 	return rejectf("unknown node type %q", n.Type)
 }

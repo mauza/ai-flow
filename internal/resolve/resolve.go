@@ -72,6 +72,9 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 		if n.Timeout.Duration == 0 && flow.PodType(n.Type) {
 			n.Timeout.Duration = cfg.Env.Runs.DefaultTimeout.Duration
 		}
+		if spec, ok := flow.Actions[n.Action]; ok && n.Type == flow.TypeAction && spec.Waits && n.Timeout.Duration == 0 {
+			n.Timeout.Duration = spec.Timeout
+		}
 		if n.OnExhausted == "" && n.MaxVisits > 0 {
 			n.OnExhausted = flow.Fail
 		}
@@ -280,7 +283,14 @@ func effectiveOutcomes(n *flow.Node) []string {
 	case flow.TypeParallel:
 		return []string{flow.OutcomeJoined}
 	case flow.TypeAction:
-		if len(out) == 0 {
+		if spec, ok := flow.Actions[n.Action]; ok && len(out) == 0 {
+			for _, o := range spec.Outcomes {
+				add(o)
+			}
+			if spec.Waits {
+				add(flow.OutcomeTimeout)
+			}
+		} else if len(out) == 0 {
 			add("done")
 		}
 	case flow.TypeGate:

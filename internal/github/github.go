@@ -166,3 +166,95 @@ func (c *Client) File(ctx context.Context, r Repo, ref, path string) (string, er
 	b, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
 	return string(b), err
 }
+
+// BranchHead returns the commit SHA a branch points at.
+func (c *Client) BranchHead(ctx context.Context, r Repo, branch string) (string, error) {
+	var b struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
+	}
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/branches/%s", r.Owner, r.Name, url.PathEscape(branch)), nil, &b)
+	return b.Commit.SHA, err
+}
+
+// PRState is the merge-relevant state of a pull request.
+type PRState struct {
+	Number         int    `json:"number"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"` // open | closed
+	Merged         bool   `json:"merged"`
+	Mergeable      *bool  `json:"mergeable"` // nil while GitHub computes it
+	MergeableState string `json:"mergeable_state"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Head           struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+func (c *Client) PR(ctx context.Context, r Repo, number int) (*PRState, error) {
+	var pr PRState
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/pulls/%d", r.Owner, r.Name, number), nil, &pr)
+	return &pr, err
+}
+
+// MergePR merges a pull request at headSHA (refusing if the head moved) and
+// returns the merge commit.
+func (c *Client) MergePR(ctx context.Context, r Repo, number int, method, headSHA string) (string, error) {
+	var out struct {
+		SHA    string `json:"sha"`
+		Merged bool   `json:"merged"`
+	}
+	err := c.do(ctx, "PUT", fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", r.Owner, r.Name, number), map[string]any{"merge_method": method, "sha": headSHA}, &out)
+	if err == nil && !out.Merged {
+		err = fmt.Errorf("github: merge of #%d not performed", number)
+	}
+	return out.SHA, err
+}
+
+// Check is one CI result on a commit: a check run or a commit status.
+type Check struct {
+	Name string
+	Done bool
+	OK   bool
+	URL  string
+	Note string // conclusion or state
+}
+
+// Checks returns every check run and commit status reported for ref.
+func (c *Client) Checks(ctx context.Context, r Repo, ref string) ([]Check, error) {
+	var runs struct {
+		CheckRuns []struct {
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			HTMLURL    string `json:"html_url"`
+		} `json:"check_runs"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", r.Owner, r.Name, url.PathEscape(ref)), nil, &runs); err != nil {
+		return nil, err
+	}
+	var status struct {
+		Statuses []struct {
+			Context   string `json:"context"`
+			State     string `json:"state"`
+			TargetURL string `json:"target_url"`
+		} `json:"statuses"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s/status", r.Owner, r.Name, url.PathEscape(ref)), nil, &status); err != nil {
+		return nil, err
+	}
+	var out []Check
+	for _, cr := range runs.CheckRuns {
+		ok := cr.Conclusion == "success" || cr.Conclusion == "neutral" || cr.Conclusion == "skipped"
+		note := cr.Conclusion
+		if note == "" {
+			note = cr.Status
+		}
+		out = append(out, Check{Name: cr.Name, Done: cr.Status == "completed", OK: ok, URL: cr.HTMLURL, Note: note})
+	}
+	for _, s := range status.Statuses {
+		out = append(out, Check{Name: s.Context, Done: s.State != "pending", OK: s.State == "success", URL: s.TargetURL, Note: s.State})
+	}
+	return out, nil
+}
