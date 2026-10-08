@@ -121,6 +121,7 @@ export default function Settings() {
         <h1>Settings</h1>
         <span className="sub">The catalog and projects. Changes are checked first, then apply right away.</span>
       </div>
+      {d.files_error && <div className="warn-box">{d.files_error}</div>}
       <div className="tabs settings-tabs" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab${tab === t.id ? " active" : ""}`} onClick={() => setTab(t.id)}>
@@ -324,8 +325,8 @@ function Connections({ cfg }: { cfg: ConfigView }) {
       </div>
       {cfg.seeded_at > 0 && (
         <p className="small faint">
-          The catalog and projects have been stored in ai-flow's database since {new Date(cfg.seeded_at).toLocaleString()}; edits to the config files no longer
-          change them.
+          The catalog and projects have been stored in ai-flow's database since {new Date(cfg.seeded_at).toLocaleString()}. When an entry changes in the config
+          files (a release bumping a runtime image, say), that entry is taken from the files at the next start; other entries keep the edits made here.
         </p>
       )}
     </div>
