@@ -49,7 +49,7 @@ function locate(text: string, issue: Issue): { from: number; to: number } | null
   return lineRange(start);
 }
 
-export default function YamlEditor({ value, onChange, issues, readOnly, fileName }: { value: string; onChange: (v: string) => void; issues: Issue[]; readOnly?: boolean; fileName?: string }) {
+export default function YamlEditor({ value, onChange, issues, readOnly, fileName, hint }: { value: string; onChange: (v: string) => void; issues: Issue[]; readOnly?: boolean; fileName?: string; hint?: string }) {
   const [copied, setCopied] = useState(false);
   const dark = useDark();
   const extensions = useMemo(
@@ -84,7 +84,7 @@ export default function YamlEditor({ value, onChange, issues, readOnly, fileName
   return (
     <div className="cm-wrap">
       <div className="row" style={{ padding: "6px 10px", borderBottom: "1px solid var(--border)", gap: 6 }}>
-        <span className="small faint">Edits here update the graph as you type. Ctrl+S saves a version.</span>
+        <span className="small faint">{hint ?? "Edits here update the graph as you type. Ctrl+S saves a version."}</span>
         <span className="spacer" />
         <button
           className="btn ghost sm"

@@ -267,7 +267,7 @@ func (m *Manager) status(project string) (*Status, error) {
 
 // changes compares work against the checked-out commit (by blob SHA).
 func (m *Manager) changes(project string, st *state) ([]Change, error) {
-	var out []Change
+	out := []Change{} // never null in JSON
 	seen := map[string]bool{}
 	work := m.WorkDir(project)
 	err := filepath.WalkDir(work, func(p string, d fs.DirEntry, err error) error {

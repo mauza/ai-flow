@@ -7,11 +7,15 @@ import Board from "./pages/Board";
 import Flows from "./pages/Flows";
 import Runs from "./pages/Runs";
 import Catalog from "./pages/Catalog";
+import Products from "./pages/Products";
+import Settings from "./pages/Settings";
 import { Spinner, ToastProvider } from "./ui";
 
 // The graph pages pull in ELK and CodeMirror; load them on demand.
 const FlowPage = lazy(() => import("./pages/FlowPage"));
 const RunPage = lazy(() => import("./pages/RunPage"));
+const ProductPage = lazy(() => import("./pages/ProductPage"));
+const StoryMapPage = lazy(() => import("./pages/StoryMapPage"));
 
 const Loading = ({ children }: { children: ReactNode }) => (
   <Suspense
@@ -35,7 +39,11 @@ const router = createBrowserRouter([
       { path: "flows/:name", element: <Loading><FlowPage /></Loading> },
       { path: "runs", element: <Runs /> },
       { path: "runs/:id", element: <Loading><RunPage /></Loading> },
+      { path: "products", element: <Products /> },
+      { path: "products/:p", element: <Loading><ProductPage /></Loading> },
+      { path: "products/:p/maps/:map", element: <Loading><StoryMapPage /></Loading> },
       { path: "catalog", element: <Catalog /> },
+      { path: "settings", element: <Settings /> },
       { path: "*", element: <div className="page">Not found.</div> },
     ],
   },

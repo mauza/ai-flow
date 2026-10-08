@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Boxes, KanbanSquare, Library, Workflow, Play } from "lucide-react";
+import { Boxes, KanbanSquare, Library, Map as MapIcon, Play, Settings2, Workflow } from "lucide-react";
 import { api } from "./api";
 import { useLive, useResource } from "./hooks";
 
@@ -24,6 +24,10 @@ export default function Shell() {
           <KanbanSquare />
           <span className="lbl">Board</span>
         </NavLink>
+        <NavLink to="/products" className="nav-link" aria-label="Products">
+          <MapIcon />
+          <span className="lbl">Products</span>
+        </NavLink>
         <NavLink to="/flows" className="nav-link" aria-label="Flows">
           <Workflow />
           <span className="lbl">Flows</span>
@@ -40,6 +44,10 @@ export default function Shell() {
         <NavLink to="/catalog" className="nav-link" aria-label="Catalog">
           <Library />
           <span className="lbl">Catalog</span>
+        </NavLink>
+        <NavLink to="/settings" className="nav-link" aria-label="Settings">
+          <Settings2 />
+          <span className="lbl">Settings</span>
         </NavLink>
         <div className="sidebar-foot">
           <span className="live" title={live ? "Receiving live updates" : "Reconnecting…"}>

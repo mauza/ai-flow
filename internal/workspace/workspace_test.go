@@ -41,8 +41,8 @@ func TestCheckoutEditCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Changes) != 0 {
-		t.Fatalf("fresh checkout has changes: %v", st.Changes)
+	if st.Changes == nil || len(st.Changes) != 0 {
+		t.Fatalf("fresh checkout must have an empty (not null) change list: %#v", st.Changes)
 	}
 	if b, err := m.Read("app", "product/README.md"); err != nil || string(b) != "# App\n" {
 		t.Fatalf("read: %q %v", b, err)
