@@ -1,0 +1,122 @@
+# Release pipeline for a project that deploys on merge (its deploy.branch is
+# the flow base): verify locally and in CI, ship by merging, confirm the
+# rollout, soak on health checks, and roll back automatically if degraded.
+# Copy and specialize project, runtime, grants and the test command.
+apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata:
+  name: release-pipeline
+  project: template-project
+  start: manual
+spec:
+  description: Replace with the task and acceptance criteria; merging this flow's PR deploys to production.
+  repo: { grant: repo/template, base: main }
+  budget: { usd: 4 }
+  defaults:
+    runtime: fixture-go
+    harness: pi
+    timeout: 15m
+    llm:
+      limits: { tokens: 80000, turns: 30 }
+  start: implement
+  nodes:
+    implement:
+      type: agent
+      model: gpt-6.1-sol
+      grants: ["repo/template:write"]
+      prompt: |
+        Implement the task with focused tests. If an earlier pass failed (local
+        tests, QA defects, or CI), fix exactly what it reported.
+      outputs: { summary_of_change: string }
+      outcomes: [done, stuck]
+      max_visits: 3
+      on_exhausted: $fail
+      next: { done: verify, stuck: $fail }
+
+    # Local verification: independent, read-only, so it runs in parallel.
+    verify:
+      type: parallel
+      branches: [unit, qa]
+      join: verified
+    unit:
+      type: check
+      run: go test -count=1 ./...
+      next: { pass: verified, fail: verified }
+    qa:
+      type: agent
+      model: gpt-6-luna
+      prompt: |
+        Act as QA: start the app locally, exercise the changed behavior and its
+        edge cases, and report defects with repro steps. Do not edit files.
+      outputs: { defects: [string], tested: [string] }
+      outcomes: [passed, defects, blocked]
+      next: { passed: verified, defects: verified, blocked: verified }
+    verified:
+      type: join
+      cases:
+        - when: 'nodes.unit.outcome == "pass" && nodes.qa.outcome == "passed"'
+          outcome: ok
+      default: fix
+      next: { ok: open_pr, fix: implement }
+
+    open_pr:
+      type: action
+      action: open_pull_request
+      with: { title: "${{ task.title }}", body: "${{ nodes.implement.outputs.summary_of_change }}" }
+      next: { done: ci }
+    ci:
+      type: action
+      action: wait_for_checks
+      max_visits: 3
+      on_exhausted: $fail
+      next: { passed: deploy, failed: implement, none: $fail, timeout: $fail }
+
+    # Merging into the deploy branch is the production deploy.
+    deploy:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: triage }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: 10m }
+      next: { healthy: $success, degraded: triage, timeout: triage }
+
+    # Automatic rollback: diagnose, revert the merge, ship the revert, fail the run.
+    triage:
+      type: llm
+      model: gpt-6.1-sol
+      prompt: |
+        Production degraded after this release. Relate the violated health
+        checks in the previous step to the released diff: likely cause, evidence,
+        and what to fix before shipping again.
+      outputs: { cause: string, fix: string }
+      outcomes: [diagnosed]
+      next: { diagnosed: revert }
+    revert:
+      type: check
+      grants: ["repo/template:write"]
+      inputs: { sha: "${{ run.merged_sha }}", base: "${{ run.base }}" }
+      run: |
+        set -e
+        git fetch --quiet origin "$AI_FLOW_INPUT_BASE"
+        git reset --quiet --hard "origin/$AI_FLOW_INPUT_BASE"
+        git revert --no-edit -m 1 "$AI_FLOW_INPUT_SHA"
+      next: { pass: revert_pr, fail: $fail }
+    revert_pr:
+      type: action
+      action: open_pull_request
+      with: { title: "Revert: ${{ task.title }}", body: "${{ nodes.triage.outputs.cause }}" }
+      next: { done: revert_ci }
+    revert_ci:
+      type: action
+      action: wait_for_checks
+      next: { passed: revert_deploy, failed: $fail, none: $fail, timeout: $fail }
+    revert_deploy:
+      type: action
+      action: merge_pull_request
+      next: { merged: $fail, conflict: $fail, blocked: $fail, timeout: $fail }

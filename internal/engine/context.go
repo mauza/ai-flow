@@ -61,6 +61,12 @@ func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *
 		var outputs map[string]any
 		json.Unmarshal(v.Outputs, &outputs)
 		history[v.Node] = append(history[v.Node], map[string]any{"visit": v.Visit, "outcome": v.Outcome, "summary": v.Summary, "outputs": outputs})
+		if node := res.Nodes[v.Node]; node != nil && node.Action == "merge_pull_request" && v.Outcome == "merged" {
+			// run.merged_sha: the latest merge, whatever the deploy node is called.
+			if sha, _ := outputs["sha"].(string); sha != "" {
+				runCtx["merged_sha"] = sha
+			}
+		}
 		nodes[v.Node] = map[string]any{"outcome": v.Outcome, "summary": v.Summary, "outputs": outputs, "visit": v.Visit}
 		lastDone = v
 	}

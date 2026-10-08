@@ -469,8 +469,19 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	if len(cat.Presets) > 0 {
 		writePresetMenu(&sb, cat.Presets)
 	}
-	sb.WriteString("\n## Actions (`type: action`)\n\n- `open_pull_request`: opens a PR from the run branch. `with: { title, body, draft }`. Outcome: done.\n- `comment_task`: comments on the source task. `with: { body }`. Outcome: done.\n")
+	sb.WriteString("\n## Actions (`type: action`; route every outcome)\n\n")
+	for _, name := range flow.ActionNames() {
+		spec := flow.Actions[name]
+		fmt.Fprintf(&sb, "- `%s`: %s", name, spec.Doc)
+		if len(spec.With) > 0 {
+			fmt.Fprintf(&sb, " with: %s.", strings.Join(spec.With, ", "))
+		}
+		sb.WriteString("\n")
+	}
 	fmt.Fprintf(&sb, "\n# Project `%s`\n\nRepo grant: `%s` (base branch `%s`). %s\n", proj.Metadata.Name, proj.Spec.Repo, proj.Spec.Base, proj.Spec.Description)
+	if d := proj.Spec.Deploy; d != nil {
+		writeDeploy(&sb, proj.Spec.Base, d)
+	}
 	sb.WriteString("\n# Planning guidance\n\n")
 	if g := strings.TrimSpace(cat.Planner.Guidance); g != "" {
 		sb.WriteString(g + "\n\n")
@@ -664,3 +675,25 @@ spec:
       uses: preset/open-pull-request
       next: { done: $success }
 `
+
+// writeDeploy explains a project that ships to production on merge.
+func writeDeploy(sb *strings.Builder, base string, d *config.Deploy) {
+	fmt.Fprintf(sb, "\n## Deploys on merge\n\nMerging a PR into `%s` ships to production: CI/CD builds and rolls it out", d.Branch)
+	if d.URL != "" {
+		fmt.Fprintf(sb, " (%s)", d.URL)
+	}
+	sb.WriteString(".")
+	if d.Branch != base {
+		fmt.Fprintf(sb, " This project's flows target `%s`, so merging them does not deploy.\n", base)
+		return
+	}
+	sb.WriteString(` When the task should reach production, build a release pipeline:
+
+1. work and its local verification (tests, lint, local-stack-test; qa-test for user-facing changes), in parallel where independent;
+2. open-pull-request, then ci-checks (passed → on; failed → back to the fix step);
+3. deploy (merge) → wait-for-deploy → monitor-deploy;
+4. healthy → comment-task or $success; degraded or timeout → deploy-triage → revert-deploy (repo write grant) → open-pull-request → ci-checks → deploy → $fail, so the run reports the rollback.
+
+The validator enforces that every deploy follows a passing ci-checks with no repo-writing step after it, and that after a deploy the run only succeeds through wait-for-deploy then monitor-deploy (healthy). Tasks that should not ship (investigations, drafts) end before deploy.
+`)
+}

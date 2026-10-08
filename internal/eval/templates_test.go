@@ -19,8 +19,8 @@ func TestTemplatesValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "*.yaml"))
-	if err != nil || len(paths) != 3 {
-		t.Fatalf("want three templates: %v %v", paths, err)
+	if err != nil || len(paths) != 4 {
+		t.Fatalf("want four templates: %v %v", paths, err)
 	}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {

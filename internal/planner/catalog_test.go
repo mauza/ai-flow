@@ -141,3 +141,27 @@ func TestPresetMenuLegacyMetadataOptional(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployingProjectGetsTheReleasePipeline(t *testing.T) {
+	cfg, err := config.Load("../../deploy/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(cfg, nil, nil)
+	plain := p.systemPrompt(cfg.Projects["sandbox"])
+	for _, a := range flow.ActionNames() {
+		if !strings.Contains(plain, "- `"+a+"`: ") {
+			t.Errorf("action %s missing from the menu", a)
+		}
+	}
+	if strings.Contains(plain, "Deploys on merge") {
+		t.Error("a project without deploy config must not get release instructions")
+	}
+	cfg.Projects["sandbox"].Spec.Deploy = &config.Deploy{Branch: "main", URL: "https://games.example"}
+	prompt := p.systemPrompt(cfg.Projects["sandbox"])
+	for _, cue := range []string{"## Deploys on merge", "Merging a PR into `main` ships to production", "(https://games.example)", "deploy (merge) → wait-for-deploy → monitor-deploy", "revert-deploy"} {
+		if !strings.Contains(prompt, cue) {
+			t.Errorf("missing %q", cue)
+		}
+	}
+}
