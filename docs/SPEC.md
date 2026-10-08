@@ -203,6 +203,11 @@ The checked-in catalog has no model fallback. A flow may explicitly opt into
 `fallbacks: [gpt-6-luna]` and a corresponding `fallback` limit action if its project
 allows Luna; this is a per-flow policy, not an automatic catalog default.
 
+Precedence: node → preset → flow defaults → project defaults → the catalog
+model's own `llm` → catalog defaults → built-ins. A model entry can therefore
+give a free local model a larger token budget than the catalog-wide default;
+`limits` merge field by field (raising `tokens` keeps the default `turns`).
+
 Actions: `retry` (exponential backoff, honours `Retry-After`), `wait` (until the
 upstream's reset time, capped by `max_wait`), `fallback` (next model), `outcome`
 (stop, emit `limit`), `fail` (step error → run fails). `then` chains. Layering:
