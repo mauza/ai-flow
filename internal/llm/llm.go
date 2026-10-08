@@ -42,11 +42,11 @@ type Options struct {
 
 // Chat sends messages to a catalog model and returns the reply text.
 func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Options) (string, Usage, error) {
-	m := c.cfg.Catalog.Models[model]
+	m := c.cfg.Current().Catalog.Models[model]
 	if m == nil {
 		return "", Usage{}, fmt.Errorf("unknown model %q", model)
 	}
-	up, ok := c.cfg.Env.LLM.Upstreams[m.Upstream]
+	up, ok := c.cfg.Current().Env.LLM.Upstreams[m.Upstream]
 	if !ok {
 		return "", Usage{}, fmt.Errorf("model %s: unknown upstream %q", model, m.Upstream)
 	}

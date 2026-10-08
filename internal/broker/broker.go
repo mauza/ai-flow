@@ -248,7 +248,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	claims := grant.Claims{Kind: "grant", Run: run.ID, Seq: v.Seq, Node: n.ID, Branch: run.Branch}
 	bundle := &protocol.Bundle{
 		RunID: run.ID, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type,
-		PodURL:         strings.TrimSuffix(b.cfg.Env.Server.PodURL, "/"),
+		PodURL:         strings.TrimSuffix(b.cfg.Current().Env.Server.PodURL, "/"),
 		Outcomes:       n.Outcomes,
 		Outputs:        n.Outputs,
 		ResultSchema:   resolve.ResultSchema(n),
@@ -257,7 +257,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	}
 	for _, gr := range n.Grants {
 		name, _, _ := strings.Cut(gr, ":")
-		if g := b.cfg.Catalog.Grants[name]; g != nil && g.Kind == config.GrantSecret && g.Env != "" && !contains(bundle.SecretEnv, g.Env) {
+		if g := b.cfg.Current().Catalog.Grants[name]; g != nil && g.Kind == config.GrantSecret && g.Env != "" && !contains(bundle.SecretEnv, g.Env) {
 			bundle.SecretEnv = append(bundle.SecretEnv, g.Env)
 		}
 	}
@@ -269,7 +269,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 	bundle.Context = b.engine.ContextMarkdown(ctx, run, res, n, v.Seq)
 
 	// Every pod node may read the flow's repo; writing needs repo:write.
-	if g := b.cfg.Catalog.Grants[res.Repo]; g != nil {
+	if g := b.cfg.Current().Catalog.Grants[res.Repo]; g != nil {
 		repo, err := github.ParseRepoURL(g.URL)
 		if err != nil {
 			return nil, err
@@ -285,8 +285,8 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 			Branch:      run.Branch,
 			Base:        run.Base,
 			Write:       claims.Write,
-			AuthorName:  b.cfg.Env.Git.AuthorName,
-			AuthorEmail: b.cfg.Env.Git.AuthorEmail,
+			AuthorName:  b.cfg.Current().Env.Git.AuthorName,
+			AuthorEmail: b.cfg.Current().Env.Git.AuthorEmail,
 			IncludeDiff: n.Type == flow.TypeLLM,
 		}
 	}
@@ -295,7 +295,7 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 		models := append([]string{n.LLM.Model}, n.LLM.Fallbacks...)
 		access := &protocol.LLMAccess{BaseURL: bundle.PodURL + "/llm/v1", Config: n.LLM}
 		for _, name := range models {
-			m := b.cfg.Catalog.Models[name]
+			m := b.cfg.Current().Catalog.Models[name]
 			if m == nil {
 				continue
 			}
@@ -308,13 +308,13 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 		bundle.Tools = runner.DefaultAgentTools
 		bundle.Skills = map[string]protocol.SkillDir{}
 		for _, s := range n.Skills {
-			if sk := b.cfg.Catalog.Skills[s]; sk != nil {
+			if sk := b.cfg.Current().Catalog.Skills[s]; sk != nil {
 				bundle.Skills[s] = protocol.SkillDir{Files: sk.Files}
 			}
 		}
 		for _, gr := range n.Grants {
 			name, _, _ := strings.Cut(gr, ":")
-			g := b.cfg.Catalog.Grants[name]
+			g := b.cfg.Current().Catalog.Grants[name]
 			if g == nil || g.Kind != config.GrantMCP {
 				continue
 			}

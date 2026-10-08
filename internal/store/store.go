@@ -762,6 +762,44 @@ func (s *Store) SetKV(ctx context.Context, key, value string) error {
 	return err
 }
 
+// ListKV returns every key with the prefix and its value.
+func (s *Store) ListKV(ctx context.Context, prefix string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM kv WHERE substr(key, 1, ?) = ?`, len(prefix), prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// WriteKV sets and deletes keys in one transaction.
+func (s *Store) WriteKV(ctx context.Context, set map[string]string, del []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for k, v := range set {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
+			return err
+		}
+	}
+	for _, k := range del {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM kv WHERE key = ?`, k); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ---- helpers ----
 
 func (s *Store) update(ctx context.Context, table, where string, whereArgs []any, fields map[string]any, touch bool) error {

@@ -55,7 +55,7 @@ type Turn struct {
 
 // Plan drafts a new flow for a task.
 func (p *Planner) Plan(ctx context.Context, req Request) (*Result, error) {
-	proj := p.cfg.Projects[req.Project]
+	proj := p.cfg.Current().Projects[req.Project]
 	if proj == nil {
 		return nil, fmt.Errorf("unknown project %q", req.Project)
 	}
@@ -71,7 +71,7 @@ func (p *Planner) Plan(ctx context.Context, req Request) (*Result, error) {
 
 // Revise applies a chat instruction to an existing flow.
 func (p *Planner) Revise(ctx context.Context, req Request, current string, history []Turn, message string) (*Result, error) {
-	proj := p.cfg.Projects[req.Project]
+	proj := p.cfg.Current().Projects[req.Project]
 	if proj == nil {
 		return nil, fmt.Errorf("unknown project %q", req.Project)
 	}
@@ -99,18 +99,18 @@ func (p *Planner) Revise(ctx context.Context, req Request, current string, histo
 }
 
 func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request) (*Result, error) {
-	model := p.cfg.Catalog.Planner.Model
+	model := p.cfg.Current().Catalog.Planner.Model
 	if model == "" {
 		return nil, fmt.Errorf("catalog.planner.model is not set")
 	}
-	if p.cfg.Catalog.Planner.MaxAttempts < 1 {
+	if p.cfg.Current().Catalog.Planner.MaxAttempts < 1 {
 		return nil, fmt.Errorf("catalog.planner.max_attempts must be positive")
 	}
 	res := &Result{}
 	firstExplanation := ""
-	for attempt := 1; attempt <= p.cfg.Catalog.Planner.MaxAttempts; attempt++ {
+	for attempt := 1; attempt <= p.cfg.Current().Catalog.Planner.MaxAttempts; attempt++ {
 		res.Attempts = attempt
-		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000, Stream: p.cfg.Catalog.Planner.Stream})
+		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000, Stream: p.cfg.Current().Catalog.Planner.Stream})
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +166,7 @@ func (p *Planner) validate(src string, req Request) []resolve.Issue {
 	if err != nil {
 		return []resolve.Issue{{Severity: resolve.Error, Message: err.Error()}}
 	}
-	return resolve.Validate(resolve.Resolve(f, p.cfg), p.cfg)
+	return resolve.Validate(resolve.Resolve(f, p.cfg.Current()), p.cfg.Current())
 }
 
 // normalize parses the model's YAML, pins identity fields, and re-renders it
@@ -181,7 +181,7 @@ func (p *Planner) normalize(src string, req Request) (string, error) {
 	if req.TaskRef != nil {
 		f.Metadata.Task = req.TaskRef
 	}
-	f.Metadata.CreatedBy = "planner/" + p.cfg.Catalog.Planner.Model
+	f.Metadata.CreatedBy = "planner/" + p.cfg.Current().Catalog.Planner.Model
 	return Render(f)
 }
 
@@ -404,7 +404,7 @@ func splitReply(reply string) (string, string) {
 // ---- prompt ----
 
 func (p *Planner) repoContext(ctx context.Context, proj *config.Project) string {
-	g := p.cfg.Catalog.Grants[proj.Spec.Repo]
+	g := p.cfg.Current().Catalog.Grants[proj.Spec.Repo]
 	if g == nil || p.gh == nil {
 		return ""
 	}
@@ -438,11 +438,11 @@ func (p *Planner) repoContext(ctx context.Context, proj *config.Project) string 
 }
 
 func (p *Planner) systemPrompt(proj *config.Project) string {
-	cat := &p.cfg.Catalog
+	cat := &p.cfg.Current().Catalog
 	var sb strings.Builder
 	sb.WriteString(rules)
 	sb.WriteString("\n# Menu\n\nUse only these names.\n\n## Models (for `model:` on llm and agent nodes)\n\n")
-	menu := ProjectEligibility(p.cfg, proj)
+	menu := ProjectEligibility(p.cfg.Current(), proj)
 	for _, name := range menu.AllowedModels {
 		m := cat.Models[name]
 		fmt.Fprintf(&sb, "- `%s`: size %s, context %d tokens, tool use %s, cost %s. %s\n", name, orDash(m.Size), m.ContextTokens, orDash(m.ToolUse), orDash(m.Cost), m.Notes)

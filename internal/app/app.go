@@ -13,11 +13,14 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/flow"
+	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/ids"
+	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
+	"github.com/mauza/ai-flow/internal/workspace"
 )
 
 // Notifier mirrors task progress to the task's source (Linear).
@@ -32,10 +35,16 @@ type App struct {
 	Engine  *engine.Engine
 	Planner *planner.Planner
 	Hub     *hub.Hub
+	// LLM answers the control plane's own questions (map assistant, retrospectives).
+	LLM *llm.Client
+	// GitHub and Workspaces back repository linking and product workspaces.
+	GitHub     *github.Client
+	Workspaces *workspace.Manager
 
 	notifiers  []Notifier
 	planning   sync.Map   // task id → struct{}
 	planningMu sync.Mutex // serialize starting a planner with manual status repair
+	configMu   sync.Mutex // serialize config edits
 }
 
 func (a *App) AddNotifier(n Notifier) { a.notifiers = append(a.notifiers, n) }
@@ -46,13 +55,13 @@ func (a *App) CreateTask(ctx context.Context, t *store.Task, plan bool) error {
 		t.ID = ids.New("t")
 	}
 	if t.Project == "" {
-		for name := range a.Cfg.Projects {
+		for name := range a.Cfg.Current().Projects {
 			if t.Project == "" || name < t.Project {
 				t.Project = name
 			}
 		}
 	}
-	if a.Cfg.Projects[t.Project] == nil {
+	if a.Cfg.Current().Projects[t.Project] == nil {
 		return fmt.Errorf("unknown project %q", t.Project)
 	}
 	if strings.TrimSpace(t.Title) == "" {
@@ -201,7 +210,7 @@ func (a *App) startMode(src, project string) string {
 	if f, err := flow.Parse([]byte(src)); err == nil && f.Metadata.Start != "" {
 		return f.Metadata.Start
 	}
-	if p := a.Cfg.Projects[project]; p != nil {
+	if p := a.Cfg.Current().Projects[project]; p != nil {
 		return p.Spec.Start
 	}
 	return "manual"
@@ -234,7 +243,7 @@ func (a *App) SaveFlow(ctx context.Context, name, src, who, note string) (*store
 	if f.Metadata.Name != name {
 		return nil, nil, fmt.Errorf("metadata.name is %q; it must stay %q", f.Metadata.Name, name)
 	}
-	issues := resolve.Validate(resolve.Resolve(f, a.Cfg), a.Cfg)
+	issues := resolve.Validate(resolve.Resolve(f, a.Cfg.Current()), a.Cfg.Current())
 	prev, err := a.Store.GetFlow(ctx, name, 0)
 	taskID := ""
 	if err == nil {
