@@ -151,8 +151,8 @@ func TestReleasePipelineShipsAHealthyDeploy(t *testing.T) {
 	}
 	w.set(func(w *fakeWorld) { w.version = "MERGEDSHA0000001" })
 	h.e.Tick(h.ctx) // deployed → soak starts
-	if v := h.current(id); v.Node != "soak" || !strings.Contains(v.Progress, "all checks ok") {
-		t.Fatalf("soak: %+v", v)
+	if v := h.current(id); v.Node != "soak" || !strings.Contains(v.Progress, "Soaking 0s/300ms: all checks ok") {
+		t.Fatalf("soak progress must start at zero: %+v", v)
 	}
 	h.e.Tick(h.ctx)
 	time.Sleep(350 * time.Millisecond)

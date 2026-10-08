@@ -1088,8 +1088,12 @@ func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, bo
 	}()
 }
 
-// shortDuration renders 4h0m0s as 4h and 1h30m0s as 1h30m.
+// shortDuration renders 4h0m0s as 4h, 1h30m0s as 1h30m, and keeps
+// sub-minute values exact (0s, 45s, 300ms).
 func shortDuration(d time.Duration) string {
+	if d < time.Minute {
+		return d.Round(time.Millisecond).String()
+	}
 	s := d.Round(time.Minute).String()
 	s = strings.TrimSuffix(s, "0s")
 	if strings.HasSuffix(s, "h0m") {

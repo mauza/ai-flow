@@ -330,6 +330,11 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 	if err := e.store.UpdateVisit(ctx, r.ID, v.Seq, fields); err != nil {
 		return nil, err
 	}
+	// Waiting actions measure from the start on their very first poll too.
+	if s, ok := fields["started_at"].(int64); ok {
+		v.StartedAt = s
+	}
+	v.Status = store.VisitRunning
 	e.publishVisit(r.ID, v.Seq)
 	switch n.Action {
 	case "merge_pull_request":
@@ -343,7 +348,8 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 	case "open_pull_request":
 		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":
-		if t == nil || e.hooks == nil {
+		// Only an intake-linked task (e.g. a Linear issue) has somewhere to post.
+		if t == nil || e.hooks == nil || t.ExternalID == "" {
 			return &actionResult{outcome: "done", summary: "No linked task to comment on"}, nil
 		}
 		if c, ok := e.hooks.(interface {
