@@ -107,6 +107,7 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 		return nil, fmt.Errorf("catalog.planner.max_attempts must be positive")
 	}
 	res := &Result{}
+	firstExplanation := ""
 	for attempt := 1; attempt <= p.cfg.Catalog.Planner.MaxAttempts; attempt++ {
 		res.Attempts = attempt
 		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000, Stream: p.cfg.Catalog.Planner.Stream})
@@ -115,6 +116,12 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 		}
 		slog.Info("planner reply", "flow", req.FlowName, "attempt", attempt, "tokens", usage.PromptTokens+usage.CompletionTokens)
 		explanation, body := splitReply(reply)
+		// A repair reply is often just the corrected YAML; keep the design note.
+		if strings.TrimSpace(explanation) == "" {
+			explanation = firstExplanation
+		} else if firstExplanation == "" {
+			firstExplanation = explanation
+		}
 		// Every result field describes this attempt, including failed extraction
 		// and parsing. Never pair a new candidate with an earlier diagnostic.
 		res = &Result{Attempts: attempt, YAML: body, Explanation: explanation}
@@ -141,11 +148,14 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 		}
 		var sb strings.Builder
 		sb.WriteString("The flow has validation errors. Fix all of them and reply with the complete corrected flow in one ```yaml block.\n\n")
+		var errs []string
 		for _, i := range res.Issues {
 			if i.Severity == resolve.Error {
 				fmt.Fprintf(&sb, "- %s\n", i)
+				errs = append(errs, i.String())
 			}
 		}
+		slog.Info("planner repair", "flow", req.FlowName, "attempt", attempt, "errors", strings.Join(errs, " | "))
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: reply}, llm.Message{Role: "user", Content: sb.String()})
 	}
 	return res, nil
