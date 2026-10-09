@@ -12,12 +12,14 @@ runs:
   defaultTimeout: 30m
 llm:
   upstreams:
-    # Any OpenAI-compatible endpoint: llama.cpp / Ollama on the host, vLLM,
-    # LiteLLM, OpenRouter... This one is the home LiteLLM on the tailnet; its
-    # key comes from LITELLM_API_KEY in .env (unset sends no Authorization).
+    # Any OpenAI-compatible endpoint: OpenAI, OpenRouter, a LiteLLM gateway,
+    # vLLM, llama.cpp or Ollama. Set LLM_BASE_URL and LLM_API_KEY in .env
+    # (`make secrets` copies them into the cluster); an unset key sends no
+    # Authorization header. The catalog's model names must exist there.
     home:
-      baseUrl: http://100.100.141.61:4000/v1
-      apiKeyEnv: LITELLM_API_KEY
+      baseUrl: https://api.openai.com/v1
+      baseUrlEnv: LLM_BASE_URL
+      apiKeyEnv: LLM_API_KEY
 objectStore:
   type: garage                      # bootstrapped by the control plane
   endpoint: garage.ai-flow.svc:3900
@@ -40,7 +42,7 @@ mcp:
       url: http://mcp-demo.ai-flow.svc:8090
       description: Demo tools (word_stats, time_now)
 linear:
-  enabled: true
+  enabled: false                    # true needs LINEAR_API_KEY in .env (docs/LOCAL-KIND.md)
   mode: poll
   pollInterval: 30s
 # Push a message when a run needs a human (off without a backend):

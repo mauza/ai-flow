@@ -1,7 +1,7 @@
 # Example values for a real cluster (e.g. an ArgoCD Application pointing at deploy/chart).
 # Config files come from an existing ConfigMap you manage in git; secrets from a
-# sealed/external Secret named ai-flow-secrets (GITHUB_TOKEN, LINEAR_API_KEY,
-# AI_FLOW_TOKEN, upstream model keys). Images come from `make release`.
+# sealed/external Secret named ai-flow-secrets (GITHUB_TOKEN, LLM_API_KEY,
+# optionally LINEAR_API_KEY and AI_FLOW_TOKEN). Images come from `make release`.
 image:
   repository: registry.example.com/library/ai-flow
   tag: v0.1.0
@@ -12,14 +12,14 @@ config:
 nodeSelector:
   kubernetes.io/arch: amd64             # images are amd64-only
 persistence:
-  storageClass: nfs-client              # NFS is fine: SQLite runs WAL in EXCLUSIVE mode (no -shm)
+  storageClass: ""                      # cluster default; NFS is fine (SQLite runs WAL in EXCLUSIVE mode, no -shm)
   size: 10Gi
 # With objectStore.type: local, transcripts live on the same volume and Garage
 # is not needed. Enable it (or use s3) to keep objects elsewhere.
 garage:
   enabled: false
   existingSecret: ""                    # set when enabled under ArgoCD (it cannot `lookup`)
-# Either a tailnet-only Service...
+# Either a private Service (here: exposed on a tailnet by the Tailscale operator)...
 service:
   annotations:
     tailscale.com/expose: "true"

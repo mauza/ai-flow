@@ -117,8 +117,11 @@ type LLM struct {
 }
 
 type Upstream struct {
-	BaseURL   string `json:"baseUrl"`
-	APIKeyEnv string `json:"apiKeyEnv,omitempty"`
+	BaseURL string `json:"baseUrl"`
+	// BaseURLEnv names an env var that, when set, replaces BaseURL, so a
+	// shared config file can point at each developer's own endpoint.
+	BaseURLEnv string `json:"baseUrlEnv,omitempty"`
+	APIKeyEnv  string `json:"apiKeyEnv,omitempty"`
 }
 
 type ObjectStore struct {
@@ -630,6 +633,13 @@ func (c *Config) applyDefaults() {
 		e.Linear.PollInterval.Duration = 30 * time.Second
 	}
 
+	for name, u := range e.LLM.Upstreams {
+		if v := Secret(u.BaseURLEnv); v != "" {
+			u.BaseURL = v
+			e.LLM.Upstreams[name] = u
+		}
+	}
+
 	cat := &c.Catalog
 	if cat.Harnesses == nil {
 		cat.Harnesses = map[string]Harness{"pi": {Description: "pi coding agent"}}
@@ -702,6 +712,11 @@ func (c *Config) loadFiles() error {
 
 func (c *Config) check() error {
 	var errs []string
+	for name, u := range c.Env.LLM.Upstreams {
+		if u.BaseURL == "" {
+			errs = append(errs, fmt.Sprintf("llm upstream %s: baseUrl is required (or set %s)", name, orName(u.BaseURLEnv, "baseUrlEnv")))
+		}
+	}
 	for name, m := range c.Catalog.Models {
 		if _, ok := c.Env.LLM.Upstreams[m.Upstream]; !ok {
 			errs = append(errs, fmt.Sprintf("model %s: unknown upstream %q", name, m.Upstream))
@@ -773,6 +788,13 @@ func (c *Config) check() error {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func orName(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // Secret reads the value of an env var named by a *Env field.

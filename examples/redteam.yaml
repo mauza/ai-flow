@@ -19,7 +19,7 @@ spec:
         expect "no token in git config"     "$(git config --list | grep -ci extraheader)" "0"
         expect "internet blocked"           "$(curl -s -m 5 -o /dev/null -w '%{http_code}' https://api.github.com)" "000"
         expect "UI/API port blocked"        "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://ai-flow.ai-flow.svc:8080/api/tasks)" "000"
-        expect "tailnet LLM blocked"        "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://100.100.141.61:4000/v1/models)" "000"
+        expect "cloud metadata blocked"     "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://169.254.169.254/latest/meta-data/)" "000"
         expect "k8s API blocked"            "$(curl -sk -m 5 -o /dev/null -w '%{http_code}' https://kubernetes.default.svc/api)" "000"
         expect "llm proxy needs a grant"    "$(curl -s -m 5 -o /dev/null -w '%{http_code}' $P/llm/v1/models)" "401"
         GRANT=$(curl -s -m 5 -X POST -H "X-Pod-Token: $(cat /var/run/secrets/ai-flow/token)" $P/v1/exchange | jq -r .grant)

@@ -1,7 +1,7 @@
 # ai-flow: local development and the kind cluster.
 #
 #   make dev-local   run the control plane on the host (nodes = child processes)
-#   make dev-up      kind cluster + images + Helm release, UI on http://localhost:8080
+#   make dev-up      kind cluster + images + Helm release, UI on http://localhost:$(UI_PORT)
 #   make dev-reload  rebuild images and restart after code changes
 #   make dev-down    delete the kind cluster (state in STATE_DIR is kept)
 #   make dev-reset   delete the cluster and the state: tasks, flows, runs, transcripts
@@ -17,7 +17,9 @@ LDFLAGS   := -s -w -X main.version=$(VERSION)
 KCTX      ?= kind-$(CLUSTER)
 KUBECTL   := kubectl --context $(KCTX)
 HELM      := helm --kube-context $(KCTX)
-REGISTRY  ?= docker.mau.guru/library
+REGISTRY  ?=
+# Host port for the kind cluster's UI (fixed when the cluster is created).
+UI_PORT   ?= 8080
 # Host folder holding the kind cluster's state; survives dev-down / dev-up.
 STATE_DIR ?= $(HOME)/.local/share/ai-flow/$(CLUSTER)
 
@@ -81,12 +83,13 @@ release: release-check images
 	@echo "pushed $(REGISTRY)/{ai-flow,ai-flow-agent,ai-flow-agent-go}:$(VERSION)"
 
 release-check:
+	@[ -n "$(REGISTRY)" ] || { echo "release: set REGISTRY (e.g. make release REGISTRY=registry.example.com/library)"; exit 1; }
 	@case "$(VERSION)" in *-dirty|dev) echo "release: commit first (VERSION=$(VERSION))"; exit 1;; esac
 
 # kind switches the current kube-context; switch back so nothing else moves.
 kind-up:
 	@mkdir -p $(STATE_DIR)/data $(STATE_DIR)/garage bin
-	@sed 's#__STATE_DIR__#$(STATE_DIR)#' deploy/kind/kind.yaml > bin/kind.yaml
+	@sed -e 's#__STATE_DIR__#$(STATE_DIR)#' -e 's#__UI_PORT__#$(UI_PORT)#' deploy/kind/kind.yaml > bin/kind.yaml
 	@kind get clusters | grep -qx $(CLUSTER) || { \
 		prev=$$(kubectl config current-context 2>/dev/null); \
 		kind create cluster --name $(CLUSTER) --config bin/kind.yaml; \
@@ -98,7 +101,8 @@ secrets:
 	$(KUBECTL) -n $(NAMESPACE) create secret generic ai-flow-secrets \
 		--from-literal=GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null)}" \
 		--from-literal=LINEAR_API_KEY="$${LINEAR_API_KEY}" \
-		--from-literal=LITELLM_API_KEY="$${LITELLM_API_KEY}" \
+		--from-literal=LLM_BASE_URL="$${LLM_BASE_URL}" \
+		--from-literal=LLM_API_KEY="$${LLM_API_KEY}" \
 		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 deploy:
@@ -112,7 +116,7 @@ deploy:
 dev-up: kind-up images
 	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev
 	$(MAKE) secrets deploy
-	@echo "ai-flow is up: http://localhost:8080"
+	@echo "ai-flow is up: http://localhost:$(UI_PORT)"
 
 dev-reload: images
 	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev

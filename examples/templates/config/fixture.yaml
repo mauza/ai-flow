@@ -17,8 +17,8 @@ models:
     context_tokens: 100000 # conservative working limit, not full capacity
     tool_use: good
     reasoning: true
-    cost: subscription
-    notes: Default planner alias; real gateway subscription authentication and smoke test pending.
+    cost: paid
+    notes: Default planner alias.
   gpt-6-luna:
     upstream: home
     model: gpt-6-luna
@@ -26,8 +26,8 @@ models:
     context_tokens: 100000 # conservative working limit, not full capacity
     tool_use: good
     reasoning: true
-    cost: subscription
-    notes: Alternate alias; real gateway subscription authentication and smoke test pending.
+    cost: paid
+    notes: Alternate alias.
 planner:
   model: gpt-6.1-sol
   stream: true
