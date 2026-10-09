@@ -3,7 +3,7 @@
 apiVersion: ai-flow/v1alpha1
 kind: Environment
 server:
-  publicUrl: http://ai-flow:8080       # tailnet name; https://... behind an ingress
+  publicUrl: https://ai-flow.example.com   # how people reach the UI (links in notifications and Linear)
   podUrl: http://ai-flow-pods.ai-flow.svc:8081
   dataDir: /data
   # authTokenEnv: AI_FLOW_TOKEN        # optional: UI/API then require this bearer token
@@ -16,8 +16,8 @@ runs:
 llm:
   upstreams:
     home:
-      baseUrl: http://litellm-proxy.llm-gateway.svc:4000/v1
-      apiKeyEnv: LITELLM_API_KEY         # in ai-flow-secrets
+      baseUrl: https://api.openai.com/v1   # or your gateway, e.g. http://litellm.<ns>.svc:4000/v1
+      apiKeyEnv: LLM_API_KEY               # in ai-flow-secrets
 objectStore:
   type: local                          # <dataDir>/objects; only the control plane touches it
 git:
@@ -28,7 +28,7 @@ git:
 github:
   tokenEnv: GITHUB_TOKEN
 linear:
-  enabled: true
+  enabled: false                       # true needs LINEAR_API_KEY in ai-flow-secrets
   mode: poll                           # webhook needs a public URL: POST <publicUrl>/webhooks/linear
   pollInterval: 30s
 mcp:

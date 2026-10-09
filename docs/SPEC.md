@@ -88,7 +88,7 @@ kind: Flow
 metadata:
   name: fix-slugify-digits          # lowercase-dashes
   project: sandbox
-  task: { source: linear, id: MAU-22 }
+  task: { source: linear, id: ENG-22 }
   start: manual                     # optional: overrides the project's start mode
 spec:
   description: Keep digits in slugify output.
@@ -233,7 +233,7 @@ earlier `Environment`/`Catalog` documents (`-config deploy/config -config local.
 Secrets are env vars named by `*Env` fields, never inlined.
 
 - **Environment** — where things run: listen ports, public URL, pod URL, runs
-  namespace, concurrency, LLM upstreams (`baseUrl`, `apiKeyEnv`), object store
+  namespace, concurrency, LLM upstreams (`baseUrl`, optional `baseUrlEnv` override, `apiKeyEnv`), object store
   (`garage` | `s3` | `local`), git host tokens, GitHub API, Linear connection,
   MCP servers (URL + headers), notifications (`notify`: ntfy server, topic,
   token, events, `stuckAfter`).
@@ -257,10 +257,10 @@ The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
 
 The checked-in catalog offers `gpt-6.1-sol` (the streaming default planner),
-`gpt-6-luna` and `gpt-6-astra` on the `home` upstream, a LiteLLM gateway (see
-[CHATGPT-PROVIDER.md](CHATGPT-PROVIDER.md)). Their `size`, `tool_use`, `cost`
-and `context_tokens` are selection metadata for the planner, not performance
-claims; deployments add their own models, such as local GPUs.
+`gpt-6-luna` and `gpt-6-astra` on the `home` upstream, which points at OpenAI
+unless `LLM_BASE_URL` names another OpenAI-compatible endpoint (`baseUrlEnv`).
+Their `size`, `tool_use`, `cost` and `context_tokens` are selection metadata for
+the planner, not performance claims; deployments add their own models.
 
 ## 6. Planning
 
@@ -438,7 +438,8 @@ Garage (bootstrapped by the control plane through its admin API), and optionally
 the demo MCP server. Config files go in with `--set-file` or an existing ConfigMap;
 secrets via an existing Secret (`ai-flow-secrets`).
 
-- **kind** — `make dev-up` / `dev-reload` / `dev-down`. Images built on the host and
+- **kind** — `make dev-up` / `dev-reload` / `dev-down` (step by step in
+  [LOCAL-KIND.md](LOCAL-KIND.md)). Images built on the host and
   loaded; UI at http://localhost:8080. State (SQLite, Garage) lives in a host
   folder (`STATE_DIR`, default `~/.local/share/ai-flow/<cluster>`) mounted into the
   node and used through `hostPath` volumes, with pods running as your uid, so it

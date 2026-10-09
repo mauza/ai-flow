@@ -41,29 +41,29 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 		p := r.URL.Path
 		reply := func(v any) { json.NewEncoder(rw).Encode(v) }
 		switch {
-		case p == "/repos/mauza/ai-flow-sandbox/pulls/7" && r.Method == "GET":
+		case p == "/repos/your-org/ai-flow-sandbox/pulls/7" && r.Method == "GET":
 			reply(map[string]any{"number": 7, "state": "open", "merged": w.merged, "mergeable": w.mergeable, "mergeable_state": w.state,
 				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": "headsha"}})
-		case p == "/repos/mauza/ai-flow-sandbox/pulls/7/merge" && r.Method == "PUT":
+		case p == "/repos/your-org/ai-flow-sandbox/pulls/7/merge" && r.Method == "PUT":
 			w.merges++
 			w.merged = true
 			reply(map[string]any{"sha": "mergedsha0000001", "merged": true})
-		case p == "/repos/mauza/ai-flow-sandbox/commits/mergedsha0000001":
+		case p == "/repos/your-org/ai-flow-sandbox/commits/mergedsha0000001":
 			reply(map[string]any{"sha": "mergedsha0000001", "parents": []any{map[string]any{"sha": "oldsha0000000"}, map[string]any{"sha": "headsha"}}})
-		case p == "/repos/mauza/ai-flow-sandbox/actions/workflows/rollback.yml/dispatches" && r.Method == "POST":
+		case p == "/repos/your-org/ai-flow-sandbox/actions/workflows/rollback.yml/dispatches" && r.Method == "POST":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			w.dispatches = append(w.dispatches, body)
 			rw.WriteHeader(204)
-		case p == "/repos/mauza/ai-flow-sandbox/actions/workflows/rollback.yml/runs":
+		case p == "/repos/your-org/ai-flow-sandbox/actions/workflows/rollback.yml/runs":
 			runs := []any{map[string]any{"id": 1, "status": "completed", "conclusion": "success", "created_at": "2020-01-01T00:00:00Z"}}
 			if w.rollbackRun != nil {
 				runs = append(runs, w.rollbackRun)
 			}
 			reply(map[string]any{"workflow_runs": runs})
-		case p == "/repos/mauza/ai-flow-sandbox/actions/runs/42":
+		case p == "/repos/your-org/ai-flow-sandbox/actions/runs/42":
 			reply(w.rollbackRun)
-		case strings.HasPrefix(p, "/repos/mauza/ai-flow-sandbox/branches/"):
+		case strings.HasPrefix(p, "/repos/your-org/ai-flow-sandbox/branches/"):
 			reply(map[string]any{"commit": map[string]any{"sha": "headsha"}})
 		case strings.HasSuffix(p, "/check-runs"):
 			reply(map[string]any{"check_runs": w.checks})

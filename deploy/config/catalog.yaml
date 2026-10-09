@@ -3,7 +3,8 @@ apiVersion: ai-flow/v1alpha1
 kind: Catalog
 
 models:
-  # Selection hints, not performance claims. All three subscription aliases use the Responses bridge.
+  # These names must exist on the `home` upstream (LLM_BASE_URL). size, tool_use,
+  # cost and context_tokens are hints for the planner, not performance claims;
   # context_tokens is a conservative working limit, not the model's full capacity.
   gpt-6.1-sol:
     upstream: home
@@ -11,30 +12,30 @@ models:
     size: frontier
     context_tokens: 100000
     tool_use: good
-    cost: subscription
+    cost: paid
     max_concurrency: 2
     reasoning: true
-    notes: Default planner. ChatGPT subscription route through home LiteLLM; planner and structured steps stream. LiteLLM owns and refreshes the persistent subscription session.
+    notes: Default planner; planner and structured steps stream.
   gpt-6-luna:
     upstream: home
     model: gpt-6-luna
     size: frontier
     context_tokens: 100000
     tool_use: good
-    cost: subscription
+    cost: paid
     max_concurrency: 2
     reasoning: true
-    notes: Alternate planning/execution model, including independent review. ChatGPT subscription route through home LiteLLM; no local or other-model fallback.
+    notes: Alternate planning/execution model, including independent review. No fallback model.
   gpt-6-astra:
     upstream: home
     model: gpt-6-astra
     size: frontier
     context_tokens: 100000
     tool_use: good
-    cost: subscription
+    cost: paid
     max_concurrency: 2
     reasoning: true
-    notes: Additional planning/execution option. ChatGPT subscription route through home LiteLLM; no local or other-model fallback. Sol remains the default planner.
+    notes: Additional planning/execution option. No fallback model.
 
 harnesses:
   pi:
@@ -51,7 +52,7 @@ runtimes:
 grants:
   repo/ai-flow-sandbox:
     kind: git
-    url: https://github.com/mauza/ai-flow-sandbox.git
+    url: https://github.com/your-org/ai-flow-sandbox.git   # point at a throwaway repo of yours
     modes: [read, write]
     description: Sandbox repo for trying flows end to end.
   mcp/word-stats:

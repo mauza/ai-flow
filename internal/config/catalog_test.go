@@ -47,7 +47,7 @@ func TestCatalogModelOptions(t *testing.T) {
 		if m.Upstream != "home" || m.Model != name {
 			t.Errorf("%s must use the matching home alias: %+v", name, m)
 		}
-		if m.Size != "frontier" || !m.Reasoning || m.ToolUse != "good" || m.Cost != "subscription" || m.ContextTokens != 100000 {
+		if m.Size != "frontier" || !m.Reasoning || m.ToolUse != "good" || m.Cost != "paid" || m.ContextTokens != 100000 {
 			t.Errorf("%s has unexpected selection metadata: %+v", name, m)
 		}
 		if m.LLM != nil && len(m.LLM.Fallbacks) != 0 {

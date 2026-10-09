@@ -13,9 +13,10 @@ runs:
   defaultTimeout: 20m
 llm:
   upstreams:
-    home:
-      baseUrl: http://litellm:4000/v1
-      apiKeyEnv: LITELLM_API_KEY
+    home:                              # LLM_BASE_URL and LLM_API_KEY from .env
+      baseUrl: https://api.openai.com/v1
+      baseUrlEnv: LLM_BASE_URL
+      apiKeyEnv: LLM_API_KEY
 objectStore:
   type: local
 git:

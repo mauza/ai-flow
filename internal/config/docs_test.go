@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -83,6 +85,34 @@ func TestWithDocsRejectsAnInvalidCatalog(t *testing.T) {
 	}
 	// A project whose repo grant is gone is rejected too.
 	if _, err := cfg.WithDocs(cat, [][]byte{[]byte("metadata: {name: x}\nspec: {repo: repo/missing}\n")}); err == nil || !strings.Contains(err.Error(), "not a git grant") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpstreamBaseURLFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	write := func(env string) {
+		os.WriteFile(filepath.Join(dir, "c.yaml"), []byte(env+`
+---
+apiVersion: ai-flow/v1alpha1
+kind: Catalog
+models:
+  m: { upstream: home, model: m }
+runtimes: {}
+`), 0o644)
+	}
+	write("kind: Environment\nllm:\n  upstreams:\n    home: { baseUrl: \"https://default.example/v1\", baseUrlEnv: TEST_LLM_BASE_URL }")
+	t.Setenv("TEST_LLM_BASE_URL", "http://mine.example/v1")
+	cfg, err := config.Load(dir)
+	if err != nil || cfg.Env.LLM.Upstreams["home"].BaseURL != "http://mine.example/v1" {
+		t.Fatalf("env override: %+v %v", cfg, err)
+	}
+	t.Setenv("TEST_LLM_BASE_URL", "")
+	if cfg, _ = config.Load(dir); cfg.Env.LLM.Upstreams["home"].BaseURL != "https://default.example/v1" {
+		t.Fatal("an unset variable keeps baseUrl")
+	}
+	write("kind: Environment\nllm:\n  upstreams:\n    home: { baseUrlEnv: TEST_LLM_BASE_URL }")
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "baseUrl is required") {
 		t.Fatalf("got %v", err)
 	}
 }

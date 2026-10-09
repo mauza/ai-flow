@@ -8,31 +8,28 @@ isolated Kubernetes Job with only the model, tools, MCP tools, secrets and repo
 access it declares; git, LLM and MCP traffic go through the control plane, so
 pods never hold those credentials.
 
-Models come from any OpenAI-compatible endpoint. The example catalog in
+Models come from any OpenAI-compatible endpoint (OpenAI, OpenRouter, a LiteLLM
+gateway, vLLM, llama.cpp, Ollama). The example catalog in
 [`deploy/config`](deploy/config) offers GPT-6.1 Sol (the default planner), GPT-6
-Luna and GPT-6 Astra through a LiteLLM gateway
-([setup](docs/CHATGPT-PROVIDER.md)); a deployment adds its own, such as local
-models. A model's capability fields are hints for the planner, not performance
-claims.
+Luna and GPT-6 Astra; edit the models in **Settings** to match your endpoint. A
+model's capability fields are hints for the planner, not performance claims.
 
 ![flow editor and run view](docs/screenshots/run.png)
 
 ## Quick start (kind)
 
-Needs Docker, kind, kubectl, helm, Go, Node, and `gh` logged in.
+Needs Docker on an x86-64 machine, kind, kubectl, helm, Go, Node, `gh` logged
+in, and an OpenAI-compatible model endpoint.
 
 ```sh
-cp .env.example .env          # GITHUB_TOKEN defaults to `gh auth token`; LINEAR_API_KEY, LITELLM_API_KEY optional
+cp .env.example .env          # LLM_BASE_URL / LLM_API_KEY for your model endpoint
 make dev-up                   # kind cluster + images + Helm release
 open http://localhost:8080
 ```
 
-Set `LITELLM_API_KEY` in `.env` if your model gateway needs a key. Press **New
-task**, add the trigger label to a Linear issue, or link a repository under
-**Products**. Change code and run `make dev-reload`. `make dev-down` deletes the
-cluster but keeps its state (tasks, flows, runs, transcripts) in
-`~/.local/share/ai-flow/ai-flow`, so the next `make dev-up` picks up where you
-left off. `make dev-reset` deletes the cluster and that state.
+Then match the catalog's models to your endpoint in **Settings**, link a
+repository under **Products**, and create a task. [docs/LOCAL-KIND.md](docs/LOCAL-KIND.md)
+walks through each step, day-to-day commands and troubleshooting.
 
 No cluster? `make dev-local` runs the control plane on your machine and each
 step as a child process (no isolation; good for iterating).
@@ -149,5 +146,6 @@ web/               React UI (embedded into the binary)
 deploy/            Helm chart, kind config, images, config for kind, local and prod
 examples/          flows: MCP grant, token limits, sandbox red-team probe
                    templates/ (reusable flows), evals/ (synthetic evaluation fixtures)
-docs/              SPEC (design), PRODUCT, NODE-CATALOG, RELIABILITY, LOOPS, TEMPLATES, EVALUATIONS
+docs/              LOCAL-KIND (setup), SPEC (design), PRODUCT, NODE-CATALOG, RELIABILITY,
+                   LOOPS, TEMPLATES, EVALUATIONS
 ```
