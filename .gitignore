@@ -22,3 +22,6 @@ web/dist/*
 
 # v1 local state
 .local/
+
+# TypeScript incremental build cache
+web/*.tsbuildinfo
