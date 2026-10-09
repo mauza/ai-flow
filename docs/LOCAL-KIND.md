@@ -14,9 +14,12 @@ and each step as a child process: no cluster, no isolation, quick to iterate.
   for amd64 only; arm64 hosts (Apple silicon) are not supported yet.
 - **Tools:** `kind`, `kubectl`, `helm`, Go 1.26+, Node 22+ with npm, and the
   GitHub CLI `gh`.
-- **A GitHub token** that can read and write the repositories you want flows to
-  work on (contents, pull requests and, for release flows, actions). By default
-  ai-flow uses `gh auth token`, so `gh auth login` is enough.
+- **A GitHub token** for the repositories you want flows to work on. By default
+  ai-flow uses `gh auth token`, so `gh auth login` is enough. For a dedicated
+  fine-grained token, grant Contents, Pull requests, Actions and Workflows
+  read and write, plus Commit statuses read. Fine-grained tokens cannot hold
+  the Checks permission; ai-flow then reads CI results from the commit's GitHub
+  Actions jobs instead (other CI providers count only through commit statuses).
 - **An OpenAI-compatible model endpoint**: OpenAI itself, OpenRouter, a LiteLLM
   gateway, vLLM, llama.cpp or Ollama. Agents need a model that calls tools well.
 - **A throwaway GitHub repository** to try flows on. Flows push branches and open

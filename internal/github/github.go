@@ -223,17 +223,29 @@ type Check struct {
 	Note string // conclusion or state
 }
 
+type checkRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+}
+
 // Checks returns every check run and commit status reported for ref.
+//
+// Fine-grained personal access tokens cannot be granted the Checks
+// permission, so when GitHub refuses check runs (403) the GitHub Actions jobs
+// for the commit stand in for them: Actions reports each job as a check run
+// of the same name, so name filters keep working. Checks from other CI
+// providers are then not seen, but their commit statuses still are.
 func (c *Client) Checks(ctx context.Context, r Repo, ref string) ([]Check, error) {
 	var runs struct {
-		CheckRuns []struct {
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-			HTMLURL    string `json:"html_url"`
-		} `json:"check_runs"`
+		CheckRuns []checkRun `json:"check_runs"`
 	}
-	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", r.Owner, r.Name, url.PathEscape(ref)), nil, &runs); err != nil {
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", r.Owner, r.Name, url.PathEscape(ref)), nil, &runs)
+	if ae, ok := err.(*APIError); ok && ae.Status == 403 {
+		runs.CheckRuns, err = c.actionsJobs(ctx, r, ref)
+	}
+	if err != nil {
 		return nil, err
 	}
 	var status struct {
@@ -257,6 +269,36 @@ func (c *Client) Checks(ctx context.Context, r Repo, ref string) ([]Check, error
 	}
 	for _, s := range status.Statuses {
 		out = append(out, Check{Name: s.Context, Done: s.State != "pending", OK: s.State == "success", URL: s.TargetURL, Note: s.State})
+	}
+	return out, nil
+}
+
+// actionsJobs lists the latest attempt of every GitHub Actions job run for
+// ref's commit, shaped like check runs.
+func (c *Client) actionsJobs(ctx context.Context, r Repo, ref string) ([]checkRun, error) {
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/commits/%s", r.Owner, r.Name, url.PathEscape(ref)), nil, &commit); err != nil {
+		return nil, err
+	}
+	var wf struct {
+		WorkflowRuns []struct {
+			ID int64 `json:"id"`
+		} `json:"workflow_runs"`
+	}
+	if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/actions/runs?head_sha=%s&per_page=100", r.Owner, r.Name, commit.SHA), nil, &wf); err != nil {
+		return nil, err
+	}
+	var out []checkRun
+	for _, run := range wf.WorkflowRuns {
+		var jobs struct {
+			Jobs []checkRun `json:"jobs"`
+		}
+		if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?filter=latest&per_page=100", r.Owner, r.Name, run.ID), nil, &jobs); err != nil {
+			return nil, err
+		}
+		out = append(out, jobs.Jobs...)
 	}
 	return out, nil
 }
