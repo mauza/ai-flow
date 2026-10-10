@@ -21,6 +21,19 @@ import (
 // DefaultAgentTools are pi's built-in tools an agent node gets.
 var DefaultAgentTools = []string{"read", "bash", "edit", "write", "grep", "find", "ls"}
 
+// AgentTools are the built-in tools for an agent node: a step that may not
+// write the repository gets no file-editing tools.
+func AgentTools(write bool) []string {
+	if write {
+		return DefaultAgentTools
+	}
+	return slices.DeleteFunc(slices.Clone(DefaultAgentTools), func(t string) bool { return t == "edit" || t == "write" })
+}
+
+// RepoSkillDirs are where a repository keeps its own skills, one directory
+// per skill with a SKILL.md, in the layouts other agents use too.
+var RepoSkillDirs = []string{".agents/skills", ".claude/skills"}
+
 func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	b := r.b
 	if b.Harness != "" && b.Harness != "pi" {
@@ -47,13 +60,14 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		}
 	}
 	os.Remove(resultPath)
-	if err := writePiConfig(piDir, shimURL, b.LLM.Models[0]); err != nil {
+	if err := writePiConfig(piDir, shimURL, b.LLM.Models[0], b.Agent); err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
 	skillDirs, err := writeSkills(filepath.Join(flowDir, "skills"), b.Skills)
 	if err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
+	skillDirs = append(skillDirs, repoSkills(r.repo, b.Skills)...)
 	if err := writeJSONFile(bundlePath, map[string]any{
 		"outcomes":      b.Outcomes,
 		"result_schema": b.ResultSchema,
@@ -288,10 +302,25 @@ func quoteList(xs []string) string {
 	return strings.Join(q, ", ")
 }
 
-func writePiConfig(dir, shimURL string, m protocol.ModelInfo) error {
+// writePiConfig writes pi's agent directory: the shim as its only provider,
+// settings, and the harness and project instructions as the global AGENTS.md.
+func writePiConfig(dir, shimURL string, m protocol.ModelInfo, setup *protocol.AgentSetup) error {
+	if setup == nil {
+		setup = &protocol.AgentSetup{}
+	}
 	ctx := m.ContextTokens
 	if ctx == 0 {
 		ctx = 100000
+	}
+	maxOut := m.MaxOutputTokens
+	if maxOut == 0 {
+		maxOut = 16384
+	}
+	// Without a thinking format pi sends no thinking parameter at all, so
+	// endpoints that reject one keep working.
+	compat := map[string]any{"supportsDeveloperRole": false, "supportsReasoningEffort": m.ThinkingFormat == "reasoning_effort"}
+	if m.ThinkingFormat != "" && m.ThinkingFormat != "reasoning_effort" {
+		compat["thinkingFormat"] = m.ThinkingFormat
 	}
 	models := map[string]any{
 		"providers": map[string]any{
@@ -299,17 +328,14 @@ func writePiConfig(dir, shimURL string, m protocol.ModelInfo) error {
 				"baseUrl": shimURL,
 				"api":     "openai-completions",
 				"apiKey":  "ai-flow",
-				"compat": map[string]any{
-					"supportsDeveloperRole":   false,
-					"supportsReasoningEffort": false,
-				},
+				"compat":  compat,
 				"models": []map[string]any{{
 					"id":            m.Name,
 					"name":          m.Name,
 					"reasoning":     m.Reasoning,
 					"input":         []string{"text"},
 					"contextWindow": ctx,
-					"maxTokens":     16384,
+					"maxTokens":     maxOut,
 					"cost":          map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
 				}},
 			},
@@ -318,7 +344,71 @@ func writePiConfig(dir, shimURL string, m protocol.ModelInfo) error {
 	if err := writeJSONFile(filepath.Join(dir, "models.json"), models); err != nil {
 		return err
 	}
-	return writeJSONFile(filepath.Join(dir, "settings.json"), map[string]any{"quietStartup": true})
+	// The shim owns retries and fallbacks (the step's on_limit policy), and
+	// every request counts as a turn, so pi and its HTTP client never retry.
+	settings := map[string]any{
+		"quietStartup": true,
+		"retry":        map[string]any{"enabled": false, "provider": map[string]any{"maxRetries": 0}},
+	}
+	mergeSettings(settings, setup.Settings)
+	if err := writeJSONFile(filepath.Join(dir, "settings.json"), settings); err != nil {
+		return err
+	}
+	var parts []string
+	if s := strings.TrimSpace(setup.Instructions); s != "" {
+		parts = append(parts, s)
+	}
+	if s := strings.TrimSpace(setup.ProjectInstructions); s != "" {
+		parts = append(parts, "# Project instructions\n\n"+s)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(strings.Join(parts, "\n\n")+"\n"), 0o644)
+}
+
+// mergeSettings merges src into dst; nested objects merge key by key.
+func mergeSettings(dst, src map[string]any) {
+	for k, v := range src {
+		sub, ok := v.(map[string]any)
+		cur, isMap := dst[k].(map[string]any)
+		if ok && isMap {
+			mergeSettings(cur, sub)
+			continue
+		}
+		dst[k] = v
+	}
+}
+
+// repoSkills lists the repository's own skill directories, skipping names the
+// node already has from the catalog and repeats across layouts.
+func repoSkills(repo string, granted map[string]protocol.SkillDir) []string {
+	if repo == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	for name := range granted {
+		seen[name] = true
+	}
+	var dirs []string
+	for _, root := range RepoSkillDirs {
+		entries, err := os.ReadDir(filepath.Join(repo, root))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			dir := filepath.Join(repo, root, e.Name())
+			if !e.IsDir() || seen[e.Name()] {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+				continue
+			}
+			seen[e.Name()] = true
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 func writeSkills(root string, skills map[string]protocol.SkillDir) ([]string, error) {

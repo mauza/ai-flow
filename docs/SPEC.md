@@ -218,6 +218,17 @@ upstream's reset time, capped by `max_wait`), `fallback` (next model), `outcome`
 node → preset → flow/project/catalog defaults → catalog model → built-in defaults
 (rate_limited: retry ×5 then fail; quota: wait 30m then fail; others: fail).
 
+`thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`) reaches the
+endpoint only for agent nodes whose model sets `reasoning: true` and a
+`thinking_format`, the parameter that endpoint understands: `reasoning_effort`
+(OpenAI and most gateways), `qwen-chat-template` (Qwen on vLLM:
+`chat_template_kwargs.enable_thinking`), `qwen`, `deepseek`, `zai` or
+`openrouter`. With a format and no level, pi asks for `medium`; without a
+format nothing is sent and the endpoint's own default applies. A model can set
+its default level in its own `llm` block. When the shim falls back to a model
+with another format, it drops the thinking parameters (that model's default
+applies) and lowers the reply cap to the fallback's `max_output_tokens`.
+
 Two enforcement points: the **limit shim** in the pod (behaviour: retries,
 waits, fallbacks, token/turn limits) and the **LLM proxy** in the control plane
 (security: model allowlist from the grant, node `limits.usd`, flow `budget.usd`,
@@ -237,11 +248,13 @@ Secrets are env vars named by `*Env` fields, never inlined.
   (`garage` | `s3` | `local`), git host tokens, GitHub API, Linear connection,
   MCP servers (URL + headers), notifications (`notify`: ntfy server, topic,
   token, events, `stuckAfter`).
-- **Catalog** — models (upstream + model id + planner metadata + default `llm`),
-  harnesses, runtimes, grants, skills (inline files or a directory), presets,
+- **Catalog** — models (upstream + model id + planner metadata + default `llm`,
+  `thinking_format`, `max_output_tokens`), harnesses (`instructions`,
+  `settings`, see §7.2.1), runtimes, grants, skills (inline files or a directory), presets,
   node defaults, planner (model, stream, guidance, attempts).
 - **Project** — repo grant, base branch, `start: manual|auto`, allow-lists for
-  grants and models (glob patterns), budgets, planner guidance, Linear link:
+  grants and models (glob patterns), budgets, planner guidance, agent
+  instructions (`agent.instructions`, for every agent step), Linear link:
   team, optional project filter, trigger label + states, state mapping, comments;
   and `deploy` when merging to a branch ships the project: version endpoints,
   health queries and URL, an optional rollback workflow and Argo CD app.
@@ -299,7 +312,8 @@ step in between, and after `merged` the run can only succeed through
 `wait_for_deploy` (deployed) and then `check_health` (healthy). A
 `rollback_deploy` node needs the project's `deploy.rollback` workflow.
 Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
-an llm node, `thinking` on a non-reasoning model, `spec.budget.wall`, …) produce
+an llm node, `thinking` on a model without `reasoning: true` or `thinking_format`,
+`spec.budget.wall`, …) produce
 a *declared but not enforced* warning rather than silently looking like they work.
 
 ## 7. Execution
@@ -355,11 +369,43 @@ Only a projected token with the `ai-flow` audience is mounted.
    or create it from base.
 3. **Run** — agent: pi with an isolated config dir (`PI_CODING_AGENT_DIR`), a
    custom provider pointing at the limit shim, `--no-extensions -e <ai-flow ext>`,
-   `--no-skills --skill <granted>`, `--tools <allowlist>`, JSON event stream as
-   transcript and progress. llm: one structured call through the shim. check:
+   `--no-skills --skill <granted and repository skills>`, `--tools <allowlist>`,
+   JSON event stream as transcript and progress (setup in §7.2.1). llm: one structured call through the shim. check:
    bash with a minimal environment (no grant).
 4. **Collect** — validate the outcome, commit and push if the node has
    `repo:write`, compute diff stats, upload the transcript, post the result.
+
+#### 7.2.1 Agent harness setup
+
+What pi sees in an agent step, from the most general to the most specific:
+
+| Layer | Source | How pi gets it |
+|---|---|---|
+| Harness instructions | catalog `harnesses.pi.instructions` | `AGENTS.md` in pi's config dir (its global context file) |
+| Project instructions | project `agent.instructions` | the same file, under `# Project instructions` |
+| Repository instructions | `AGENTS.md` / `CLAUDE.md` in the checkout | pi's own discovery from the working directory |
+| Repository `.pi/` | `.pi/settings.json`, `.pi/SYSTEM.md` in the checkout | pi's own discovery; the repository is trusted through its grant |
+| Step | node prompt, outcomes, outputs, run context | `--append-system-prompt` and the prompt |
+| Skills | the node's catalog `skills`, plus the repository's `.agents/skills/<name>/SKILL.md` and `.claude/skills/<name>/SKILL.md` | `--skill <dir>`; a catalog skill wins a name clash, then `.agents` over `.claude` |
+
+**Settings.** The runner writes pi's `settings.json` with quiet startup and
+retries off: the limit shim owns retries and fallbacks (the step's `on_limit`),
+and every request counts as a turn, so pi and its HTTP client never retry on
+their own. `harnesses.pi.settings` merges over that, object by object (for
+example `compaction: {keepRecentTokens: 40000}`).
+
+**Models.** pi's model entry takes the catalog model's `context_tokens`
+(default 100000), `max_output_tokens` (default 16384) and `thinking_format`
+(§4.3).
+
+**Tools.** `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, plus
+`flow_finish` and granted MCP tools. A step without `repo:write` has no `edit`
+or `write`.
+
+Harness instructions and settings and a model's `thinking_format` and
+`max_output_tokens` are execution settings: changing them fails active runs
+that use them as configuration drift (the UI asks first). Project instructions
+are pinned with the run's snapshot, so edits apply to new runs.
 
 ### 7.3 Access control
 

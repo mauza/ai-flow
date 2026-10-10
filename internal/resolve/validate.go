@@ -363,6 +363,8 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 	case flow.TypeAgent:
 		if m := v.cfg.Catalog.Models[n.LLM.Model]; m != nil && !m.Reasoning {
 			v.warnf(n.ID, "llm.thinking", "declared but not enforced: model %q is not marked reasoning: true", n.LLM.Model)
+		} else if m != nil && m.ThinkingFormat == "" {
+			v.warnf(n.ID, "llm.thinking", "declared but not enforced: model %q has no thinking_format, so no thinking level is sent", n.LLM.Model)
 		}
 	}
 }

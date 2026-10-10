@@ -48,6 +48,7 @@ type Bundle struct {
 	Tools     []string            `json:"tools,omitempty"` // built-in harness tools allowed
 	MCP       []MCPTool           `json:"mcp,omitempty"`
 	Skills    map[string]SkillDir `json:"skills,omitempty"`
+	Agent     *AgentSetup         `json:"agent,omitempty"` // agent nodes: harness and project instructions
 	Check     *CheckSpec          `json:"check,omitempty"`
 	SecretEnv []string            `json:"secret_env,omitempty"` // approved names only; values are injected by the launcher
 
@@ -78,9 +79,18 @@ type LLMAccess struct {
 }
 
 type ModelInfo struct {
-	Name          string `json:"name"` // catalog name; what the pod sends as "model"
-	ContextTokens int    `json:"context_tokens,omitempty"`
-	Reasoning     bool   `json:"reasoning,omitempty"`
+	Name            string `json:"name"` // catalog name; what the pod sends as "model"
+	ContextTokens   int    `json:"context_tokens,omitempty"`
+	Reasoning       bool   `json:"reasoning,omitempty"`
+	ThinkingFormat  string `json:"thinking_format,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+}
+
+// AgentSetup configures the harness of an agent node beyond its tools.
+type AgentSetup struct {
+	Instructions        string         `json:"instructions,omitempty"`         // the harness's, for every project
+	ProjectInstructions string         `json:"project_instructions,omitempty"` // the project's agent.instructions
+	Settings            map[string]any `json:"settings,omitempty"`             // merged into the harness's settings
 }
 
 type MCPTool struct {

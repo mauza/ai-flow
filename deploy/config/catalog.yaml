@@ -6,6 +6,10 @@ models:
   # These names must exist on the `home` upstream (LLM_BASE_URL). size, tool_use,
   # cost and context_tokens are hints for the planner, not performance claims;
   # context_tokens is a conservative working limit, not the model's full capacity.
+  # thinking_format is how the endpoint takes a step's `thinking` level:
+  # reasoning_effort (OpenAI, most gateways), qwen-chat-template (Qwen on vLLM),
+  # qwen, deepseek, zai or openrouter. Leave it out if the endpoint rejects
+  # unknown parameters; then `thinking` has no effect.
   gpt-6.1-sol:
     upstream: home
     model: gpt-6.1-sol
@@ -15,6 +19,7 @@ models:
     cost: paid
     max_concurrency: 2
     reasoning: true
+    thinking_format: reasoning_effort
     notes: Default planner; planner and structured steps stream.
   gpt-6-luna:
     upstream: home
@@ -25,6 +30,7 @@ models:
     cost: paid
     max_concurrency: 2
     reasoning: true
+    thinking_format: reasoning_effort
     notes: Alternate planning/execution model, including independent review. No fallback model.
   gpt-6-astra:
     upstream: home
@@ -35,11 +41,22 @@ models:
     cost: paid
     max_concurrency: 2
     reasoning: true
+    thinking_format: reasoning_effort
     notes: Additional planning/execution option. No fallback model.
 
 harnesses:
   pi:
     description: pi coding agent — read/edit/write/bash plus granted tools.
+    # Every agent step reads these (as pi's global AGENTS.md), ahead of the
+    # project's agent.instructions and the repository's own AGENTS.md.
+    instructions: |
+      - Read the code you are about to change, and its tests, before editing.
+      - Verify with the repository's own test and build commands. Say in the
+        flow_finish summary which commands you ran and what they reported, and
+        what you could not check.
+      - Never weaken, skip or delete a test to make it pass.
+    # settings merge into pi's settings.json, e.g.
+    # settings: {compaction: {keepRecentTokens: 40000}}
 
 runtimes:
   agent-base:

@@ -301,12 +301,18 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 				continue
 			}
 			claims.Models = append(claims.Models, name)
-			access.Models = append(access.Models, protocol.ModelInfo{Name: name, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning})
+			access.Models = append(access.Models, protocol.ModelInfo{Name: name, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
+				ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens})
 		}
 		bundle.LLM = access
 	}
 	if n.Type == flow.TypeAgent {
-		bundle.Tools = runner.DefaultAgentTools
+		bundle.Tools = runner.AgentTools(bundle.Repo == nil || bundle.Repo.Write)
+		h := b.cfg.Current().Catalog.Harnesses[n.Harness]
+		bundle.Agent = &protocol.AgentSetup{Instructions: h.Instructions, Settings: h.Settings}
+		if res.Project != nil {
+			bundle.Agent.ProjectInstructions = res.Project.Spec.Agent.Instructions
+		}
 		bundle.Skills = map[string]protocol.SkillDir{}
 		for _, s := range n.Skills {
 			if sk := b.cfg.Current().Catalog.Skills[s]; sk != nil {
