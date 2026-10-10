@@ -14,7 +14,9 @@ const tabs: { id: TabID; label: string; icon: typeof Cpu; noun: string; blurb: s
   {
     id: "models", label: "Models", icon: Cpu, noun: "model",
     blurb: "Models nodes and the planner can use. The upstream is an LLM endpoint from the environment.",
-    template: "upstream: home\nmodel: \nsize: medium # small | medium | large | frontier\ncontext_tokens: 32000\ntool_use: good\ncost: free\nnotes: \n",
+    template:
+      "upstream: home\nmodel: \nsize: medium # small | medium | large | frontier\ncontext_tokens: 32000\ntool_use: good\ncost: free\n" +
+      "# reasoning: true\n# thinking_format: reasoning_effort # or qwen-chat-template, qwen, deepseek, zai, openrouter\n# max_output_tokens: 16384\nnotes: \n",
   },
   {
     id: "presets", label: "Nodes", icon: Wand2, noun: "node preset",
@@ -28,8 +30,8 @@ const tabs: { id: TabID; label: string; icon: typeof Cpu; noun: string; blurb: s
   },
   {
     id: "harnesses", label: "Harnesses", icon: Wrench, noun: "harness",
-    blurb: "Agent harnesses a runtime image provides.",
-    template: "description: \n",
+    blurb: "Agent harnesses a runtime image provides, with the instructions and settings every agent step gets.",
+    template: "description: \ninstructions: |\n  \n# settings: {compaction: {keepRecentTokens: 40000}}\n",
   },
   {
     id: "grants", label: "Access", icon: KeyRound, noun: "grant",
@@ -45,7 +47,7 @@ const tabs: { id: TabID; label: string; icon: typeof Cpu; noun: string; blurb: s
   {
     id: "projects", label: "Projects", icon: FolderGit2, noun: "project",
     blurb: "Repositories ai-flow works on, what flows in them may use, and how they deploy.",
-    template: "spec:\n  description: \n  repo: repo/\n  base: main\n  start: manual\n  allow:\n    grants: []\n    models: []\n",
+    template: "spec:\n  description: \n  repo: repo/\n  base: main\n  start: manual\n  allow:\n    grants: []\n    models: []\n  agent:\n    instructions: |\n      \n",
   },
   { id: "connections", label: "Connections", icon: Plug, noun: "", blurb: "", template: "" },
 ];

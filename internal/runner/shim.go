@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -283,8 +284,9 @@ func (s *Shim) do(ctx context.Context, body map[string]any) (*http.Response, *up
 outer:
 	for {
 		s.mu.Lock()
-		model := s.models[s.current].Name
+		cur := s.current
 		s.mu.Unlock()
+		model := s.models[cur].Name
 		body["model"] = model
 		if stream, _ := body["stream"].(bool); stream {
 			opts, _ := body["stream_options"].(map[string]any)
@@ -294,7 +296,7 @@ outer:
 			opts["include_usage"] = true
 			body["stream_options"] = opts
 		}
-		raw, _ := json.Marshal(body)
+		raw, _ := json.Marshal(forModel(body, s.models[0], s.models[cur]))
 		req, err := http.NewRequestWithContext(ctx, "POST", s.upstream+"/chat/completions", bytes.NewReader(raw))
 		if err != nil {
 			return nil, nil, err
@@ -535,4 +537,34 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// thinkingParams are the request fields pi sets for the thinking formats.
+var thinkingParams = []string{"reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs"}
+
+// forModel adapts a request the harness built for the primary model to the
+// fallback the shim sends it to: thinking parameters in another model's
+// format are dropped, and the reply cap is lowered to the fallback's own.
+func forModel(body map[string]any, primary, m protocol.ModelInfo) map[string]any {
+	differentThinking := m.ThinkingFormat != primary.ThinkingFormat
+	capped := m.MaxOutputTokens > 0
+	if m.Name == primary.Name || (!differentThinking && !capped) {
+		return body
+	}
+	out := maps.Clone(body)
+	if differentThinking {
+		for _, k := range thinkingParams {
+			delete(out, k)
+		}
+	}
+	if capped {
+		for _, k := range []string{"max_completion_tokens", "max_tokens"} {
+			if v, ok := out[k].(float64); ok && v > float64(m.MaxOutputTokens) {
+				out[k] = m.MaxOutputTokens
+			} else if v, ok := out[k].(int); ok && v > m.MaxOutputTokens {
+				out[k] = m.MaxOutputTokens
+			}
+		}
+	}
+	return out
 }

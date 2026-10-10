@@ -261,7 +261,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	luna := "upstream: home\nmodel: gpt-6-luna\ncontext_tokens: 100000\nreasoning: true\n"
+	luna := "upstream: home\nmodel: gpt-6-luna\ncontext_tokens: 100000\nreasoning: true\nthinking_format: reasoning_effort\n"
 	// Descriptive edits never affect runs.
 	e.call(t, "POST", "/api/config", map[string]any{"edits": []app.ConfigEdit{{Section: "models", Name: "gpt-6-luna", YAML: luna + "notes: just a note\n"}}}, 200)
 	// A change the run executes is refused, naming the run...

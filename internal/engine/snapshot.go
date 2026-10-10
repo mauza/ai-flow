@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mauza/ai-flow/internal/config"
+	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
 )
@@ -71,6 +72,10 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, e
 				deps["skill/"+s] = nil
 			}
 		}
+		if h := cfg.Catalog.Harnesses[n.Harness]; n.Type == flow.TypeAgent && (h.Instructions != "" || len(h.Settings) > 0) {
+			// Only when set, so harnesses without either keep earlier hashes.
+			deps["harness/"+n.Harness] = config.Harness{Instructions: h.Instructions, Settings: h.Settings}
+		}
 		if n.LLM != nil {
 			for _, name := range append([]string{n.LLM.Model}, n.LLM.Fallbacks...) {
 				m := cfg.Catalog.Models[name]
@@ -97,12 +102,13 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, e
 }
 
 // pinnedModel keeps the model fields that change what a run executes: the
-// upstream and model id, the context size and reasoning flag the runner uses,
-// and the model's own llm defaults. Planner hints (size, tool use, cost
-// label, notes), prices (accounting) and max_concurrency (admission control)
-// may change while runs are active.
+// upstream and model id, what the runner tells the harness (context size,
+// reasoning, thinking format, reply cap), and the model's own llm defaults.
+// Planner hints (size, tool use, cost label, notes), prices (accounting) and
+// max_concurrency (admission control) may change while runs are active.
 func pinnedModel(m *config.Model) config.Model {
-	return config.Model{Upstream: m.Upstream, Model: m.Model, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning, LLM: m.LLM}
+	return config.Model{Upstream: m.Upstream, Model: m.Model, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
+		ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens, LLM: m.LLM}
 }
 
 // DriftedRuns lists the queued, running and waiting runs that cfg would fail

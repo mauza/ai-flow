@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -722,5 +723,76 @@ spec:
 	}
 	if !reflect.DeepEqual(received.SecretEnv, []string{"APPROVED_RUNTIME_TEST"}) {
 		t.Fatalf("approved names: %v", received.SecretEnv)
+	}
+}
+
+// An agent step gets the harness's and the project's instructions and the
+// model's thinking format; one without repo:write gets no file-editing tools.
+func TestBundleAgentSetup(t *testing.T) {
+	b, _, _ := runtimeBroker(t)
+	cfg, err := config.Load("../../deploy/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Catalog.Harnesses["pi"] = config.Harness{Instructions: "Verify first.", Settings: map[string]any{"compaction": map[string]any{"enabled": false}}}
+	cfg.Projects["sandbox"].Spec.Agent.Instructions = "Run python -m unittest."
+	m := cfg.Catalog.Models["gpt-6.1-sol"]
+	m.Reasoning, m.ThinkingFormat, m.MaxOutputTokens = true, "reasoning_effort", 32000
+	b.cfg = cfg
+	b.engine = engine.New(cfg, b.store, nil, b.hub, nil)
+	ctx := context.Background()
+	if _, err := b.store.SaveFlow(ctx, &store.FlowVersion{Name: "agent-test", YAML: `apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: {name: agent-test, project: sandbox}
+spec:
+  start: look
+  nodes:
+    look:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: look
+      outcomes: [done]
+      next: {done: fix}
+    fix:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: fix
+      grants: [repo/ai-flow-sandbox:write]
+      outcomes: [done]
+      next: {done: $success}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := b.engine.CreateRun(ctx, "agent-test", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := map[string][]string{}
+	for _, node := range []string{"look", "fix"} {
+		if err := b.store.UpdateRun(ctx, run.ID, map[string]any{"status": store.RunRunning, "current_node": node}); err != nil {
+			t.Fatal(err)
+		}
+		v, err := b.store.AddVisit(ctx, run.ID, node, flow.TypeAgent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundle, err := b.buildBundle(ctx, run.ID, v.Seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools[node] = bundle.Tools
+		a := bundle.Agent
+		if a == nil || a.Instructions != "Verify first." || a.ProjectInstructions != "Run python -m unittest." || a.Settings["compaction"] == nil {
+			t.Fatalf("%s: agent setup %+v", node, a)
+		}
+		if mi := bundle.LLM.Models[0]; mi.ThinkingFormat != "reasoning_effort" || mi.MaxOutputTokens != 32000 {
+			t.Fatalf("%s: model %+v", node, mi)
+		}
+	}
+	if slices.Contains(tools["look"], "edit") || slices.Contains(tools["look"], "write") || !slices.Contains(tools["look"], "read") {
+		t.Errorf("read-only step tools %v", tools["look"])
+	}
+	if !slices.Contains(tools["fix"], "edit") || !slices.Contains(tools["fix"], "write") {
+		t.Errorf("writing step tools %v", tools["fix"])
 	}
 }

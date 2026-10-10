@@ -222,23 +222,38 @@ type Catalog struct {
 }
 
 type Model struct {
-	Upstream       string          `json:"upstream"`
-	Model          string          `json:"model"`
-	Size           string          `json:"size,omitempty"` // small | medium | large | frontier
-	Ctx            string          `json:"ctx,omitempty"`
-	ContextTokens  int             `json:"context_tokens,omitempty"`
-	ToolUse        string          `json:"tool_use,omitempty"`
-	Cost           string          `json:"cost,omitempty"`
-	InputPer1M     float64         `json:"input_per_1m,omitempty"`
-	OutputPer1M    float64         `json:"output_per_1m,omitempty"`
-	MaxConcurrency int             `json:"max_concurrency,omitempty"`
-	Reasoning      bool            `json:"reasoning,omitempty"`
-	Notes          string          `json:"notes,omitempty"`
-	LLM            *flow.LLMConfig `json:"llm,omitempty"`
+	Upstream       string  `json:"upstream"`
+	Model          string  `json:"model"`
+	Size           string  `json:"size,omitempty"` // small | medium | large | frontier
+	Ctx            string  `json:"ctx,omitempty"`
+	ContextTokens  int     `json:"context_tokens,omitempty"`
+	ToolUse        string  `json:"tool_use,omitempty"`
+	Cost           string  `json:"cost,omitempty"`
+	InputPer1M     float64 `json:"input_per_1m,omitempty"`
+	OutputPer1M    float64 `json:"output_per_1m,omitempty"`
+	MaxConcurrency int     `json:"max_concurrency,omitempty"`
+	Reasoning      bool    `json:"reasoning,omitempty"`
+	// ThinkingFormat is how the endpoint takes a thinking level (one of
+	// ThinkingFormats). Empty sends none, so llm.thinking has no effect.
+	ThinkingFormat string `json:"thinking_format,omitempty"`
+	// MaxOutputTokens caps one reply; the runner uses 16384 when unset.
+	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Notes           string          `json:"notes,omitempty"`
+	LLM             *flow.LLMConfig `json:"llm,omitempty"`
 }
+
+// ThinkingFormats are the thinking parameters pi can send: OpenAI's
+// reasoning_effort, and the switches of Qwen (vLLM chat template or
+// DashScope), DeepSeek, Z.ai and OpenRouter.
+var ThinkingFormats = []string{"reasoning_effort", "qwen-chat-template", "qwen", "deepseek", "zai", "openrouter"}
 
 type Harness struct {
 	Description string `json:"description,omitempty"`
+	// Instructions apply to every agent step that uses this harness (pi reads
+	// them as its global AGENTS.md, ahead of the repository's own).
+	Instructions string `json:"instructions,omitempty"`
+	// Settings merge over the runner's defaults in pi's settings.json.
+	Settings map[string]any `json:"settings,omitempty"`
 }
 
 type Runtime struct {
@@ -317,6 +332,7 @@ type ProjectSpec struct {
 	Allow       Allow        `json:"allow"`
 	Budget      *ProjBudget  `json:"budget,omitempty"`
 	Planner     PlannerGuide `json:"planner,omitempty"`
+	Agent       AgentGuide   `json:"agent,omitempty"`
 	Defaults    *flow.Node   `json:"defaults,omitempty"`
 	Deploy      *Deploy      `json:"deploy,omitempty"`
 }
@@ -392,6 +408,12 @@ type ProjBudget struct {
 
 type PlannerGuide struct {
 	Guidance string `json:"guidance,omitempty"`
+}
+
+// AgentGuide reaches every agent step in the project, where planner guidance
+// reaches only the planner.
+type AgentGuide struct {
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // Load reads config from directories (every *.yaml / *.yml, non-recursive) and
@@ -723,6 +745,16 @@ func (c *Config) check() error {
 		}
 		if m.Model == "" {
 			errs = append(errs, fmt.Sprintf("model %s: model is required", name))
+		}
+		if m.ThinkingFormat != "" {
+			if !slices.Contains(ThinkingFormats, m.ThinkingFormat) {
+				errs = append(errs, fmt.Sprintf("model %s: thinking_format must be one of %s", name, strings.Join(ThinkingFormats, ", ")))
+			} else if !m.Reasoning {
+				errs = append(errs, fmt.Sprintf("model %s: thinking_format needs reasoning: true", name))
+			}
+		}
+		if m.MaxOutputTokens < 0 {
+			errs = append(errs, fmt.Sprintf("model %s: max_output_tokens must be positive", name))
 		}
 	}
 	if c.Catalog.Planner.Model != "" {

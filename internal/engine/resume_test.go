@@ -163,3 +163,40 @@ func TestMaxConcurrencyIsNotConfigurationDrift(t *testing.T) {
 		t.Fatalf("DriftedRuns must name the run: %v", drifted)
 	}
 }
+
+// What the runner tells pi is execution: the harness's instructions and
+// settings and a model's thinking format pin like the model id does. A
+// harness description does not.
+func TestHarnessAndThinkingSettingsAreDrift(t *testing.T) {
+	for _, edit := range []struct {
+		name  string
+		apply func(h *harness)
+		drift bool
+	}{
+		{"harness description", func(h *harness) {
+			pi := h.cfg.Catalog.Harnesses["pi"]
+			pi.Description = "edited"
+			h.cfg.Catalog.Harnesses["pi"] = pi
+		}, false},
+		{"harness instructions", func(h *harness) {
+			pi := h.cfg.Catalog.Harnesses["pi"]
+			pi.Instructions += "\nverify"
+			h.cfg.Catalog.Harnesses["pi"] = pi
+		}, true},
+		{"harness settings", func(h *harness) {
+			pi := h.cfg.Catalog.Harnesses["pi"]
+			pi.Settings = map[string]any{"compaction": map[string]any{"enabled": false}}
+			h.cfg.Catalog.Harnesses["pi"] = pi
+		}, true},
+		{"thinking format", func(h *harness) { h.cfg.Catalog.Models[testModel].ThinkingFormat = "qwen-chat-template" }, true},
+		{"reply cap", func(h *harness) { h.cfg.Catalog.Models[testModel].MaxOutputTokens = 4096 }, true},
+	} {
+		h := newHarness(t)
+		id := h.flow(resumeFlow)
+		edit.apply(h)
+		_, err := h.e.Resolved(h.ctx, h.run(id))
+		if drifted := err != nil && strings.Contains(err.Error(), "drift"); drifted != edit.drift {
+			t.Errorf("%s: drift %v, want %v (%v)", edit.name, drifted, edit.drift, err)
+		}
+	}
+}

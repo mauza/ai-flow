@@ -116,3 +116,34 @@ runtimes: {}
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestModelThinkingFormatIsChecked(t *testing.T) {
+	cfg, err := config.Load("../../examples/templates/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, projects := cfg.Docs()
+	edit := func(add string, reasoning bool) []byte {
+		out := strings.Replace(string(cat), "upstream: home", "upstream: home\n    "+add, 1)
+		if !reasoning {
+			out = strings.Replace(out, "reasoning: true", "reasoning: false", 1)
+		}
+		return []byte(out)
+	}
+	for _, tc := range []struct {
+		add       string
+		reasoning bool
+		want      string
+	}{
+		{"thinking_format: effort", true, "thinking_format must be one of"},
+		{"thinking_format: reasoning_effort", false, "needs reasoning: true"},
+		{"max_output_tokens: -1", true, "max_output_tokens must be positive"},
+	} {
+		if _, err := cfg.WithDocs(edit(tc.add, tc.reasoning), [][]byte{projects["template-project"]}); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: got %v", tc.add, err)
+		}
+	}
+	if _, err := cfg.WithDocs(edit("thinking_format: qwen-chat-template\n    max_output_tokens: 8192", true), [][]byte{projects["template-project"]}); err != nil {
+		t.Errorf("valid thinking format: %v", err)
+	}
+}

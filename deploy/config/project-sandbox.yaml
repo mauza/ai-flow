@@ -31,3 +31,8 @@ spec:
       Autonomous by default: no human gates for bug fixes, tests, docs, or small features.
       Add a gate before open_pull_request only if the task deletes data or changes CI.
       The repo uses Python's built-in unittest: run tests with `python -m unittest -v`.
+  # Every agent step in this project reads these; planner guidance reaches only
+  # the planner.
+  agent:
+    instructions: |
+      Run tests with `python -m unittest -v`.
