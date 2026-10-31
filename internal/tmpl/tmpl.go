@@ -1,4 +1,6 @@
-// Package tmpl renders ${{ path.to.value ?? "fallback" }} references.
+// Package tmpl renders ${{ path.to.value ?? "fallback" }} references. The
+// fallback is a quoted string or a JSON literal ([], {}, 0, false), which
+// renders as written.
 //
 // Deliberately tiny: dotted paths into a map, an optional ?? fallback, nothing
 // else. Rendering happens once, in the control plane, so model output that
@@ -46,7 +48,12 @@ func parse(raw, expr string) (Ref, error) {
 		lit := strings.TrimSpace(expr[i+2:])
 		fb, err := strconv.Unquote(lit)
 		if err != nil {
-			return r, fmt.Errorf("%s: fallback must be a quoted string", raw)
+			// Planners write `?? []` for list outputs; refusing it cost a
+			// whole repair round. Rendering is text, so keep the literal.
+			if lit == "" || !json.Valid([]byte(lit)) || lit == "null" {
+				return r, fmt.Errorf("%s: fallback must be a quoted string or a JSON literal like [] or 0", raw)
+			}
+			fb = lit
 		}
 		r.Fallback = &fb
 	}
