@@ -18,7 +18,7 @@ Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipel
 | Verification | `go-test`, `python-unittest`, `npm-test`, `npm-build`, `json-check`, `custom-check` | Execute deterministic commands in a compatible runtime. |
 | Control | `human-decision`, `has-changes`, `large-change` | Optional human decisions or deterministic routing on the cumulative branch diff. |
 | Delivery | `summarize-change`, `release-notes`, `open-pull-request`, `comment-task` | Prepare evidence-based text, then publish through existing actions when appropriate. |
-| Release | `ci-checks`, `local-stack-test`, `qa-test`, `deploy`, `wait-for-deploy` | Verify in CI and locally (QA exercises the app), then ship by merging. |
+| Release | `ci-checks`, `local-stack-test`, `qa-test`, `deploy`, `update-branch`, `wait-for-deploy` | Verify in CI and locally (QA exercises the app), then ship by merging. |
 | Operations | `monitor-deploy`, `rollback-release`, `wait-for-rollback`, `deploy-triage`, `revert-deploy` | Soak production on health queries; on degradation restore the previous release, diagnose and revert. |
 
 ## Release: ship on merge, watch, roll back
@@ -44,6 +44,7 @@ The release pipeline, in catalog terms:
 ```
 work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-request → ci-checks
   → deploy → wait-for-deploy → monitor-deploy → healthy: $success
+    conflict: update-branch → ci-checks → deploy
                                               → degraded: [rollback-release → wait-for-rollback →]
                                                 deploy-triage → revert-deploy
                                                 → open-pull-request → ci-checks → deploy → $fail
@@ -53,6 +54,9 @@ work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-re
   statuses; `none` means no CI reported within `settle` (default 2m).
 - `deploy` (`merge_pull_request`) merges at the PR head with a merge commit, so
   `revert-deploy` can revert it and push the run branch as a fast-forward.
+- `update-branch` handles `deploy`'s `conflict` (other work merged first): it
+  merges `origin/<base>` (already current in the pod's clone, no fetch needed),
+  resolves conflicts keeping both sides, and goes back through `ci-checks`.
 - `wait-for-deploy` polls `deploy.versions` until every endpoint reports the merged
   commit; `monitor-deploy` (`check_health`) then soaks: a check failing on two
   consecutive polls is degraded; query errors are inconclusive (a metrics outage

@@ -73,11 +73,25 @@ spec:
       on_exhausted: $fail
       next: { passed: deploy, failed: implement, none: $fail, timeout: $fail }
 
-    # Merging into the deploy branch is the production deploy.
+    # Merging into the deploy branch is the production deploy. If other work
+    # merged first, bring the branch up to date and go through CI again.
     deploy:
       type: action
       action: merge_pull_request
-      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+      max_visits: 3
+      on_exhausted: $fail
+      next: { merged: live, conflict: update_branch, blocked: $fail, timeout: $fail }
+    update_branch:            # the catalog's update-branch preset, inline
+      type: agent
+      model: gpt-6.1-sol
+      grants: ["repo/template:write"]
+      prompt: |
+        Other work merged into ${{ run.base }} first. Run `git merge --no-edit origin/${{ run.base }}`
+        (no fetch needed), resolve conflicts keeping both sides' work, re-run the affected tests, commit.
+      outcomes: [merged, stuck]
+      max_visits: 2
+      on_exhausted: $fail
+      next: { merged: ci, stuck: $fail }
     live:
       type: action
       action: wait_for_deploy
