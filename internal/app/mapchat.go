@@ -61,7 +61,7 @@ Story map files (paths are relative to the repository root):
     releases: slices top to bottom: [{id, title, goal, status: planned|in_progress|released, date}]
     metrics: [{id, title, description, kind: product|delivery, query (product: PromQL), measure (delivery: %[2]s), release, target, direction: up|down, unit}]
 - %[1]s/tasks/<task-id>.yaml, one user task per file:
-    title, activity (an activity id), release (a release id), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked
+    title, activity (an activity id), release (a release id; omit it for unscheduled ideas, which the map shows in its own row), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked
 Ids are lowercase slugs (a-z, 0-9, -). Use story-mapping vocabulary: the journey's phases hold activities (the backbone); user tasks hang under activities and are sliced into releases. Keep tasks small enough to ship one at a time, and give each testable acceptance criteria.
 
 Reply with one JSON object and nothing else:
