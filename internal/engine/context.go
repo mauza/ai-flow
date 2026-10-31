@@ -164,6 +164,7 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	if n.Type == flow.TypeAgent || n.Type == flow.TypeLLM {
 		writeLaterSteps(&sb, res, n, done)
+		writeConverging(&sb, res, n, done)
 	}
 	if prev != nil {
 		fmt.Fprintf(&sb, "## Previous step: %s → %s\n\n", prev.Node, prev.Outcome)
@@ -198,6 +199,30 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeConverging tells a read-only verification step (QA, review) that runs
+// again in a loop how to let the loop end. On web-games two finished features
+// never shipped: each QA pass reported a fresh set of small "defects", every
+// one went back to implement, and verification ran out of visits.
+func writeConverging(sb *strings.Builder, res *resolve.Resolved, n *resolve.Node, done []*store.Visit) {
+	for _, g := range n.Grants {
+		if g == res.Repo+":write" {
+			return // a step that changes the code is not judging it
+		}
+	}
+	passes := 0
+	for _, v := range done {
+		if v.Node == n.ID {
+			passes++
+		}
+	}
+	if passes == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "## Converging\n\nThis step already judged this work %d time(s) (see Loop history), and every blocking finding sends it back for another round. "+
+		"This time, block only on (1) findings from earlier passes that are still present, or (2) new problems that break an acceptance criterion of the task or a test. "+
+		"Report anything else (polish, nice-to-haves, things this environment cannot verify) as non-blocking notes in your summary, and choose the passing outcome when nothing blocks.\n\n", passes)
 }
 
 // writeLaterSteps lists what the flow still does after this step. On
