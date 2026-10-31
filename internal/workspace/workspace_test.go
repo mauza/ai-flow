@@ -81,32 +81,32 @@ func TestCheckoutEditCommit(t *testing.T) {
 	}
 }
 
-func TestCommitRefusesWhenTheBranchMoved(t *testing.T) {
+// A commit after the branch moved pulls (keeping local edits) and commits on
+// the new head; it is refused only when the remote changed a file edited here.
+func TestCommitPullsWhenTheBranchMoved(t *testing.T) {
 	ctx := context.Background()
 	m, repo, src := setup(t, map[string]string{"product/README.md": "a\n", "product/b.md": "b\n"})
 	m.Ensure(ctx, "app", src)
 	m.Write("app", "product/README.md", []byte("mine\n"))
 	repo.Push(map[string]string{"product/b.md": "theirs\n"})
 
-	if _, err := m.Commit(ctx, "app", src, "edit", nil); !errors.Is(err, github.ErrNotFastForward) {
-		t.Fatalf("got %v, want not fast forward", err)
-	}
-	// Pulling brings their change and keeps my edit; then the commit works.
-	res, err := m.Pull(ctx, "app", src)
-	if err != nil || len(res.Updated) != 1 {
-		t.Fatalf("pull: %+v %v", res, err)
-	}
-	if b, _ := m.Read("app", "product/README.md"); string(b) != "mine\n" {
-		t.Fatal("pull lost a local edit")
-	}
-	if b, _ := m.Read("app", "product/b.md"); string(b) != "theirs\n" {
-		t.Fatal("pull did not bring the remote change")
-	}
 	if _, err := m.Commit(ctx, "app", src, "edit", nil); err != nil {
 		t.Fatal(err)
 	}
 	if f := repo.Files(); f["product/README.md"] != "mine\n" || f["product/b.md"] != "theirs\n" {
 		t.Fatalf("final: %v", f)
+	}
+	if b, _ := m.Read("app", "product/b.md"); string(b) != "theirs\n" {
+		t.Fatal("the workspace did not take the remote change")
+	}
+
+	m.Write("app", "product/README.md", []byte("mine again\n"))
+	repo.Push(map[string]string{"product/README.md": "theirs too\n"})
+	if _, err := m.Commit(ctx, "app", src, "edit", nil); !errors.Is(err, workspace.ErrConflict) {
+		t.Fatalf("got %v, want a conflict", err)
+	}
+	if f := repo.Files(); f["product/README.md"] != "theirs too\n" {
+		t.Fatalf("their change was overwritten: %v", f)
 	}
 }
 
