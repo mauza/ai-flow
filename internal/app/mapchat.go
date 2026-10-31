@@ -110,8 +110,15 @@ func (a *App) AskMap(ctx context.Context, project, mapID, message string) (*MapM
 				llm.Message{Role: "user", Content: "That was not the JSON object described. Reply again with only the JSON object."})
 			continue
 		}
-		answer.Issues = a.checkChanges(work, mapID, answer.Changes)
-		if len(answer.Issues) == 0 || attempt == 1 {
+		issues, err := a.checkChanges(work, mapID, answer.Changes)
+		if err != nil {
+			// The check itself failed (disk, permissions): the model can't fix
+			// that, so don't spend another call asking it to.
+			answer.Issues = []string{"could not check the proposal: " + err.Error()}
+			break
+		}
+		answer.Issues = issues
+		if len(issues) == 0 || attempt == 1 {
 			break
 		}
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
@@ -149,16 +156,19 @@ func parseMapReply(reply string) (*MapMessage, error) {
 }
 
 // checkChanges validates proposed changes against the map as it would be
-// after applying them.
-func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
+// after applying them. It returns the problems the changes introduce, or an
+// error when the check itself could not run.
+func (a *App) checkChanges(work, mapID string, changes []FileChange) ([]string, error) {
 	var issues []string
-	tmp, err := os.MkdirTemp("", "ai-flow-map-")
+	// Next to the workspace rather than in os.TempDir: the control plane runs
+	// with a read-only root filesystem, and the data volume is always writable.
+	tmp, err := os.MkdirTemp(filepath.Dir(work), "check-")
 	if err != nil {
-		return []string{err.Error()}
+		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	if err := os.CopyFS(filepath.Join(tmp, "product"), os.DirFS(filepath.Join(work, "product"))); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return []string{err.Error()}
+		return nil, err
 	}
 	for _, c := range changes {
 		if err := workspace.CheckPath(c.Path); err != nil {
@@ -170,12 +180,16 @@ func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
 			os.RemoveAll(p)
 			continue
 		}
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, []byte(*c.Content), 0o644)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(p, []byte(*c.Content), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	l, err := storymap.Load(tmp, mapID)
 	if err != nil {
-		return append(issues, err.Error())
+		return append(issues, err.Error()), nil
 	}
 	// Report only problems the changes introduce.
 	before := map[string]bool{}
@@ -189,7 +203,7 @@ func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
 			issues = append(issues, p)
 		}
 	}
-	return issues
+	return issues, nil
 }
 
 // ApplyChanges writes proposed changes to the workspace (not committed).
