@@ -179,6 +179,22 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	return merged(sha), nil
 }
 
+// runPR fetches the run's pull request, or nil when it has none or GitHub
+// does not answer (callers treat that as "unknown").
+func (e *Engine) runPR(ctx context.Context, repo github.Repo, r *store.Run) (*github.PRState, int) {
+	m := prNumberRe.FindStringSubmatch(strings.TrimSuffix(r.PRURL, "/"))
+	if m == nil {
+		return nil, 0
+	}
+	number, _ := strconv.Atoi(m[1])
+	pr, err := e.gh.PR(ctx, repo, number)
+	if err != nil {
+		slog.Warn("pull request", "run", r.ID, "err", err)
+		return nil, number
+	}
+	return pr, number
+}
+
 // waitForChecks waits for every CI check reported on a commit.
 func (e *Engine) waitForChecks(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
 	repo, err := e.repoOf(res)
@@ -225,6 +241,17 @@ func (e *Engine) waitForChecks(ctx context.Context, r *store.Run, res *resolve.R
 		}
 	}
 	outputs := map[string]any{"ref": ref, "failed": []string{}, "checks": []string{}}
+	if len(checks) == 0 && strings.TrimSpace(with["ref"]) == "" {
+		// GitHub runs no pull_request workflows on a PR that conflicts with
+		// its base, so this would end in "none" after settle. Say why, on the
+		// failed route, which goes back to a step that can merge the base.
+		if pr, number := e.runPR(ctx, repo, r); pr != nil && pr.State == "open" && pr.Mergeable != nil && !*pr.Mergeable {
+			outputs["failed"] = []string{"merge conflict with " + r.Base}
+			return &actionResult{outcome: "failed", outputs: outputs, summary: fmt.Sprintf(
+				"#%d conflicts with %s, so GitHub runs no CI on it. Merge origin/%s into the branch (it is current in the checkout; no fetch needed), resolve the conflicts keeping both sides' work, re-run the tests and commit.",
+				number, r.Base, r.Base)}, nil
+		}
+	}
 	if len(checks) == 0 || missing > 0 {
 		started := time.UnixMilli(v.StartedAt)
 		if v.StartedAt > 0 && time.Since(started) >= settle {

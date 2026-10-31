@@ -280,6 +280,21 @@ func TestNoCIReportedWithinSettleIsNone(t *testing.T) {
 	}
 }
 
+// GitHub runs no PR workflows on a conflicting PR: report the conflict on the
+// failed route at once instead of "none" after settle.
+func TestConflictingPRFailsCIWithAReason(t *testing.T) {
+	w := &fakeWorld{mergeable: false, state: "dirty"}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	if got := h.path(id); got != "ci:failed" {
+		t.Fatalf("path %s", got)
+	}
+	v := h.current(id)
+	if !strings.Contains(v.Summary, "#7 conflicts with main") || !strings.Contains(string(v.Outputs), `"failed":["merge conflict with main"]`) {
+		t.Errorf("summary %q outputs %s", v.Summary, v.Outputs)
+	}
+}
+
 const rollbackNodes = `    ship:
       type: action
       action: merge_pull_request

@@ -38,7 +38,7 @@ var Actions = map[string]ActionSpec{
 		Outcomes: []string{"passed", "failed", "none"}, With: []string{"ref", "checks", "settle"},
 		Outputs: map[string]any{"ref": "string", "failed": []any{"string"}, "checks": []any{"string"}},
 		Waits:   true, Timeout: 45 * time.Minute,
-		Doc: "waits for GitHub CI (check runs and statuses) on ref (default: the run branch head; use a merge sha for post-merge build/deploy workflows); checks: names to require. Outcomes: passed, failed (outputs.failed), none (no CI reported within settle, default 2m), timeout.",
+		Doc: "waits for GitHub CI (check runs and statuses) on ref (default: the run branch head; use a merge sha for post-merge build/deploy workflows); checks: names to require. Outcomes: passed, failed (outputs.failed; also when the run's PR conflicts with its base, since GitHub then runs no PR CI), none (no CI reported within settle, default 2m), timeout.",
 	},
 	"wait_for_deploy": {
 		Outcomes: []string{"deployed"}, With: []string{"expect"},
