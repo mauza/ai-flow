@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -20,6 +21,11 @@ const (
 // A clean EOF is accepted only after
 // finish_reason=stop; otherwise [DONE] is required. Keep reading after stop for
 // final usage and late errors. Never return partial text on failure.
+// ErrStreamInterrupted marks a stream whose transport broke mid-response
+// (e.g. the control plane's LLM proxy restarted): the request is worth
+// repeating, unlike a reply the model got wrong.
+var ErrStreamInterrupted = errors.New("stream")
+
 func ReadStream(ctx context.Context, r io.Reader) (string, Usage, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), maxStreamEventBytes)
@@ -139,10 +145,10 @@ func ReadStream(ctx context.Context, r io.Reader) (string, Usage, error) {
 		return "", Usage{}, err
 	}
 	if err := scanner.Err(); err != nil {
-		return "", Usage{}, fmt.Errorf("stream: reading events: %w", err)
+		return "", Usage{}, fmt.Errorf("%w: reading events: %w", ErrStreamInterrupted, err)
 	}
 	if data.Len() != 0 || event != "" {
-		return "", Usage{}, fmt.Errorf("stream: unterminated event")
+		return "", Usage{}, fmt.Errorf("%w: unterminated event", ErrStreamInterrupted)
 	}
 	if !finished {
 		return "", Usage{}, fmt.Errorf("stream: interrupted before completion")

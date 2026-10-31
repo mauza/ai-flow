@@ -3,9 +3,12 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/mauza/ai-flow/internal/llm"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/protocol"
@@ -57,6 +60,7 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 	transcript.event(map[string]any{"type": "llm_request", "messages": messages})
 
 	var lastErr string
+	interrupted := 0
 	for attempt := 0; attempt < 3; attempt++ {
 		r.progress(fmt.Sprintf("Asking %s", shim.CurrentModel()))
 		body := map[string]any{"messages": messages, "temperature": 0.2, "stream": true}
@@ -72,6 +76,21 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 				return &protocol.Result{Outcome: flow.OutcomeLimit, Summary: fmt.Sprintf("Stopped by %s: %s", st.Kind, st.Message), Outputs: map[string]any{"limit": st.Kind}}
 			}
 			return &protocol.Result{Error: fmt.Sprintf("%s: %s", st.Kind, st.Message)}
+		}
+		if errors.Is(err, llm.ErrStreamInterrupted) && interrupted < 3 {
+			// A control-plane restart cuts streams through the LLM proxy; the
+			// proxy is back within a minute. Not the model's fault, so this
+			// does not use up a reply attempt.
+			interrupted++
+			d := streamRetryDelay(interrupted)
+			r.progress(fmt.Sprintf("%v; asking again in %s", err, d))
+			select {
+			case <-ctx.Done():
+				return &protocol.Result{Error: err.Error()}
+			case <-time.After(d):
+			}
+			attempt--
+			continue
 		}
 		if err != nil {
 			if useSchema && strings.Contains(strings.ToLower(err.Error()), "response_format") {
@@ -93,6 +112,8 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 	}
 	return &protocol.Result{Error: "model did not return a valid result: " + lastErr}
 }
+
+var streamRetryDelay = func(n int) time.Duration { return time.Duration(n) * 15 * time.Second }
 
 func llmOutcomes(xs []string) []string {
 	var out []string
