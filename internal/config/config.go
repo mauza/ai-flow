@@ -111,6 +111,10 @@ type Runs struct {
 	// A low CPU request packs builds onto whichever node looks idle.
 	CPURequest    string `json:"cpuRequest,omitempty"`
 	MemoryRequest string `json:"memoryRequest,omitempty"`
+	// TmpSize, when set, makes /tmp in node pods memory-backed with this size
+	// (it counts against the memory limit). Test suites that fsync a lot
+	// (SQLite) time out on slow node disks: ~28ms per fsync on a VM node.
+	TmpSize string `json:"tmpSize,omitempty"`
 	// NodeSelector pins node pods, e.g. {kubernetes.io/arch: amd64} on a
 	// mixed-arch cluster whose runtime images are single-arch.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
@@ -745,6 +749,11 @@ func (c *Config) loadFiles() error {
 
 func (c *Config) check() error {
 	var errs []string
+	if v := c.Env.Runs.TmpSize; v != "" {
+		if _, err := resource.ParseQuantity(v); err != nil {
+			errs = append(errs, fmt.Sprintf("runs.tmpSize: %q is not a Kubernetes quantity", v))
+		}
+	}
 	for field, v := range map[string]string{"cpu": c.Env.Runs.CPU, "memory": c.Env.Runs.Memory, "cpuRequest": c.Env.Runs.CPURequest, "memoryRequest": c.Env.Runs.MemoryRequest} {
 		if _, err := resource.ParseQuantity(v); err != nil {
 			errs = append(errs, fmt.Sprintf("runs.%s: %q is not a Kubernetes quantity", field, v))

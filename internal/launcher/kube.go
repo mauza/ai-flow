@@ -100,7 +100,7 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 			}}},
 		}}},
 		{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: tmpDir(k.cfg.Runs.TmpSize)}},
 	}
 	for i, sec := range s.Secrets {
 		if sec.Env != "" {
@@ -301,4 +301,13 @@ func (k *Kube) RefreshArgoApp(ctx context.Context, namespace, app string) error 
 	return k.cs.CoreV1().RESTClient().Patch(types.MergePatchType).
 		AbsPath("/apis/argoproj.io/v1alpha1/namespaces", namespace, "applications", app).
 		Body(patch).Do(ctx).Error()
+}
+
+// tmpDir is /tmp's emptyDir: on the node's disk, or in memory when size is set.
+func tmpDir(size string) *corev1.EmptyDirVolumeSource {
+	if size == "" {
+		return &corev1.EmptyDirVolumeSource{}
+	}
+	limit := resource.MustParse(size)
+	return &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: &limit}
 }

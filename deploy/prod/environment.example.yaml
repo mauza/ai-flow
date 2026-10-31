@@ -17,6 +17,9 @@ runs:
   # reserves. A small cpuRequest packs builds onto whichever node looks idle.
   cpuRequest: "1"
   memoryRequest: 512Mi
+  # Memory-backed /tmp of this size (counts against the memory limit): test
+  # suites that fsync a lot (SQLite) crawl on slow node disks.
+  tmpSize: 1Gi
   # Keep builds off control-plane nodes.
   affinity:
     nodeAffinity:
