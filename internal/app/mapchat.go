@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/store"
@@ -100,10 +102,14 @@ func (a *App) AskMap(ctx context.Context, project, mapID, message string) (*MapM
 
 	var answer *MapMessage
 	for attempt := 0; attempt < 2; attempt++ {
-		reply, _, err := a.LLM.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, Stream: cfg.Catalog.Planner.Stream})
+		started := time.Now()
+		reply, usage, err := a.LLM.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, Stream: cfg.Catalog.Planner.Stream})
 		if err != nil {
 			return nil, err
 		}
+		slog.Info("map assistant reply", "project", project, "map", mapID, "attempt", attempt+1, "model", model,
+			"prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens,
+			"seconds", int(time.Since(started).Seconds()))
 		answer, err = parseMapReply(reply)
 		if err != nil {
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
