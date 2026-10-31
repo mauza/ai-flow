@@ -218,8 +218,13 @@ func (a *App) startMode(src, project string) string {
 
 func (a *App) uniqueFlowName(ctx context.Context, t *store.Task) (string, error) {
 	base := ids.Slug(firstNonEmpty(t.Identifier+"-"+t.Title, t.Title), 48)
-	if t.Identifier == "" {
+	switch {
+	case t.Identifier == "":
 		base = ids.Slug(t.Title, 48)
+	case t.Source == "storymap":
+		// Story map ids are already readable slugs; adding the title
+		// gave names like play-stack-pulse-play-stack-pulse-a-one-tap-timi.
+		base = ids.Slug(t.Identifier, 48)
 	}
 	name := base
 	for i := 2; ; i++ {
