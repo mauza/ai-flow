@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"errors"
+	corev1 "k8s.io/api/core/v1"
 	"strings"
 	"testing"
 
@@ -218,5 +219,25 @@ func TestModelLLMIsNotConfigurationDrift(t *testing.T) {
 	}
 	if after, _ := h.e.RunDependencies(h.ctx, h.run(id), 1); after == v1 {
 		t.Fatal("version 1 fingerprints must still include the model's llm block")
+	}
+}
+
+// Pod placement and size are not drift for version 2 snapshots; version 1
+// snapshots ignore only the fields added after them.
+func TestRunPlacementIsNotConfigurationDrift(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(resumeFlow)
+	v1, _ := h.e.RunDependencies(h.ctx, h.run(id), 1)
+	orig := h.cfg.Env.Runs
+	h.cfg.Env.Runs.CPU, h.cfg.Env.Runs.CPURequest = "3", "1"
+	h.cfg.Env.Runs.NodeSelector = map[string]string{"kubernetes.io/arch": "amd64"}
+	h.cfg.Env.Runs.Affinity = &corev1.Affinity{}
+	if _, err := h.e.Resolved(h.ctx, h.run(id)); err != nil {
+		t.Fatalf("moving pods drifted a pinned run: %v", err)
+	}
+	h.cfg.Env.Runs = orig
+	h.cfg.Env.Runs.CPURequest, h.cfg.Env.Runs.MemoryRequest, h.cfg.Env.Runs.Affinity = "1", "1Gi", &corev1.Affinity{}
+	if after, _ := h.e.RunDependencies(h.ctx, h.run(id), 1); after != v1 {
+		t.Fatal("fields added after version 1 changed its fingerprint")
 	}
 }

@@ -133,6 +133,7 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 					AutomountServiceAccountToken: &no,
 					EnableServiceLinks:           &no,
 					NodeSelector:                 k.cfg.Runs.NodeSelector,
+					Affinity:                     k.cfg.Runs.Affinity,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &yes, RunAsUser: &uid, RunAsGroup: &uid, FSGroup: &uid,
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -145,7 +146,7 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 						Env:             env,
 						VolumeMounts:    mounts,
 						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(k.cfg.Runs.CPURequest), corev1.ResourceMemory: resource.MustParse(k.cfg.Runs.MemoryRequest)},
 							Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(k.cfg.Runs.CPU), corev1.ResourceMemory: resource.MustParse(k.cfg.Runs.Memory)},
 						},
 						SecurityContext: &corev1.SecurityContext{

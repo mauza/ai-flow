@@ -147,3 +147,29 @@ func TestModelThinkingFormatIsChecked(t *testing.T) {
 		t.Errorf("valid thinking format: %v", err)
 	}
 }
+
+func TestRunResourcesAreQuantities(t *testing.T) {
+	dir := t.TempDir()
+	write := func(runs string) {
+		os.WriteFile(filepath.Join(dir, "c.yaml"), []byte("kind: Environment\nruns:\n"+runs+`
+llm:
+  upstreams:
+    home: { baseUrl: "https://example/v1" }
+---
+apiVersion: ai-flow/v1alpha1
+kind: Catalog
+models:
+  m: { upstream: home, model: m }
+runtimes: {}
+`), 0o644)
+	}
+	write("  cpuRequest: \"1\"\n  affinity:\n    nodeAffinity:\n      requiredDuringSchedulingIgnoredDuringExecution:\n        nodeSelectorTerms:\n          - matchExpressions: [{key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}]")
+	cfg, err := config.Load(dir)
+	if err != nil || cfg.Env.Runs.CPURequest != "1" || cfg.Env.Runs.MemoryRequest != "256Mi" || cfg.Env.Runs.Affinity.NodeAffinity == nil {
+		t.Fatalf("runs: %+v %v", cfg.Env.Runs, err)
+	}
+	write("  cpuRequest: one")
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "runs.cpuRequest") {
+		t.Fatalf("got %v", err)
+	}
+}

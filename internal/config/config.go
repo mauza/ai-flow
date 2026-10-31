@@ -10,6 +10,8 @@ package config
 import (
 	"bytes"
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"os"
 	"path/filepath"
 	"slices"
@@ -105,9 +107,16 @@ type Runs struct {
 	JobTTL          flow.Duration `json:"jobTTL,omitzero"`
 	CPU             string        `json:"cpu,omitempty"`
 	Memory          string        `json:"memory,omitempty"`
+	// CPURequest and MemoryRequest are what the scheduler reserves per pod.
+	// A low CPU request packs builds onto whichever node looks idle.
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
 	// NodeSelector pins node pods, e.g. {kubernetes.io/arch: amd64} on a
 	// mixed-arch cluster whose runtime images are single-arch.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Affinity is the pods' Kubernetes affinity, e.g. to keep builds off
+	// control-plane nodes.
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 	// Local mode runs pod-type nodes as child processes instead of Jobs (tests, no cluster).
 	Local bool `json:"local,omitempty"`
 }
@@ -621,6 +630,8 @@ func (c *Config) applyDefaults() {
 	def(&e.Runs.ImagePullPolicy, "IfNotPresent")
 	def(&e.Runs.CPU, "2")
 	def(&e.Runs.Memory, "4Gi")
+	def(&e.Runs.CPURequest, "100m")
+	def(&e.Runs.MemoryRequest, "256Mi")
 	if e.Runs.MaxConcurrent == 0 {
 		e.Runs.MaxConcurrent = 3
 	}
@@ -734,6 +745,11 @@ func (c *Config) loadFiles() error {
 
 func (c *Config) check() error {
 	var errs []string
+	for field, v := range map[string]string{"cpu": c.Env.Runs.CPU, "memory": c.Env.Runs.Memory, "cpuRequest": c.Env.Runs.CPURequest, "memoryRequest": c.Env.Runs.MemoryRequest} {
+		if _, err := resource.ParseQuantity(v); err != nil {
+			errs = append(errs, fmt.Sprintf("runs.%s: %q is not a Kubernetes quantity", field, v))
+		}
+	}
 	for name, u := range c.Env.LLM.Upstreams {
 		if u.BaseURL == "" {
 			errs = append(errs, fmt.Sprintf("llm upstream %s: baseUrl is required (or set %s)", name, orName(u.BaseURLEnv, "baseUrlEnv")))
