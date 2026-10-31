@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/protocol"
 )
@@ -89,6 +91,28 @@ func (r *Runner) commitAndPush(ctx context.Context, res *protocol.Result) (strin
 		return "", err
 	}
 	return sha, nil
+}
+
+// pushUnfinished saves a failed agent step's work on the run branch, so a
+// retry or resume continues from it instead of starting over. A Sol implement
+// step stopped by its token cap on web-games had built most of a game; all of
+// it was discarded with the pod.
+func (r *Runner) pushUnfinished(ctx context.Context, res *protocol.Result) {
+	if r.repo == "" || r.b.Repo == nil || !r.b.Repo.Write ||
+		strings.HasPrefix(res.Error, "push: ") || strings.HasPrefix(res.Error, "workspace: ") {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	r.progress("Saving unfinished work")
+	sha, err := r.commitAndPush(ctx, &protocol.Result{Summary: "unfinished (" + firstLine(res.Error) + ")", Outcome: "none"})
+	if err != nil {
+		slog.Warn("push unfinished work", "err", err)
+		return
+	}
+	if sha != "" {
+		res.Error += fmt.Sprintf(" (unfinished work pushed to %s at %.8s; a retry or resume continues from it)", r.b.Repo.Branch, sha)
+	}
 }
 
 func (r *Runner) diffStat(ctx context.Context) (*protocol.DiffStat, error) {

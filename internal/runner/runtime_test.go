@@ -381,3 +381,46 @@ func TestPiWaitBoundsInheritedOutputPipe(t *testing.T) {
 		t.Fatal("lost final stdout")
 	}
 }
+
+// A failed agent step's work survives on the run branch.
+func TestPushUnfinishedSavesWork(t *testing.T) {
+	r := runtimeRunner(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := r.git(context.Background(), dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	git(r.work, "init", "--quiet", "--bare", "-b", "main", origin)
+	seed := filepath.Join(t.TempDir(), "seed")
+	git(r.work, "clone", "--quiet", origin, seed)
+	git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "base")
+	git(seed, "push", "--quiet", "origin", "HEAD:main")
+
+	r.b.Type = flow.TypeAgent
+	r.b.Repo = &protocol.RepoAccess{CloneURL: origin, Base: "main", Branch: "ai-flow/x", Write: true, AuthorName: "a", AuthorEmail: "a@a"}
+	repo, err := r.prepareRepo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.repo = repo
+	os.WriteFile(filepath.Join(repo, "game.js"), []byte("half a game\n"), 0o644)
+
+	res := &protocol.Result{Error: "budget_exceeded: token limit 500000 reached"}
+	r.pushUnfinished(context.Background(), res)
+	if !strings.Contains(res.Error, "unfinished work pushed to ai-flow/x") {
+		t.Fatalf("error: %s", res.Error)
+	}
+	if got := git(r.work, "--git-dir", origin, "show", "ai-flow/x:game.js"); got != "half a game" {
+		t.Fatalf("branch has %q", got)
+	}
+
+	clean := &protocol.Result{Error: "node timed out before calling flow_finish"}
+	r.pushUnfinished(context.Background(), clean) // nothing new: no push, no note
+	if strings.Contains(clean.Error, "pushed") {
+		t.Fatalf("nothing to save, but: %s", clean.Error)
+	}
+}
