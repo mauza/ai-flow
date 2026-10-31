@@ -133,7 +133,9 @@ type Repin struct {
 	Snapshot    []byte
 }
 
-func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string, repin *Repin) (*Visit, error) {
+// ResumeRun reopens a failed or canceled run at node. queued leaves it waiting
+// for a run slot; the engine starts it from the pending visit.
+func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string, repin *Repin, queued bool) (*Visit, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -146,8 +148,12 @@ func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string, re
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM visits WHERE run_id = ? AND node = ?`, runID, node).Scan(&visit); err != nil {
 		return nil, err
 	}
+	status := RunRunning
+	if queued {
+		status = RunQueued
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, error = '', finished_at = 0, current_node = ?, resume_seq = ?, resumes = resumes + 1, resume_note = ?
-		WHERE id = ? AND status IN (?, ?)`, RunRunning, node, seq, note, runID, RunFailed, RunCanceled)
+		WHERE id = ? AND status IN (?, ?)`, status, node, seq, note, runID, RunFailed, RunCanceled)
 	if err != nil {
 		return nil, err
 	}

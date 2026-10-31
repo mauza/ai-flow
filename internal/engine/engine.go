@@ -271,6 +271,17 @@ func (e *Engine) begin(ctx context.Context, r *store.Run) error {
 	if err != nil {
 		return err
 	}
+	if r.Resumes > 0 {
+		// A resume queued for a slot: its pending visit is where it goes on.
+		if v, err := e.store.LastVisit(ctx, r.ID); err == nil && v.Seq > r.ResumeSeq && v.Status == store.VisitPending {
+			if err := e.store.SetRunState(ctx, r, store.RunRunning, "", store.Now()); err != nil {
+				return err
+			}
+			r.Status = store.RunRunning
+			e.event(ctx, r, v.Node, "started", "Resumed run started")
+			return e.step(ctx, r)
+		}
+	}
 	stamp := store.Now()
 	if err := e.store.SetRunState(ctx, r, store.RunRunning, "", stamp); err != nil {
 		return err
@@ -1012,11 +1023,11 @@ func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, 
 	if err != nil {
 		return nil, err
 	}
-	if max := e.cfg.Current().Env.Runs.MaxConcurrent; len(active) >= max {
-		return nil, fmt.Errorf("all %d run slots are busy; resume when one frees up", max)
-	}
+	// With every slot busy the run waits its turn like a new one; it used to
+	// be refused, and a canceled run's slot went to the next queued run.
+	queued := len(active) >= e.cfg.Current().Env.Runs.MaxConcurrent
 	note = strings.TrimSpace(note)
-	v, err := e.store.ResumeRun(ctx, runID, node, n.Type, note, repin)
+	v, err := e.store.ResumeRun(ctx, runID, node, n.Type, note, repin, queued)
 	if err != nil {
 		return nil, err
 	}
@@ -1029,6 +1040,9 @@ func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, 
 	}
 	if note != "" {
 		msg += ": " + note
+	}
+	if queued {
+		msg += " (queued: every run slot is busy)"
 	}
 	e.event(ctx, r, node, "resumed", msg)
 	fresh, err := e.store.GetRun(ctx, runID)
