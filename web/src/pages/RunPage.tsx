@@ -345,7 +345,7 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
             e.preventDefault();
             setBusy(true);
             try {
-              await api.resumeRun(run.id, node, note, version);
+              await api.resumeRun(run.id, node, note, version === run.flow_version ? 0 : version);
               toast("ok", version === run.flow_version ? `Resumed at ${node}` : `Resumed on v${version} at ${node}`);
               setOpen(false);
               setNote("");

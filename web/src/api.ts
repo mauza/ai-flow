@@ -468,7 +468,7 @@ export const api = {
   run: (id: string) => request<RunView>("GET", `/api/runs/${id}`),
   cancelRun: (id: string) => request<void>("POST", `/api/runs/${id}/cancel`),
   resumeRun: (id: string, node: string, note: string, flow_version = 0) =>
-    request<Run>("POST", `/api/runs/${id}/resume`, { node, note, flow_version }),
+    request<Run>("POST", `/api/runs/${id}/resume`, flow_version ? { node, note, flow_version } : { node, note }),
   decide: (id: string, seq: number, outcome: string, note = "") => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome, note }),
   config: () => request<ConfigView>("GET", "/api/config"),
   editConfig: (edits: ConfigEdit[], force = false) => request<{ warnings: string[] }>("POST", "/api/config", { edits, force }),
