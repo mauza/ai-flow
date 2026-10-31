@@ -172,4 +172,8 @@ runtimes: {}
 	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "runs.cpuRequest") {
 		t.Fatalf("got %v", err)
 	}
+	write("  tmpSize: lots")
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "runs.tmpSize") {
+		t.Fatalf("got %v", err)
+	}
 }
