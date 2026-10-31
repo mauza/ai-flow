@@ -31,8 +31,9 @@ var Actions = map[string]ActionSpec{
 	"merge_pull_request": {
 		Outcomes: []string{"merged", "conflict", "blocked"}, With: []string{"method"},
 		Outputs: map[string]any{"sha": "string", "previous_sha": "string", "number": "integer", "url": "string"},
-		Waits:   true, Timeout: 10 * time.Minute,
-		Doc: "merges the run's PR (method: merge by default, so it can be reverted). In a project whose deploy branch is the PR base, merging IS the production deploy. Outcomes: merged (outputs.sha), conflict, blocked, timeout.",
+		// Long enough to wait out another run's release (rollout + soak).
+		Waits: true, Timeout: 90 * time.Minute,
+		Doc: "merges the run's PR (method: merge by default, so it can be reverted). In a project whose deploy branch is the PR base, merging IS the production deploy, and it waits while another run of the project is still verifying its own release. Outcomes: merged (outputs.sha), conflict, blocked, timeout.",
 	},
 	"wait_for_checks": {
 		Outcomes: []string{"passed", "failed", "none"}, With: []string{"ref", "checks", "settle"},

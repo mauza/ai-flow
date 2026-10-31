@@ -117,6 +117,36 @@ func (e *Engine) repoOf(res *resolve.Resolved) (github.Repo, error) {
 
 var prNumberRe = regexp.MustCompile(`/pull/(\d+)$`)
 
+// releaseInFlight names another run of the same project that merged into the
+// deploy branch and is still verifying that release (waiting for the rollout,
+// soaking, rolling back). Merging now would put two releases in production at
+// once: on web-games three runs merged within 25 minutes, each soak read the
+// next rollout as its own release failing, and their rollbacks undid each
+// other. Runs waiting at a gate don't hold the deploy target.
+func (e *Engine) releaseInFlight(ctx context.Context, r *store.Run) (string, error) {
+	d, err := e.deployOf(r)
+	if err != nil || d.Branch != r.Base {
+		return "", nil // merging this run does not deploy
+	}
+	runs, err := e.store.ListRuns(ctx, store.RunFilter{Statuses: []string{store.RunRunning}, Limit: -1})
+	if err != nil {
+		return "", err
+	}
+	for _, o := range runs {
+		if o.ID == r.ID || o.Project != r.Project || o.Base != r.Base {
+			continue
+		}
+		res, err := e.Resolved(ctx, o)
+		if err != nil {
+			continue // that run fails on its own
+		}
+		if sha, err := e.lastMerge(ctx, o, res); err == nil && sha != "" {
+			return fmt.Sprintf("run %s's release %s is still being verified (%s)", o.ID, short(sha), o.CurrentNode), nil
+		}
+	}
+	return "", nil
+}
+
 // mergePR merges the run's pull request. It is idempotent: a PR that is
 // already merged (say, before a restart) reports its merge commit.
 func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolved, with map[string]string) (*actionResult, error) {
@@ -162,6 +192,11 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 		return &actionResult{outcome: "conflict", summary: fmt.Sprintf("#%d has merge conflicts with its base (%s)", number, pr.MergeableState)}, nil
 	case pr.MergeableState == "blocked" || pr.MergeableState == "behind" || pr.MergeableState == "draft":
 		return &actionResult{outcome: "blocked", summary: fmt.Sprintf("GitHub will not merge #%d yet: %s (required reviews, checks or an out-of-date branch)", number, pr.MergeableState)}, nil
+	}
+	if other, err := e.releaseInFlight(ctx, r); err != nil {
+		return nil, err
+	} else if other != "" {
+		return waiting("Waiting to merge #%d: %s", number, other), nil
 	}
 	sha, err := e.gh.MergePR(ctx, repo, number, method, pr.Head.SHA)
 	var api *github.APIError
