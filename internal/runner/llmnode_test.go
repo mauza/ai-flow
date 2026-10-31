@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/protocol"
@@ -186,5 +187,37 @@ func TestRunLLMRejectsFailedStreams(t *testing.T) {
 				t.Fatalf("retried failed stream: %d", calls.Load())
 			}
 		})
+	}
+}
+
+// A stream cut mid-reply (the control plane restarting) is asked again,
+// without using up one of the reply attempts.
+func TestRunLLMRetriesInterruptedStream(t *testing.T) {
+	defer func(d func(int) time.Duration) { streamRetryDelay = d }(streamRetryDelay)
+	streamRetryDelay = func(int) time.Duration { return time.Millisecond }
+	r := runtimeRunner(t)
+	r.b.Node, r.b.Prompt, r.b.Grant = "plan", "Plan it", "g"
+	r.b.Outcomes = []string{"done"}
+	r.b.ResultSchema = map[string]any{"type": "object"}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			if calls.Add(1) <= 3 {
+				w.Header().Set("Content-Type", "text/event-stream")
+				io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{\\\"outc\"}}]}\r\n\r\n")
+				w.(http.Flusher).Flush()
+				panic(http.ErrAbortHandler)
+			}
+			writeCompletionStream(w, structuredReply, streamStopUsage+"data: [DONE]\r\n\r\n")
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	r.podURL, r.http = server.URL, server.Client()
+	r.b.LLM = &protocol.LLMAccess{BaseURL: server.URL + "/v1", Models: []protocol.ModelInfo{{Name: "gpt-6.1-sol"}}}
+	if res := r.runLLM(context.Background()); res.Error != "" || res.Outcome != "done" || calls.Load() != 4 {
+		t.Fatalf("after %d calls: %+v", calls.Load(), res)
 	}
 }
