@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"encoding/json"
 	"errors"
 	corev1 "k8s.io/api/core/v1"
 	"strings"
@@ -272,13 +273,13 @@ func TestResumeOnNewFlowVersion(t *testing.T) {
 	if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", YAML: fixed, Project: "sandbox"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.e.ResumeOn(h.ctx, id, 2, "nowhere", "", "t"); err == nil || !strings.Contains(err.Error(), "not a node of f v2") {
+	if _, err := h.e.ResumeOn(h.ctx, id, 2, false, "nowhere", "", "t"); err == nil || !strings.Contains(err.Error(), "not a node of f v2") {
 		t.Fatalf("unknown node: %v", err)
 	}
-	if _, err := h.e.ResumeOn(h.ctx, id, 9, "test", "", "t"); err == nil {
+	if _, err := h.e.ResumeOn(h.ctx, id, 9, false, "test", "", "t"); err == nil {
 		t.Fatal("a missing version must be refused")
 	}
-	r, err := h.e.ResumeOn(h.ctx, id, 2, "test", "check fixed", "t")
+	r, err := h.e.ResumeOn(h.ctx, id, 2, false, "test", "check fixed", "t")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,5 +294,32 @@ func TestResumeOnNewFlowVersion(t *testing.T) {
 	h.finish(id, "pass", nil)
 	if r := h.run(id); r.Status != store.RunSucceeded {
 		t.Fatalf("status %s, path %s", r.Status, h.path(id))
+	}
+}
+
+// Resuming with refresh re-pins the run's own flow version to the current
+// runtimes, so a runtime fixed since the run started is used.
+func TestResumeRefreshPicksUpCurrentRuntimes(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(resumeFlow)
+	h.finish(id, "done", nil)
+	h.crash(id, "go test -race: requires cgo")
+	images := func() string {
+		var snap struct{ Images map[string]string }
+		json.Unmarshal(h.run(id).Snapshot, &snap)
+		b, _ := json.Marshal(snap.Images)
+		return string(b)
+	}
+	before := images()
+	for name, rt := range h.cfg.Catalog.Runtimes {
+		rt.Image += "-fixed"
+		h.cfg.Catalog.Runtimes[name] = rt
+	}
+	r, err := h.e.ResumeOn(h.ctx, id, 0, true, "test", "", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FlowVersion != 1 || images() == before || !strings.Contains(images(), "-fixed") {
+		t.Fatalf("refresh kept the old runtimes: %s (was %s)", images(), before)
 	}
 }

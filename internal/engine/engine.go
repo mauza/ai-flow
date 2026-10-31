@@ -969,14 +969,16 @@ func (e *Engine) liveJobs(ctx context.Context, runID string) ([]*store.Visit, er
 // last visit). The run keeps its branch, pinned settings, visits and spend; the
 // note reaches the steps that follow through their context.
 func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*store.Run, error) {
-	return e.ResumeOn(ctx, runID, 0, node, note, who)
+	return e.ResumeOn(ctx, runID, 0, false, node, note, who)
 }
 
 // ResumeOn resumes a run, optionally on another saved version of its flow:
 // the run keeps its id, branch and history, and continues under the new
 // version's steps. This is how a flow bug found mid-run (a broken check, a
 // missing conflict route) is fixed without starting over on a new branch.
-func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, note, who string) (*store.Run, error) {
+// refresh re-pins the run's own version to the current runtimes and catalog
+// (a runtime image fixed since the run started).
+func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, refresh bool, node, note, who string) (*store.Run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.store.GetRun(ctx, runID)
@@ -988,7 +990,10 @@ func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, 
 	}
 	var res *resolve.Resolved
 	var repin *store.Repin
-	if version != 0 && version != r.FlowVersion {
+	if version == 0 && refresh {
+		version = r.FlowVersion
+	}
+	if version != 0 && (version != r.FlowVersion || refresh) {
 		fv, err := e.store.GetFlow(ctx, r.FlowName, version)
 		if err != nil {
 			return nil, fmt.Errorf("%s v%d: %w", r.FlowName, version, err)
@@ -1039,8 +1044,10 @@ func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, 
 		return nil, err
 	}
 	msg := fmt.Sprintf("Resumed at %s#%d", node, v.Visit)
-	if repin != nil {
+	if repin != nil && version != r.FlowVersion {
 		msg = fmt.Sprintf("Resumed on v%d (was v%d) at %s#%d", version, r.FlowVersion, node, v.Visit)
+	} else if repin != nil {
+		msg = fmt.Sprintf("Resumed with current runtimes and catalog at %s#%d", node, v.Visit)
 	}
 	if who != "" {
 		msg += " by " + who

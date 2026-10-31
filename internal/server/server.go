@@ -447,6 +447,7 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Node        string `json:"node"`         // default: the node of the last visit
 		FlowVersion int    `json:"flow_version"` // default: the run's own version
+		Refresh     bool   `json:"refresh"`      // re-pin to the current runtimes and catalog
 		Note        string `json:"note"`
 		By          string `json:"by"`
 	}
@@ -456,7 +457,7 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	if in.By == "" {
 		in.By = "ui"
 	}
-	run, err := s.app.Engine.ResumeOn(r.Context(), r.PathValue("id"), in.FlowVersion, in.Node, in.Note, in.By)
+	run, err := s.app.Engine.ResumeOn(r.Context(), r.PathValue("id"), in.FlowVersion, in.Refresh, in.Node, in.Note, in.By)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, 404, "not found")

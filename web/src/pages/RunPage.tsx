@@ -302,6 +302,7 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
   const [busy, setBusy] = useState(false);
   const [versions, setVersions] = useState<number[]>([]);
   const [version, setVersion] = useState(run.flow_version);
+  const [refresh, setRefresh] = useState(false);
   const [versionGraph, setVersionGraph] = useState<Graph>();
   useEffect(() => {
     if (!open) return;
@@ -345,7 +346,7 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
             e.preventDefault();
             setBusy(true);
             try {
-              await api.resumeRun(run.id, node, note, version === run.flow_version ? 0 : version);
+              await api.resumeRun(run.id, node, note, version === run.flow_version ? 0 : version, refresh);
               toast("ok", version === run.flow_version ? `Resumed at ${node}` : `Resumed on v${version} at ${node}`);
               setOpen(false);
               setNote("");
@@ -380,6 +381,10 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
               ))}
             </select>
           </div>
+          <label className="row small" style={{ gap: 6 }}>
+            <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} />
+            Use the current runtimes and catalog (pick up a fixed runtime image or preset)
+          </label>
           <div className="field">
             <label htmlFor="resume-note">Note for the next steps (optional)</label>
             <textarea id="resume-note" className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed, or what to do differently" />
