@@ -83,3 +83,25 @@ func TestCheckRunRejectsTemplates(t *testing.T) {
 		t.Fatalf("issues: %v", issues)
 	}
 }
+
+// The planner is told to route CI merge conflicts with this switch.
+func TestCIConflictSwitchValidates(t *testing.T) {
+	_, issues := validateYAML(t, `
+  start: ci
+  nodes:
+    ci:
+      type: action
+      action: wait_for_checks
+      next: { passed: $success, failed: ci_failed, none: $fail, timeout: $fail }
+    ci_failed:
+      type: switch
+      cases:
+        - when: 'nodes.ci.outputs.failed.exists(f, f.startsWith("merge conflict"))'
+          outcome: conflict
+      default: broken
+      next: { conflict: $fail, broken: $fail }
+`)
+	if len(issues) != 0 {
+		t.Fatalf("issues: %v", issues)
+	}
+}
