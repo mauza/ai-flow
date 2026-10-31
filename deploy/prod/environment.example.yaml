@@ -13,6 +13,17 @@ runs:
   imagePullPolicy: IfNotPresent
   nodeSelector:
     kubernetes.io/arch: amd64
+  # Per pod: limits (cpu 2, memory 4Gi by default) and what the scheduler
+  # reserves. A small cpuRequest packs builds onto whichever node looks idle.
+  cpuRequest: "1"
+  memoryRequest: 512Mi
+  # Keep builds off control-plane nodes.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - { key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }
 llm:
   upstreams:
     home:

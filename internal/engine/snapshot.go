@@ -94,6 +94,12 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config, version in
 	runs := cfg.Env.Runs
 	runs.MaxConcurrent = 0           // admission control is intentionally current
 	runs.DefaultTimeout.Duration = 0 // already resolved per node
+	// Added after version 1; leaving them out keeps version 1 hashes stable.
+	runs.CPURequest, runs.MemoryRequest, runs.Affinity = "", "", nil
+	if version >= 2 {
+		// Where a pod runs and how big it is don't change what a step does.
+		runs.CPU, runs.Memory, runs.NodeSelector, runs.ImagePullPolicy, runs.JobTTL = "", "", nil, "", flow.Duration{}
+	}
 	deps["runs"] = runs
 	deps["git_author"] = []string{cfg.Env.Git.AuthorName, cfg.Env.Git.AuthorEmail}
 	deps["github_api"] = cfg.Env.GitHub.APIURL
