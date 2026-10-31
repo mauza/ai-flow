@@ -1,16 +1,17 @@
 // browse: drive headless Chromium from the shell for QA.
 //
 //   browse <url> [--viewport 390x844] [--wait 1500] [--shot out.png]
-//          [--tap x,y]... [--click <selector>]... [--key <key>]...
+//          [--tap x,y]... [--click <selector>]... [--key <key>]... [--type <text>]...
 //          [--eval <js>] [--steps steps.json]
 //
 // Loads the page, runs the actions in order (each followed by --wait ms),
 // and prints one JSON report: title, final URL, console errors and warnings,
-// page errors, failed requests, the --eval result and the screenshot path.
-// Exits 1 when the page threw or logged console errors.
+// page errors, failed requests, steps that failed, the --eval results and the
+// screenshot paths. Exits 1 when the page threw, logged console errors or a
+// step failed.
 //
 // --steps takes a JSON array of actions for longer scripts:
-//   [{"tap":[195,600]}, {"wait":500}, {"key":"Space"}, {"click":"#restart"},
+//   [{"tap":[195,600]}, {"wait":500}, {"key":"Space"}, {"type":"crane"}, {"click":"#restart"},
 //    {"eval":"window.game?.score"}, {"shot":"after.png"}]
 import { chromium } from 'playwright-core';
 import { accessSync, constants, mkdtempSync, readFileSync } from 'node:fs';
@@ -36,13 +37,14 @@ for (let i = 0; i < args.length; i++) {
     case '--tap': steps.push({ tap: v.split(',').map(Number) }); i++; break;
     case '--click': steps.push({ click: v }); i++; break;
     case '--key': steps.push({ key: v }); i++; break;
+    case '--type': steps.push({ type: v }); i++; break;
     case '--eval': steps.push({ eval: v }); i++; break;
     case '--steps': steps.push(...JSON.parse(readFileSync(v, 'utf8'))); i++; break;
     default: console.error(`unknown argument ${a}`); process.exit(2);
   }
 }
 
-const report = { url, console: [], pageErrors: [], failedRequests: [], evals: [], shots: [] };
+const report = { url, console: [], pageErrors: [], failedRequests: [], stepErrors: [], evals: [], shots: [] };
 // Chromium writes its profile and crash database under HOME and refuses to
 // start (crashpad "--database is required") when HOME is not writable.
 let home = process.env.HOME || '';
@@ -60,13 +62,20 @@ try {
   const res = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
   report.status = res?.status();
   await page.waitForTimeout(wait);
-  for (const s of steps) {
-    if (s.tap) await page.touchscreen.tap(s.tap[0], s.tap[1]);
-    else if (s.click) await page.click(s.click, { timeout: 5000 });
-    else if (s.key) await page.keyboard.press(s.key);
-    else if (s.eval) report.evals.push(await page.evaluate(s.eval).catch((e) => `error: ${e.message}`));
-    else if (s.shot) { await page.screenshot({ path: s.shot }); report.shots.push(s.shot); }
-    else if (s.wait) { await page.waitForTimeout(s.wait); continue; }
+  for (const [i, s] of steps.entries()) {
+    // A failed step (a selector that never shows up) is reported and the
+    // script goes on, so one bad guess does not lose the rest of the run.
+    try {
+      if (s.tap) await page.touchscreen.tap(s.tap[0], s.tap[1]);
+      else if (s.click) await page.click(s.click, { timeout: 5000 });
+      else if (s.key) await page.keyboard.press(s.key);
+      else if (s.type) await page.keyboard.type(s.type);
+      else if (s.eval) report.evals.push(await page.evaluate(s.eval));
+      else if (s.shot) { await page.screenshot({ path: s.shot }); report.shots.push(s.shot); }
+      else if (s.wait) { await page.waitForTimeout(s.wait); continue; }
+    } catch (e) {
+      report.stepErrors.push(`step ${i + 1} ${JSON.stringify(s)}: ${e.message.split('\n')[0]}`);
+    }
     await page.waitForTimeout(s.wait ?? wait);
   }
   report.title = await page.title();
@@ -76,4 +85,4 @@ try {
   await browser.close();
 }
 console.log(JSON.stringify(report, null, 2));
-process.exit(report.pageErrors.length || report.console.some((c) => c.startsWith('error')) ? 1 : 0);
+process.exit(report.pageErrors.length || report.stepErrors.length || report.console.some((c) => c.startsWith('error')) ? 1 : 0);
