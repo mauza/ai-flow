@@ -131,12 +131,28 @@ func TestResumeRespectsRunSlots(t *testing.T) {
 	h.cfg.Env.Runs.MaxConcurrent = 1
 	first := h.flow(resumeFlow)
 	h.crash(first, "boom")
-	h.flow(resumeFlow) // occupies the only slot
-	if _, err := h.e.Resume(h.ctx, first, "", "", "t"); err == nil || !strings.Contains(err.Error(), "slots are busy") {
-		t.Fatalf("want busy slots, got %v", err)
+	second := h.flow(resumeFlow) // occupies the only slot
+	r, err := h.e.Resume(h.ctx, first, "", "", "t")
+	if err != nil || r.Status != store.RunQueued {
+		t.Fatalf("a resume with every slot busy waits its turn: %+v %v", r, err)
 	}
-	if r := h.run(first); r.Status != store.RunFailed {
-		t.Fatalf("status %s", r.Status)
+	h.e.Tick(h.ctx)
+	if r := h.run(first); r.Status != store.RunQueued {
+		t.Fatalf("started without a slot: %s", r.Status)
+	}
+	h.finish(second, "done", nil)
+	h.finish(second, "pass", nil) // second succeeds and frees the slot
+	h.e.Tick(h.ctx)
+	if r := h.run(first); r.Status != store.RunRunning {
+		t.Fatalf("status %s after the slot freed", r.Status)
+	}
+	if v, _ := h.st.LastVisit(h.ctx, first); v.Node != "fix" || v.Visit != 2 {
+		t.Fatalf("resumed at %s#%d, want the failed step again", v.Node, v.Visit)
+	}
+	h.finish(first, "done", nil)
+	h.finish(first, "pass", nil)
+	if r := h.run(first); r.Status != store.RunSucceeded {
+		t.Fatalf("status %s, path %s", r.Status, h.path(first))
 	}
 }
 
