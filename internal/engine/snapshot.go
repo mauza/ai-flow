@@ -29,21 +29,24 @@ func (e *Engine) snapshot(res *resolve.Resolved) ([]byte, error) {
 	for _, n := range res.Nodes {
 		images[n.Runtime] = e.cfg.Current().Catalog.Runtimes[n.Runtime].Image
 	}
-	deps, err := e.executionDependencies(res)
+	deps, err := executionDependencies(res, e.cfg.Current(), snapshotVersion)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(executionSnapshot{Version: 1, Resolved: res, Images: images, Dependencies: deps})
+	return json.Marshal(executionSnapshot{Version: snapshotVersion, Resolved: res, Images: images, Dependencies: deps})
 }
 
-func (e *Engine) executionDependencies(res *resolve.Resolved) (string, error) {
-	return executionDependencies(res, e.cfg.Current())
-}
+// snapshotVersion selects the dependency fingerprint. Version 1 also hashed
+// each model's llm block (limits, fallbacks, on_limit), which Resolve already
+// bakes into the pinned nodes: raising a model's token cap failed every active
+// run with drift. Older snapshots keep their own version's fingerprint, so a
+// rollout never fails runs that were already active.
+const snapshotVersion = 2
 
 // executionDependencies hashes the live settings a run depends on beyond its
 // snapshot. Only what changes execution counts: descriptions, notes and other
 // planner hints can be edited in Settings without failing active runs.
-func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, error) {
+func executionDependencies(res *resolve.Resolved, cfg *config.Config, version int) (string, error) {
 	deps := map[string]any{}
 	addGrant := func(name string) {
 		g := cfg.Catalog.Grants[name]
@@ -83,7 +86,7 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, e
 					deps["model/"+name] = nil
 					continue
 				}
-				deps["model/"+name] = pinnedModel(m)
+				deps["model/"+name] = pinnedModel(m, version)
 				deps["upstream/"+m.Upstream] = cfg.Env.LLM.Upstreams[m.Upstream].BaseURL
 			}
 		}
@@ -106,9 +109,13 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config) (string, e
 // reasoning, thinking format, reply cap), and the model's own llm defaults.
 // Planner hints (size, tool use, cost label, notes), prices (accounting) and
 // max_concurrency (admission control) may change while runs are active.
-func pinnedModel(m *config.Model) config.Model {
-	return config.Model{Upstream: m.Upstream, Model: m.Model, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
-		ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens, LLM: m.LLM}
+func pinnedModel(m *config.Model, version int) config.Model {
+	p := config.Model{Upstream: m.Upstream, Model: m.Model, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
+		ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens}
+	if version == 1 {
+		p.LLM = m.LLM
+	}
+	return p
 }
 
 // DriftedRuns lists the queued, running and waiting runs that cfg would fail
@@ -124,7 +131,7 @@ func (e *Engine) DriftedRuns(ctx context.Context, cfg *config.Config) ([]string,
 		if err != nil {
 			continue // fails on its own; not caused by this change
 		}
-		deps, err := executionDependencies(snap.Resolved, cfg)
+		deps, err := executionDependencies(snap.Resolved, cfg, snap.Version)
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +185,7 @@ func (e *Engine) loadSnapshot(ctx context.Context, r *store.Run) (*executionSnap
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, rejectf("execution snapshot: %v", err)
 	}
-	if snap.Version != 1 || snap.Resolved == nil || snap.Resolved.Flow == nil || len(snap.Resolved.Nodes) == 0 {
+	if snap.Version < 1 || snap.Version > snapshotVersion || snap.Resolved == nil || snap.Resolved.Flow == nil || len(snap.Resolved.Nodes) == 0 {
 		return nil, rejectf("unsupported or invalid execution snapshot version %d", snap.Version)
 	}
 	return &snap, nil
@@ -197,7 +204,7 @@ func (e *Engine) Resolved(ctx context.Context, r *store.Run) (*resolve.Resolved,
 	if issues := resolve.Validate(&current, e.cfg.Current()); resolve.HasErrors(issues) {
 		return nil, rejectf("pinned execution is not currently authorized/valid: %v", issues)
 	}
-	deps, err := e.executionDependencies(res)
+	deps, err := executionDependencies(res, e.cfg.Current(), snap.Version)
 	if err != nil {
 		return nil, err
 	}

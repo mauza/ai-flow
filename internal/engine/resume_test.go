@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/store"
 )
 
@@ -198,5 +199,24 @@ func TestHarnessAndThinkingSettingsAreDrift(t *testing.T) {
 		if drifted := err != nil && strings.Contains(err.Error(), "drift"); drifted != edit.drift {
 			t.Errorf("%s: drift %v, want %v (%v)", edit.name, drifted, edit.drift, err)
 		}
+	}
+}
+
+// A model's llm block (limits, fallbacks, on_limit) is baked into the pinned
+// nodes, so editing it is not drift. Version 1 snapshots, which hashed it,
+// keep their own fingerprint so a rollout does not fail active runs.
+func TestModelLLMIsNotConfigurationDrift(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(resumeFlow)
+	v1, err := h.e.RunDependencies(h.ctx, h.run(id), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.cfg.Catalog.Models[testModel].LLM = &flow.LLMConfig{Limits: &flow.Limits{Tokens: 3000000}}
+	if _, err := h.e.Resolved(h.ctx, h.run(id)); err != nil {
+		t.Fatalf("raising a model's token cap drifted a pinned run: %v", err)
+	}
+	if after, _ := h.e.RunDependencies(h.ctx, h.run(id), 1); after == v1 {
+		t.Fatal("version 1 fingerprints must still include the model's llm block")
 	}
 }

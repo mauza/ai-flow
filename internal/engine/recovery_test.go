@@ -253,7 +253,7 @@ func TestSnapshotDoesNotPersistEnvironmentSecrets(t *testing.T) {
 	}
 	var data map[string]any
 	must(t, json.Unmarshal(r.Snapshot, &data))
-	if data["version"] != float64(1) {
+	if data["version"] != float64(engine.SnapshotVersion) {
 		t.Fatalf("snapshot version: %v", data["version"])
 	}
 }
