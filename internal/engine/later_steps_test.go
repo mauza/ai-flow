@@ -88,3 +88,27 @@ func TestContextConvergesRepeatVerification(t *testing.T) {
 		t.Fatalf("second QA pass:\n%s", got)
 	}
 }
+
+// Agent steps are told which runtime they run on and what it has.
+func TestContextNamesTheRuntime(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(header + `  start: qa
+  nodes:
+    qa:
+      type: agent
+      model: ` + testModel + `
+      runtime: agent-web
+      prompt: check it
+      outcomes: [passed]
+      next: { passed: $success }
+`)
+	v, _ := h.st.LastVisit(h.ctx, id)
+	r := h.run(id)
+	res, err := h.e.Resolved(h.ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := h.e.ContextMarkdown(h.ctx, r, res, res.Nodes["qa"], v.Seq); !strings.Contains(md, "## Runtime\n\nThis step runs on `agent-web`: agent-go plus headless Chromium and `browse`") {
+		t.Fatalf("context:\n%s", md)
+	}
+}
