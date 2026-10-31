@@ -77,6 +77,9 @@ func Main(ctx context.Context) error {
 	defer cancel()
 
 	res := r.run(nodeCtx)
+	if res.Error != "" && b.Type == flow.TypeAgent {
+		r.pushUnfinished(ctx, res) // ctx: nodeCtx may have expired
+	}
 	if res.Error == "" && !slices.Contains(b.Outcomes, res.Outcome) {
 		res.Error = fmt.Sprintf("node produced outcome %q, not one of %v", res.Outcome, b.Outcomes)
 	}
