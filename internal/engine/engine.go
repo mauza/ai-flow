@@ -951,6 +951,14 @@ func (e *Engine) liveJobs(ctx context.Context, runID string) ([]*store.Visit, er
 // last visit). The run keeps its branch, pinned settings, visits and spend; the
 // note reaches the steps that follow through their context.
 func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*store.Run, error) {
+	return e.ResumeOn(ctx, runID, 0, node, note, who)
+}
+
+// ResumeOn resumes a run, optionally on another saved version of its flow:
+// the run keeps its id, branch and history, and continues under the new
+// version's steps. This is how a flow bug found mid-run (a broken check, a
+// missing conflict route) is fixed without starting over on a new branch.
+func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, node, note, who string) (*store.Run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.store.GetRun(ctx, runID)
@@ -960,8 +968,26 @@ func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*st
 	if r.Status != store.RunFailed && r.Status != store.RunCanceled {
 		return nil, fmt.Errorf("run is %s: %w", r.Status, store.ErrNotResumable)
 	}
-	res, err := e.Resolved(ctx, r)
-	if err != nil {
+	var res *resolve.Resolved
+	var repin *store.Repin
+	if version != 0 && version != r.FlowVersion {
+		fv, err := e.store.GetFlow(ctx, r.FlowName, version)
+		if err != nil {
+			return nil, fmt.Errorf("%s v%d: %w", r.FlowName, version, err)
+		}
+		if res, err = e.resolve(fv); err != nil {
+			return nil, fmt.Errorf("cannot resume on v%d: %w", version, err)
+		}
+		res.Base = r.Base // the run's branch was cut from it
+		if issues := resolve.Validate(res, e.cfg.Current()); resolve.HasErrors(issues) {
+			return nil, fmt.Errorf("cannot resume on v%d: %v", version, issues)
+		}
+		snap, err := e.snapshot(res)
+		if err != nil {
+			return nil, err
+		}
+		repin = &store.Repin{FlowVersion: version, Snapshot: snap}
+	} else if res, err = e.Resolved(ctx, r); err != nil {
 		return nil, fmt.Errorf("cannot resume: %w", err)
 	}
 	if node == "" {
@@ -977,7 +1003,7 @@ func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*st
 	}
 	n := res.Nodes[node]
 	if n == nil {
-		return nil, fmt.Errorf("%q is not a node of %s v%d", node, r.FlowName, r.FlowVersion)
+		return nil, fmt.Errorf("%q is not a node of %s v%d", node, r.FlowName, max(version, r.FlowVersion))
 	}
 	if lanes, _ := res.Lanes(); lanes[node].Fork != "" {
 		return nil, fmt.Errorf("%q runs inside a branch of %q; resume at %q to rerun its branches", node, lanes[node].Fork, lanes[node].Fork)
@@ -990,11 +1016,14 @@ func (e *Engine) Resume(ctx context.Context, runID, node, note, who string) (*st
 		return nil, fmt.Errorf("all %d run slots are busy; resume when one frees up", max)
 	}
 	note = strings.TrimSpace(note)
-	v, err := e.store.ResumeRun(ctx, runID, node, n.Type, note)
+	v, err := e.store.ResumeRun(ctx, runID, node, n.Type, note, repin)
 	if err != nil {
 		return nil, err
 	}
 	msg := fmt.Sprintf("Resumed at %s#%d", node, v.Visit)
+	if repin != nil {
+		msg = fmt.Sprintf("Resumed on v%d (was v%d) at %s#%d", version, r.FlowVersion, node, v.Visit)
+	}
 	if who != "" {
 		msg += " by " + who
 	}

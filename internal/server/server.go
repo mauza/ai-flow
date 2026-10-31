@@ -445,9 +445,10 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Node string `json:"node"` // default: the node of the last visit
-		Note string `json:"note"`
-		By   string `json:"by"`
+		Node        string `json:"node"`         // default: the node of the last visit
+		FlowVersion int    `json:"flow_version"` // default: the run's own version
+		Note        string `json:"note"`
+		By          string `json:"by"`
 	}
 	if r.ContentLength > 0 && !readJSON(w, r, &in) {
 		return
@@ -455,7 +456,7 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	if in.By == "" {
 		in.By = "ui"
 	}
-	run, err := s.app.Engine.Resume(r.Context(), r.PathValue("id"), in.Node, in.Note, in.By)
+	run, err := s.app.Engine.ResumeOn(r.Context(), r.PathValue("id"), in.FlowVersion, in.Node, in.Note, in.By)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, 404, "not found")
