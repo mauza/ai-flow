@@ -376,29 +376,29 @@ func (m *Manager) Discard(project string, paths []string) error {
 func (m *Manager) Commit(ctx context.Context, project string, src Source, message string, author map[string]string) (string, error) {
 	unlock := m.lock(project)
 	defer unlock()
-	st, err := m.loadState(project)
-	if err != nil {
-		return "", err
-	}
-	changes, err := m.changes(project, st)
-	if err != nil {
-		return "", err
-	}
-	if len(changes) == 0 {
-		return "", fmt.Errorf("nothing to commit")
-	}
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("a commit message is required")
 	}
-	var files []github.FileChange
-	for _, c := range changes {
-		f := github.FileChange{Path: c.Path}
-		if c.Kind != "deleted" {
-			f.Content = []byte(c.Work)
-		}
-		files = append(files, f)
+	st, changes, files, err := m.staged(project)
+	if err != nil {
+		return "", err
 	}
 	sha, err := m.gh.CommitFiles(ctx, src.Repo, src.Branch, st.Head, message, author, files)
+	if errors.Is(err, github.ErrNotFastForward) {
+		// The base branch moved, usually a code merge that never touches
+		// product/. Pull (it keeps local edits and refuses when the remote
+		// changed a file edited here) and commit on the new head.
+		if res, err := m.pull(ctx, project, src, st); err != nil {
+			if errors.Is(err, ErrConflict) && res != nil {
+				return "", fmt.Errorf("%w: the branch also changed %s; discard your edits to them, pull, then commit", err, strings.Join(res.Conflicts, ", "))
+			}
+			return "", err
+		}
+		if st, changes, files, err = m.staged(project); err != nil {
+			return "", err
+		}
+		sha, err = m.gh.CommitFiles(ctx, src.Repo, src.Branch, st.Head, message, author, files)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -415,6 +415,30 @@ func (m *Manager) Commit(ctx context.Context, project string, src Source, messag
 	}
 	st.Head = sha
 	return sha, m.saveState(project, st)
+}
+
+// staged lists the local changes as files to commit.
+func (m *Manager) staged(project string) (*state, []Change, []github.FileChange, error) {
+	st, err := m.loadState(project)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	changes, err := m.changes(project, st)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(changes) == 0 {
+		return nil, nil, nil, fmt.Errorf("nothing to commit")
+	}
+	var files []github.FileChange
+	for _, c := range changes {
+		f := github.FileChange{Path: c.Path}
+		if c.Kind != "deleted" {
+			f.Content = []byte(c.Work)
+		}
+		files = append(files, f)
+	}
+	return st, changes, files, nil
 }
 
 func (m *Manager) path(project, side, p string) string {

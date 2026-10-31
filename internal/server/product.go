@@ -138,7 +138,9 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 	sha, err := s.app.Workspaces.Commit(r.Context(), project, src, in.Message, author)
 	switch {
 	case errors.Is(err, github.ErrNotFastForward):
-		writeErr(w, 409, "the branch has new commits; pull, then commit again")
+		writeErr(w, 409, "the branch moved again while committing; commit again")
+	case errors.Is(err, workspace.ErrConflict):
+		writeErr(w, 409, err.Error())
 	case err != nil:
 		writeErr(w, 400, err.Error())
 	default:

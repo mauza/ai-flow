@@ -193,11 +193,9 @@ func TestLinkRepoAndWorkOnAStoryMap(t *testing.T) {
 	if !strings.Contains(files["product/user-story-maps/core/tasks/sign-up.yaml"], "title: Sign up") || files["main.go"] != "package main\n" {
 		t.Fatalf("repo after commit: %v", files)
 	}
-	// Someone else pushes; committing again needs a pull first.
+	// Someone else pushes a file not edited here: the commit pulls it first.
 	e.repo.Push(map[string]string{"product/README.md": "# App v2\n"})
 	e.call(t, "PUT", "/api/projects/app/files", map[string]string{"path": "product/vision.md", "content": "# Vision\n"}, 204)
-	e.call(t, "POST", "/api/projects/app/workspace/commit", map[string]string{"message": "Vision"}, 409)
-	e.call(t, "POST", "/api/projects/app/workspace/pull", nil, 200)
 	e.call(t, "POST", "/api/projects/app/workspace/commit", map[string]string{"message": "Vision"}, 200)
 	if f := e.repo.Files(); f["product/vision.md"] != "# Vision\n" || f["product/README.md"] != "# App v2\n" {
 		t.Fatalf("after pull and commit: %v", f)
