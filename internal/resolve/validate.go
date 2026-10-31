@@ -204,6 +204,11 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 		if strings.TrimSpace(n.Run) == "" {
 			v.errf(id, "run", "check nodes need a command to run")
 		}
+		if strings.Contains(n.Run, "${{") {
+			// Rendering model output into a shell script would let it run
+			// commands; bash then fails on the literal text ("bad substitution").
+			v.errf(id, "run", "${{ }} is not rendered in run scripts; pass the value through inputs (inputs: {cmd: \"${{ ... }}\"}) and read it as $AI_FLOW_INPUT_CMD")
+		}
 		v.checkRuntime(n)
 		for name, typ := range n.Outputs {
 			if name == "outcome" {

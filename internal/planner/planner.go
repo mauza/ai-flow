@@ -659,7 +659,7 @@ Escalate only for those reasons: an unresolved unknown earns an investigation, a
 - Use the configured planner for decomposition and routing. Only select models in the menu; do not assume a local-model preference.
 - Requires hints describe preconditions, not grants or automatic setup. llm nodes cannot inspect files or run tools; use an agent to gather missing evidence.
 - Each pod gets a fresh checkout; installed dependencies and uncommitted files do not carry between nodes. Checks need dependencies in their runtime or setup in their own run command, with permitted network access. Never invent tools or use a passing placeholder check.
-- Override preset run for repo-specific commands. Preset maps (inputs, with, outputs, cases) are replaced, not merged; supply the complete map/list when overriding. Wire earlier outputs explicitly when they are not from the immediately previous step.
+- Override preset run for repo-specific commands. run is a literal shell script: ${{ }} is NOT rendered there. To use an earlier output in a check, pass it through inputs (inputs: {cmd: "${{ nodes.plan.outputs.test_command }}"}) and read $AI_FLOW_INPUT_CMD; prefer writing the real command into run when you already know it. Preset maps (inputs, with, outputs, cases) are replaced, not merged; supply the complete map/list when overriding. Wire earlier outputs explicitly when they are not from the immediately previous step.
 - Keep prompts short and specific to the step.
 - Reply with one or two sentences explaining the design, then exactly one ` + "```yaml" + ` block containing the complete flow.
 `

@@ -54,3 +54,32 @@ spec:
 		t.Errorf("declared check outputs and implicit exit_code/log_tail must be accepted:\n%s", all)
 	}
 }
+
+// Planners wrote run: ${{ nodes.plan.outputs.verification_command }}, which
+// bash received literally ("bad substitution") because run is never rendered.
+func TestCheckRunRejectsTemplates(t *testing.T) {
+	_, issues := validateYAML(t, `
+  start: test
+  nodes:
+    test:
+      type: check
+      run: |
+        set -e
+        ${{ nodes.plan.outputs.verification_command }}
+      next: { pass: $success, fail: $fail }
+    ok:
+      type: check
+      inputs: { cmd: "${{ task.title }}" }
+      run: eval "$AI_FLOW_INPUT_CMD"
+      next: { pass: $success, fail: $fail }
+`)
+	var hits []string
+	for _, i := range issues {
+		if strings.Contains(i, "not rendered in run scripts") {
+			hits = append(hits, i)
+		}
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0], "test.run") {
+		t.Fatalf("issues: %v", issues)
+	}
+}
