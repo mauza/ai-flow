@@ -40,6 +40,10 @@ async function setup(page: Page, view: RunView) {
       return route.fulfill(path.endsWith("/resume") ? { json: { ...view.run, status: "running" } } : { status: 204 });
     }
     if (path === `/api/runs/${view.run.id}`) return route.fulfill({ json: view });
+    if (path === `/api/flows/${view.run.flow_name}`) return route.fulfill({ json: { versions: [1, 2, 3].map((version) => ({ version })), graph } });
+    if (path === `/api/flows/${view.run.flow_name}/versions/3`) {
+      return route.fulfill({ json: { graph: { ...graph, nodes: [...graph.nodes, { id: "lint", type: "check", run: "make lint", outcomes: ["pass", "fail"] }] } } });
+    }
     if (path === "/api/overview") return route.fulfill({ json: { projects: [], models: [], presets: [], runtimes: [], grants: [], skills: [], actions: [], node_types: [] } });
     return route.fulfill({ json: [] });
   });
@@ -63,6 +67,19 @@ test("a failed run resumes at a chosen step with a note", async ({ page }, info)
   await page.screenshot({ path: info.outputPath("resume.png") });
   await page.locator("form").getByRole("button", { name: "Resume" }).click();
   await expect.poll(() => posts).toEqual([{ path: `/api/runs/${run.id}/resume`, body: { node: "work", note: "Raise the memory limit first" } }]);
+});
+
+test("a failed run resumes on a newer flow version", async ({ page }) => {
+  const run = { ...baseRun, error: "test: bash: bad substitution" };
+  const posts = await setup(page, { run, graph, events: [], visits: [visit(1, "work", "agent", "succeeded", { outcome: "done" }), visit(2, "test", "check", "error")] });
+  await page.goto(`/runs/${run.id}`);
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  const versions = page.getByLabel("Flow version");
+  await expect(versions.locator("option")).toHaveText(["v2 (this run)", "v3"]);
+  await versions.selectOption("3");
+  await page.getByLabel("Resume at").selectOption("lint");
+  await page.locator("form").getByRole("button", { name: "Resume" }).click();
+  await expect.poll(() => posts).toEqual([{ path: `/api/runs/${run.id}/resume`, body: { node: "lint", note: "", flow_version: 3 } }]);
 });
 
 test("a gate decision carries the note", async ({ page }, info) => {

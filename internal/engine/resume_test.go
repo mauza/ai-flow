@@ -241,3 +241,41 @@ func TestRunPlacementIsNotConfigurationDrift(t *testing.T) {
 		t.Fatal("fields added after version 1 changed its fingerprint")
 	}
 }
+
+// A flow bug found mid-run is fixed in a new version and the run resumes on
+// it, keeping its id, branch and history.
+func TestResumeOnNewFlowVersion(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(resumeFlow)
+	h.finish(id, "done", nil)
+	h.crash(id, "bash: ${{ nodes.plan.outputs.cmd }}: bad substitution")
+	before := h.run(id)
+
+	fixed := strings.Replace(resumeFlow, "run: make test", "run: make check", 1)
+	fixed = strings.Replace(fixed, "next: { pass: $success, fail: fix }", "next: { pass: lint, fail: fix }\n    lint:\n      type: check\n      run: make lint\n      next: { pass: $success, fail: fix }", 1)
+	if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", YAML: fixed, Project: "sandbox"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.e.ResumeOn(h.ctx, id, 2, "nowhere", "", "t"); err == nil || !strings.Contains(err.Error(), "not a node of f v2") {
+		t.Fatalf("unknown node: %v", err)
+	}
+	if _, err := h.e.ResumeOn(h.ctx, id, 9, "test", "", "t"); err == nil {
+		t.Fatal("a missing version must be refused")
+	}
+	r, err := h.e.ResumeOn(h.ctx, id, 2, "test", "check fixed", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FlowVersion != 2 || r.Branch != before.Branch || r.Status != store.RunRunning {
+		t.Fatalf("resumed run: %+v", r)
+	}
+	h.e.Tick(h.ctx)
+	h.finish(id, "pass", nil)
+	if v, _ := h.st.LastVisit(h.ctx, id); v.Node != "lint" {
+		t.Fatalf("the new version's routing must apply, at %s", v.Node)
+	}
+	h.finish(id, "pass", nil)
+	if r := h.run(id); r.Status != store.RunSucceeded {
+		t.Fatalf("status %s, path %s", r.Status, h.path(id))
+	}
+}

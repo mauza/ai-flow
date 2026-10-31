@@ -291,15 +291,35 @@ function buildOverlay(graph: Graph, visits: Visit[], runStatus: string): RunOver
 }
 
 // StoppedBanner explains a failed or canceled run and offers to resume it at a
-// node, keeping the branch and earlier steps.
+// node, keeping the branch and earlier steps, optionally on a newer version of
+// the flow (to fix a flow bug found mid-run).
 function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; graph?: Graph }) {
   const toast = useToast();
   const last = visits[visits.length - 1];
-  const nodes = (graph?.nodes ?? []).map((n) => n.id).filter((id) => !id.startsWith("$"));
   const [open, setOpen] = useState(false);
   const [node, setNode] = useState(last?.node ?? "");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [versions, setVersions] = useState<number[]>([]);
+  const [version, setVersion] = useState(run.flow_version);
+  const [versionGraph, setVersionGraph] = useState<Graph>();
+  useEffect(() => {
+    if (!open) return;
+    api.flow(run.flow_name).then((f) => setVersions(f.versions.map((v) => v.version).filter((v) => v >= run.flow_version)), () => {});
+  }, [open, run.flow_name, run.flow_version]);
+  useEffect(() => {
+    if (version === run.flow_version) {
+      setVersionGraph(undefined);
+      return;
+    }
+    api.flow(run.flow_name, version).then((f) => setVersionGraph(f.graph), (err) => toast("error", (err as Error).message));
+  }, [version, run.flow_name, run.flow_version, toast]);
+  const nodes = ((version === run.flow_version ? graph : versionGraph)?.nodes ?? []).map((n) => n.id).filter((id) => !id.startsWith("$"));
+  // A newer version may have renamed or dropped the step that was selected.
+  const nodeKey = nodes.join(",");
+  useEffect(() => {
+    if (nodes.length && !nodes.includes(node)) setNode(nodes[0]);
+  }, [nodeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const failed = run.status === "failed";
   return (
     <div
@@ -325,8 +345,8 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
             e.preventDefault();
             setBusy(true);
             try {
-              await api.resumeRun(run.id, node, note);
-              toast("ok", `Resumed at ${node}`);
+              await api.resumeRun(run.id, node, note, version === run.flow_version ? 0 : version);
+              toast("ok", version === run.flow_version ? `Resumed at ${node}` : `Resumed on v${version} at ${node}`);
               setOpen(false);
               setNote("");
             } catch (err) {
@@ -336,6 +356,19 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
             }
           }}
         >
+          {versions.length > 1 && (
+            <div className="field">
+              <label htmlFor="resume-version">Flow version</label>
+              <select id="resume-version" className="input mono" value={version} onChange={(e) => setVersion(Number(e.target.value))}>
+                {versions.map((v) => (
+                  <option key={v} value={v}>
+                    v{v}
+                    {v === run.flow_version ? " (this run)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="resume-node">Resume at</label>
             <select id="resume-node" className="input mono" value={node} onChange={(e) => setNode(e.target.value)}>

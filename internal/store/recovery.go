@@ -127,7 +127,13 @@ var ErrNotResumable = errors.New("only failed or canceled runs can be resumed")
 // ResumeRun re-opens a failed or canceled run at node: the run, its task and a
 // new pending visit of node commit together, and the engine picks the visit up
 // like any other pending work. The status guard makes a repeated resume a no-op.
-func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string) (*Visit, error) {
+// Repin moves a resumed run onto another version of its flow.
+type Repin struct {
+	FlowVersion int
+	Snapshot    []byte
+}
+
+func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string, repin *Repin) (*Visit, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -149,6 +155,11 @@ func (s *Store) ResumeRun(ctx context.Context, runID, node, typ, note string) (*
 		return nil, err
 	} else if n != 1 {
 		return nil, ErrNotResumable
+	}
+	if repin != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET flow_version = ?, snapshot = ? WHERE id = ?`, repin.FlowVersion, string(repin.Snapshot), runID); err != nil {
+			return nil, err
+		}
 	}
 	var taskID string
 	if err := tx.QueryRowContext(ctx, `SELECT task_id FROM runs WHERE id = ?`, runID).Scan(&taskID); err != nil {
