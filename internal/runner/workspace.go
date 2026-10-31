@@ -87,10 +87,34 @@ func (r *Runner) commitAndPush(ctx context.Context, res *protocol.Result) (strin
 	if err != nil || !ahead {
 		return "", err
 	}
-	if _, err := r.git(ctx, r.repo, "push", "--quiet", "origin", "HEAD:refs/heads/"+r.b.Repo.Branch); err != nil {
+	if err := r.push(ctx); err != nil {
 		return "", err
 	}
 	return sha, nil
+}
+
+// pushRetryDelay spaces push attempts; the git proxy lives in the control
+// plane, which is briefly unreachable while it restarts.
+var pushRetryDelay = func(attempt int) time.Duration { return time.Duration(attempt) * 10 * time.Second }
+
+// push pushes HEAD to the run branch, retrying while the git proxy cannot be
+// reached. A web-games step's finished work was lost when its push landed on
+// a control-plane restart. A rejected push (the branch moved) is not retried.
+func (r *Runner) push(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= 6; attempt++ {
+		_, err = r.git(ctx, r.repo, "push", "--quiet", "origin", "HEAD:refs/heads/"+r.b.Repo.Branch)
+		if err == nil || strings.Contains(err.Error(), "rejected") || ctx.Err() != nil {
+			return err
+		}
+		r.progress(fmt.Sprintf("Push failed (%v); retrying", firstLine(err.Error())))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(pushRetryDelay(attempt)):
+		}
+	}
+	return err
 }
 
 // pushUnfinished saves a failed agent step's work on the run branch, so a

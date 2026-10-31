@@ -424,3 +424,50 @@ func TestPushUnfinishedSavesWork(t *testing.T) {
 		t.Fatalf("nothing to save, but: %s", clean.Error)
 	}
 }
+
+// A push that cannot reach the git proxy (a control-plane restart) is retried;
+// the work is not lost.
+func TestPushRetriesWhileTheProxyIsDown(t *testing.T) {
+	r := runtimeRunner(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := r.git(context.Background(), dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	git(r.work, "init", "--quiet", "--bare", "-b", "main", origin)
+	seed := filepath.Join(t.TempDir(), "seed")
+	git(r.work, "clone", "--quiet", origin, seed)
+	git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "base")
+	git(seed, "push", "--quiet", "origin", "HEAD:main")
+	r.b.Repo = &protocol.RepoAccess{CloneURL: origin, Base: "main", Branch: "ai-flow/x", Write: true, AuthorName: "a", AuthorEmail: "a@a"}
+	repo, err := r.prepareRepo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.repo = repo
+	os.WriteFile(filepath.Join(repo, "game.js"), []byte("tests\n"), 0o644)
+
+	away := origin + ".away"
+	if err := os.Rename(origin, away); err != nil { // the proxy is down
+		t.Fatal(err)
+	}
+	attempts := 0
+	defer func(d func(int) time.Duration) { pushRetryDelay = d }(pushRetryDelay)
+	pushRetryDelay = func(n int) time.Duration {
+		attempts = n
+		if n == 2 {
+			os.Rename(away, origin) // back up
+		}
+		return time.Millisecond
+	}
+	if _, err := r.commitAndPush(context.Background(), &protocol.Result{Summary: "tests", Outcome: "reproduced"}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || git(r.work, "--git-dir", origin, "show", "ai-flow/x:game.js") != "tests" {
+		t.Fatalf("after %d retries the branch lacks the work", attempts)
+	}
+}
