@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -153,6 +154,12 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		if runErr != nil {
 			msg += ": " + runErr.Error()
 		}
+		r.progressMu.Lock()
+		if r.lastStop != "" && r.lastStop != "toolUse" {
+			// e.g. "length" (output cap), "error: context window exceeded".
+			msg += fmt.Sprintf(" (last model reply ended with %s)", r.lastStop)
+		}
+		r.progressMu.Unlock()
 		return &protocol.Result{Error: msg}
 	}
 	return res
@@ -201,13 +208,19 @@ func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *tran
 
 // piProgress turns tool calls and assistant text into progress lines.
 func (r *Runner) piProgress(line []byte) {
+	// Updates repeat the whole message per token; decoding them all is quadratic.
+	if bytes.HasPrefix(line, messageUpdatePrefix) {
+		return
+	}
 	var ev struct {
 		Type     string          `json:"type"`
 		ToolName string          `json:"toolName"`
 		Args     json.RawMessage `json:"args"`
 		Message  *struct {
-			Role    string `json:"role"`
-			Content []struct {
+			Role         string `json:"role"`
+			StopReason   string `json:"stopReason"`
+			ErrorMessage string `json:"errorMessage"`
+			Content      []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -221,6 +234,13 @@ func (r *Runner) piProgress(line []byte) {
 		r.progress(describeToolCall(ev.ToolName, ev.Args))
 	case "message_end":
 		if ev.Message != nil && ev.Message.Role == "assistant" {
+			stop := ev.Message.StopReason
+			if ev.Message.ErrorMessage != "" {
+				stop += ": " + firstLine(ev.Message.ErrorMessage)
+			}
+			r.progressMu.Lock()
+			r.lastStop = stop
+			r.progressMu.Unlock()
 			for _, c := range ev.Message.Content {
 				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
 					r.progress(firstLine(c.Text))

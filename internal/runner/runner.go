@@ -41,6 +41,7 @@ type Runner struct {
 
 	progressMu         sync.Mutex
 	lastProgress       time.Time
+	lastStop           string // how pi's last assistant message ended, for errors
 	finalTranscriptKey string // only the synchronous final upload sets this
 }
 
