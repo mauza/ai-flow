@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mauza/ai-flow/internal/flow"
 	"log/slog"
 	"strings"
 
@@ -161,6 +162,9 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	if r.Resumes > 0 && seq > r.ResumeSeq {
 		writeResume(&sb, r, visits)
 	}
+	if n.Type == flow.TypeAgent || n.Type == flow.TypeLLM {
+		writeLaterSteps(&sb, res, n, done)
+	}
 	if prev != nil {
 		fmt.Fprintf(&sb, "## Previous step: %s → %s\n\n", prev.Node, prev.Outcome)
 		if prev.Summary != "" {
@@ -194,6 +198,48 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeLaterSteps lists what the flow still does after this step. On
+// web-games, reviewers blocked a change three times over a criterion only the
+// production check after deploy could verify, because nothing told them that
+// check existed.
+func writeLaterSteps(sb *strings.Builder, res *resolve.Resolved, n *resolve.Node, done []*store.Visit) {
+	ran := map[string]bool{n.ID: true}
+	for _, v := range done {
+		ran[v.Node] = true
+	}
+	var later []string
+	seen := map[string]bool{n.ID: true}
+	queue := n.Targets()
+	for len(queue) > 0 && len(later) < 15 {
+		id := queue[0]
+		queue = queue[1:]
+		if seen[id] || flow.Terminal(id) {
+			continue
+		}
+		seen[id] = true
+		m := res.Nodes[id]
+		if m == nil {
+			continue
+		}
+		queue = append(queue, m.Targets()...)
+		if ran[id] || m.Type == flow.TypeSwitch || m.Type == flow.TypeJoin || m.Type == flow.TypeParallel {
+			continue
+		}
+		kind := firstNonEmpty(m.Preset, m.Action, string(m.Type))
+		what := m.Description
+		if what == "" && m.Type == flow.TypeCheck {
+			what = "runs `" + oneLine(m.Run, 120) + "`"
+		}
+		later = append(later, fmt.Sprintf("- %s (%s): %s", id, kind, oneLine(what, 160)))
+	}
+	if len(later) == 0 {
+		return
+	}
+	sb.WriteString("## Later in this flow\n\nSteps that can run after this one. Do not do their work here. If something can only be verified by one of them (CI, a deploy, a check against production), say so rather than blocking on it.\n\n")
+	sb.WriteString(strings.Join(later, "\n"))
+	sb.WriteString("\n\n")
 }
 
 const loopHistoryBudget = 8000
