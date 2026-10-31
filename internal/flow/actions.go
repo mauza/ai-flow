@@ -54,10 +54,10 @@ var Actions = map[string]ActionSpec{
 		Doc: "fast rollback without a rebuild: dispatches the project's deploy.rollback workflow for the release (default: the run's latest merge) and waits for it. Follow with wait_for_deploy expecting ${{ run.previous_sha }}. Outcomes: rolled_back, failed, timeout.",
 	},
 	"check_health": {
-		Outcomes: []string{"healthy", "degraded"}, With: []string{"duration"},
+		Outcomes: []string{"healthy", "degraded"}, With: []string{"duration", "sustain"},
 		Outputs: map[string]any{"violations": []any{"string"}, "polls": "integer"},
 		Waits:   true, Timeout: 30 * time.Minute,
-		Doc: "soaks the deployed app for duration (default 10m): the project's health PromQL queries and URL probe, polled; a check failing twice in a row is degraded. Outcomes: healthy, degraded (outputs.violations), timeout.",
+		Doc: "soaks the deployed app for duration (default 10m): the project's health PromQL queries and URL probe, polled; a check failing on consecutive polls for at least sustain (default 90s, so a rollout blip is not a regression) is degraded. Outcomes: healthy, degraded (outputs.violations), timeout.",
 	},
 }
 

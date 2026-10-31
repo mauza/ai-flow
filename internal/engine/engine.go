@@ -94,20 +94,27 @@ type Engine struct {
 	OrphanGrace time.Duration
 	// PollInterval spaces the polls of waiting actions (CI, deploys, health).
 	PollInterval time.Duration
+	// HealthSustain is how long a health check must keep failing before a
+	// soak calls the release degraded (check_health with.sustain overrides).
+	// Two polls 15s apart fit inside one rollout blip: on web-games, a replica
+	// unavailable for one 30s scrape rolled back three healthy releases.
+	HealthSustain time.Duration
 	// HTTP probes deploy targets and queries metrics.
 	HTTP *http.Client
 
 	refresher func(ctx context.Context, namespace, app string) error
 
-	polls  map[string]time.Time      // run/seq → last poll of a waiting action
-	health map[string]map[string]int // run/seq → check → consecutive violations
-	passes map[string]map[string]int // run/seq → check → successful evaluations
+	polls    map[string]time.Time            // run/seq → last poll of a waiting action
+	health   map[string]map[string]int       // run/seq → check → consecutive violations
+	badSince map[string]map[string]time.Time // run/seq → check → first poll of the current violation
+	passes   map[string]map[string]int       // run/seq → check → successful evaluations
 }
 
 func New(cfg *config.Config, st *store.Store, l Launcher, h *hub.Hub, gh *github.Client) *Engine {
 	return &Engine{cfg: cfg, store: st, launcher: l, hub: h, gh: gh, wake: make(chan struct{}, 1), orphans: map[string]time.Time{}, OrphanGrace: 15 * time.Second,
 		PollInterval: 15 * time.Second, HTTP: &http.Client{Timeout: 10 * time.Second},
-		polls: map[string]time.Time{}, health: map[string]map[string]int{}, passes: map[string]map[string]int{}}
+		polls: map[string]time.Time{}, health: map[string]map[string]int{}, badSince: map[string]map[string]time.Time{}, passes: map[string]map[string]int{},
+		HealthSustain: 90 * time.Second}
 }
 
 // Tick runs one pass over active and queued runs (tests drive the engine with it).

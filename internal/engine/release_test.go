@@ -25,7 +25,7 @@ type fakeWorld struct {
 	state     string // mergeable_state
 	merged    bool
 	merges    int
-	merged8   bool // a second PR, for two runs releasing at once
+	merged8   bool             // a second PR, for two runs releasing at once
 	checks    []map[string]any // check runs
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
@@ -128,7 +128,7 @@ func releaseFlow(t *testing.T, w *fakeWorld, deploy func(*config.Deploy), nodes 
 	t.Cleanup(srv.Close)
 	h := newHarness(t)
 	h.e = engine.New(h.cfg, h.st, h.l, hub.New(), github.New(srv.URL, "t"))
-	h.e.OrphanGrace, h.e.PollInterval = 0, 0
+	h.e.OrphanGrace, h.e.PollInterval, h.e.HealthSustain = 0, 0, 0
 	h.cfg.Env.Metrics.URL = srv.URL
 	h.cfg.Projects["sandbox"].Spec.Deploy = &config.Deploy{
 		Branch: "main", URL: srv.URL + "/app",
@@ -336,6 +336,34 @@ func TestReleasesToOneProjectAreSerialized(t *testing.T) {
 	}
 	if !w.merged8 {
 		t.Fatalf("second run never merged: %s", h.path(b))
+	}
+}
+
+// A check failing on a few polls inside the sustain window (a rollout's
+// replica unavailable for one scrape) is watched, not called degraded.
+func TestHealthViolationMustBeSustained(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.9", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, nil, `    ship:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: $fail }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: 1h, sustain: 1h }
+      next: { healthy: $success, degraded: $fail, timeout: $fail }
+`)
+	for i := 0; i < 8; i++ {
+		h.e.Tick(h.ctx)
+	}
+	v := h.current(id)
+	if v.Node != "soak" || v.Status != store.VisitRunning || !strings.Contains(v.Progress, "watching 5xx rate") {
+		t.Fatalf("a short violation must be watched, not degraded: %+v (path %s)", v, h.path(id))
 	}
 }
 
