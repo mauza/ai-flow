@@ -61,14 +61,14 @@ harnesses:
 runtimes:
   agent-base:
     image: ai-flow-agent:dev
-    description: pi, git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks.
+    description: pi, git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks. No Docker daemon in any runtime; run apps as processes.
   agent-go:
     image: ai-flow-agent-go:dev
     description: agent-base plus the Go toolchain.
   agent-web:
     image: ai-flow-agent-web:dev
     description: >-
-      agent-base plus headless Chromium and `browse` (load a page at phone size, tap/click/press keys,
+      agent-go plus headless Chromium and `browse` (load a page at phone size, tap/click/press keys,
       print console and page errors, save screenshots; `browse --help`). Use for QA of web UIs.
 
 grants:
