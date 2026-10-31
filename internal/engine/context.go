@@ -191,6 +191,13 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		}
 		sb.WriteString("\n")
 	}
+	if n.Type == flow.TypeAgent && n.Runtime != "" {
+		// Models guessed: a web-games QA step used `browse` on one pass and
+		// reported "no browser tool is available" on the next, same runtime.
+		if rt, ok := e.cfg.Current().Catalog.Runtimes[n.Runtime]; ok && rt.Description != "" {
+			fmt.Fprintf(&sb, "## Runtime\n\nThis step runs on `%s`: %s\n\n", n.Runtime, strings.TrimSpace(rt.Description))
+		}
+	}
 	fmt.Fprintf(&sb, "## Branch\n\nWorking on `%s` (base `%s`).", r.Branch, r.Base)
 	var diff map[string]any
 	json.Unmarshal(r.Diff, &diff)

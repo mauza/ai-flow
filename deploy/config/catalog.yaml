@@ -565,9 +565,11 @@ presets:
     when_to_use: The run branch has changes ready to publish as a PR.
     requires: [GitHub-backed repo and control-plane GitHub credentials, Pushed run branch with commits, Override complete with map to supply generated body or draft flag]
     type: action
-    max_visits: 1
+    # Repeats are normal (CI failed or the PR conflicted, the work was fixed and
+    # verified again) and the action updates the PR it already opened.
+    max_visits: 5
     on_exhausted: $fail
-    description: Open a pull request using the existing control-plane GitHub action.
+    description: Open a pull request using the existing control-plane GitHub action; later visits update it.
     action: open_pull_request
     with: { title: '${{ task.title }}', body: '${{ task.body }}', draft: false }
     outputs: { url: string, number: integer }
