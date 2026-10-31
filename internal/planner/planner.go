@@ -659,6 +659,7 @@ Escalate only for those reasons: an unresolved unknown earns an investigation, a
 - Use the configured planner for decomposition and routing. Only select models in the menu; do not assume a local-model preference.
 - Requires hints describe preconditions, not grants or automatic setup. llm nodes cannot inspect files or run tools; use an agent to gather missing evidence.
 - Each pod gets a fresh checkout; installed dependencies and uncommitted files do not carry between nodes. Checks need dependencies in their runtime or setup in their own run command, with permitted network access. Never invent tools or use a passing placeholder check.
+- When a repair loop runs out (on_exhausted), go to a comment-task (report) that lists the unresolved findings and what was tried, then $fail, so the person deciding what to do next has the evidence.
 - A verification step's blocked outcome means the environment could not run it (no Docker, no production, a missing tool); the work step cannot fix that. Never route blocked back to the step that writes code: treat it like passed when other checks or a later step cover it, or end the run with a report. Ask QA only for what a run pod can do; leave production behaviour to checks after deploy.
 - Override preset run for repo-specific commands. run is a literal shell script: ${{ }} is NOT rendered there. To use an earlier output in a check, pass it through inputs (inputs: {cmd: "${{ nodes.plan.outputs.test_command }}"}) and read $AI_FLOW_INPUT_CMD; prefer writing the real command into run when you already know it. Preset maps (inputs, with, outputs, cases) are replaced, not merged; supply the complete map/list when overriding. Wire earlier outputs explicitly when they are not from the immediately previous step.
 - Keep prompts short and specific to the step.
@@ -705,7 +706,7 @@ func writeDeploy(sb *strings.Builder, base string, d *config.Deploy) {
 	sb.WriteString(` When the task should reach production, build a release pipeline:
 
 1. work and its local verification (tests, lint, local-stack-test; qa-test for user-facing changes), in parallel where independent;
-2. open-pull-request, then ci-checks (passed → on; failed → back to the fix step);
+2. open-pull-request, then ci-checks (passed → on; failed → back to the fix step). A PR that conflicts with its base gets no CI, so ci-checks reports it as failed with outputs.failed = ["merge conflict with <base>"]: route failed through a switch (when: 'nodes.<ci>.outputs.failed.exists(f, f.startsWith("merge conflict"))') to update-branch, and other failures to the fix step, so a conflict does not spend the repair budget;
 3. deploy (merge) → wait-for-deploy → monitor-deploy; deploy conflict (other work merged first) → update-branch (repo write grant) → ci-checks, so the run re-verifies and merges again (deploy max_visits 2 or more);
 4. healthy → comment-task or $success; degraded or timeout → deploy-triage → revert-deploy (repo write grant) → open-pull-request → ci-checks → deploy → $fail, so the run reports the rollback.
 
