@@ -1,6 +1,7 @@
-# agent-base plus headless Chromium, playwright-core and `browse`, so QA steps
-# can load a page, tap through it, read console errors and save screenshots.
-ARG BASE=ai-flow-agent:dev
+# agent-go plus headless Chromium, playwright-core and `browse`, so QA steps
+# can load a page, tap through it, read console errors and save screenshots,
+# and still build and run a Go backend (web-games QA needed both).
+ARG BASE=ai-flow-agent-go:dev
 FROM ${BASE}
 USER root
 RUN apt-get update \

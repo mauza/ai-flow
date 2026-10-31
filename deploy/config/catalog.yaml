@@ -68,7 +68,7 @@ runtimes:
   agent-web:
     image: ai-flow-agent-web:dev
     description: >-
-      agent-base plus headless Chromium and `browse` (load a page at phone size, tap/click/press keys,
+      agent-go plus headless Chromium and `browse` (load a page at phone size, tap/click/press keys,
       print console and page errors, save screenshots; `browse --help`). Use for QA of web UIs.
 
 grants:
