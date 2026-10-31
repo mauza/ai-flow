@@ -25,6 +25,7 @@ type fakeWorld struct {
 	state     string // mergeable_state
 	merged    bool
 	merges    int
+	merged8   bool // a second PR, for two runs releasing at once
 	checks    []map[string]any // check runs
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
@@ -48,6 +49,14 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			w.merges++
 			w.merged = true
 			reply(map[string]any{"sha": "mergedsha0000001", "merged": true})
+		case p == "/repos/your-org/ai-flow-sandbox/pulls/8" && r.Method == "GET":
+			reply(map[string]any{"number": 8, "state": "open", "merged": w.merged8, "mergeable": true, "mergeable_state": "clean",
+				"merge_commit_sha": "mergedsha0000008", "head": map[string]any{"sha": "headsha"}})
+		case p == "/repos/your-org/ai-flow-sandbox/pulls/8/merge" && r.Method == "PUT":
+			w.merged8 = true
+			reply(map[string]any{"sha": "mergedsha0000008", "merged": true})
+		case p == "/repos/your-org/ai-flow-sandbox/commits/mergedsha0000008":
+			reply(map[string]any{"sha": "mergedsha0000008", "parents": []any{map[string]any{"sha": "mergedsha0000001"}, map[string]any{"sha": "headsha"}}})
 		case p == "/repos/your-org/ai-flow-sandbox/commits/mergedsha0000001":
 			reply(map[string]any{"sha": "mergedsha0000001", "parents": []any{map[string]any{"sha": "oldsha0000000"}, map[string]any{"sha": "headsha"}}})
 		case p == "/repos/your-org/ai-flow-sandbox/actions/workflows/rollback.yml/dispatches" && r.Method == "POST":
@@ -292,6 +301,41 @@ func TestConflictingPRFailsCIWithAReason(t *testing.T) {
 	v := h.current(id)
 	if !strings.Contains(v.Summary, "#7 conflicts with main") || !strings.Contains(string(v.Outputs), `"failed":["merge conflict with main"]`) {
 		t.Errorf("summary %q outputs %s", v.Summary, v.Outputs)
+	}
+}
+
+// Two runs of one project never verify releases at the same time: the second
+// merge waits until the first run's release is done.
+func TestReleasesToOneProjectAreSerialized(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, a := releaseHarness(t, w, "1h")
+	second, err := h.e.CreateRun(h.ctx, "f", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := second.ID
+	h.st.UpdateRun(h.ctx, b, map[string]any{"pr_url": "https://github.com/mauza/ai-flow-sandbox/pull/8"})
+	for i := 0; i < 6; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if v := h.current(a); v.Node != "soak" {
+		t.Fatalf("first run at %s, path %s", v.Node, h.path(a))
+	}
+	if v := h.current(b); v.Node != "ship" || v.Status != store.VisitRunning || !strings.Contains(v.Progress, "Waiting to merge #8: run "+a+"'s release") {
+		t.Fatalf("second run should wait: %+v", v)
+	}
+	if w.merged8 {
+		t.Fatal("merged while another release was being verified")
+	}
+	if err := h.e.Cancel(h.ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3 && !w.merged8; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if !w.merged8 {
+		t.Fatalf("second run never merged: %s", h.path(b))
 	}
 }
 
