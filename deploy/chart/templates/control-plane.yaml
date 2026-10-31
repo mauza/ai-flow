@@ -77,6 +77,9 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /config, readOnly: true }
             - { name: data, mountPath: /data }
+            # The root filesystem is read-only; libraries that reach for
+            # os.TempDir still need somewhere to write.
+            - { name: tmp, mountPath: /tmp }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
@@ -89,6 +92,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
       volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
         - name: config
           configMap:
             name: {{ .Values.config.existingConfigMap | default "ai-flow-config" }}

@@ -181,8 +181,9 @@ cluster capacity, not `runs.maxConcurrent`, which limits runs.
 `${{ path ?? "fallback" }}` with roots `task`, `run` (`id`, `branch`, `base`,
 `diff.files_changed|lines_added|lines_removed|lines_changed`, `last_node`),
 `nodes.<id>.{outcome,summary,visit,outputs.<f>}` (latest visit),
-`nodes.<id>.history` (every successful visit, oldest first) and `inputs`. Rendered
-once, in the control plane, so model output is never re-evaluated. CEL switch
+`nodes.<id>.history` (every successful visit, oldest first) and `inputs`. The
+fallback is a quoted string or a JSON literal (`?? []`, `?? 0`), rendered as
+written. Rendered once, in the control plane, so model output is never re-evaluated. CEL switch
 expressions see the same values.
 
 Every pod node also receives a context section: the task, a list of earlier steps

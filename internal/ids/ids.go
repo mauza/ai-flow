@@ -22,7 +22,12 @@ func Slug(s string, max int) string {
 	s = nonSlug.ReplaceAllString(strings.ToLower(s), "-")
 	s = strings.Trim(s, "-")
 	if len(s) > max {
-		s = strings.Trim(s[:max], "-")
+		cut := s[:max]
+		// End on a whole word when that keeps most of the length.
+		if i := strings.LastIndex(cut, "-"); i > max/2 && s[max] != '-' {
+			cut = cut[:i]
+		}
+		s = strings.Trim(cut, "-")
 	}
 	if s == "" {
 		s = "flow"

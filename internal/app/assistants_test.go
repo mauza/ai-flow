@@ -144,3 +144,23 @@ func TestMapAssistantRetriesInvalidChanges(t *testing.T) {
 		t.Fatalf("history: %+v", history)
 	}
 }
+
+// The control plane runs with a read-only root filesystem: checking a proposal
+// must not need os.TempDir.
+func TestMapAssistantChecksWithoutTempDir(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	model := &fakeModel{replies: []string{
+		`{"reply": "Added it.", "changes": [{"path": "product/user-story-maps/core/tasks/invite.yaml", "content": "title: Invite\nactivity: first-use\n"}]}`,
+	}}
+	a := assistantApp(t, model)
+	a.Workspaces.Write("sandbox", "product/user-story-maps/core/map.yaml", []byte(
+		"title: Core\njourney:\n  - id: start\n    title: Start\n    activities:\n      - id: first-use\n        title: First use\n"))
+
+	msg, err := a.AskMap(t.Context(), "sandbox", "core", "add an invite task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Issues) != 0 || len(model.calls()) != 1 {
+		t.Fatalf("issues %v after %d calls", msg.Issues, len(model.calls()))
+	}
+}

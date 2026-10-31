@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -110,11 +111,14 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 	firstExplanation := ""
 	for attempt := 1; attempt <= p.cfg.Current().Catalog.Planner.MaxAttempts; attempt++ {
 		res.Attempts = attempt
+		started := time.Now()
 		reply, usage, err := p.llm.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, MaxTokens: 8000, Stream: p.cfg.Current().Catalog.Planner.Stream})
 		if err != nil {
 			return nil, err
 		}
-		slog.Info("planner reply", "flow", req.FlowName, "attempt", attempt, "tokens", usage.PromptTokens+usage.CompletionTokens)
+		slog.Info("planner reply", "flow", req.FlowName, "attempt", attempt, "model", model,
+			"prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens,
+			"seconds", int(time.Since(started).Seconds()))
 		explanation, body := splitReply(reply)
 		// A repair reply is often just the corrected YAML; keep the design note.
 		if strings.TrimSpace(explanation) == "" {

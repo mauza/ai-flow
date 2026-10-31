@@ -73,14 +73,15 @@ images: build-linux
 	docker build -f deploy/images/control-plane.Dockerfile -t ai-flow:dev .
 	docker build -f deploy/images/agent.Dockerfile -t ai-flow-agent:dev .
 	docker build -f deploy/images/agent-go.Dockerfile -t ai-flow-agent-go:dev .
+	docker build -f deploy/images/agent-web.Dockerfile -t ai-flow-agent-web:dev .
 
 # Tags the dev images as $(REGISTRY)/<name>:$(VERSION) and pushes them. Refuses a
 # dirty tree so a pushed tag always names a commit.
 release: release-check images
-	@for img in ai-flow ai-flow-agent ai-flow-agent-go; do \
+	@for img in ai-flow ai-flow-agent ai-flow-agent-go ai-flow-agent-web; do \
 		docker tag $$img:dev $(REGISTRY)/$$img:$(VERSION) && docker push $(REGISTRY)/$$img:$(VERSION) || exit 1; \
 	done
-	@echo "pushed $(REGISTRY)/{ai-flow,ai-flow-agent,ai-flow-agent-go}:$(VERSION)"
+	@echo "pushed $(REGISTRY)/{ai-flow,ai-flow-agent,ai-flow-agent-go,ai-flow-agent-web}:$(VERSION)"
 
 release-check:
 	@[ -n "$(REGISTRY)" ] || { echo "release: set REGISTRY (e.g. make release REGISTRY=registry.example.com/library)"; exit 1; }
@@ -114,12 +115,12 @@ deploy:
 	$(KUBECTL) -n $(NAMESPACE) rollout status deploy/ai-flow --timeout=180s
 
 dev-up: kind-up images
-	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev
+	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev ai-flow-agent-web:dev
 	$(MAKE) secrets deploy
 	@echo "ai-flow is up: http://localhost:$(UI_PORT)"
 
 dev-reload: images
-	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev
+	kind load docker-image --name $(CLUSTER) ai-flow:dev ai-flow-agent:dev ai-flow-agent-go:dev ai-flow-agent-web:dev
 	$(MAKE) deploy
 	$(KUBECTL) -n $(NAMESPACE) rollout restart deploy/ai-flow
 	$(KUBECTL) -n $(NAMESPACE) rollout status deploy/ai-flow --timeout=180s

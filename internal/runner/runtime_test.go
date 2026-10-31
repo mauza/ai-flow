@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -227,6 +228,29 @@ func TestPiEventWriterDrainsOversizedLines(t *testing.T) {
 	data, _ := capture.snapshot(0)
 	if !bytes.HasPrefix(data, []byte("{\"type\":\"first\"}\n")) || !bytes.Contains(data, []byte(`"dropped_events":2`)) {
 		t.Fatalf("missing prefix/loss marker: %s", data)
+	}
+}
+
+// Streaming updates must not fill the transcript: only the latest one is kept,
+// until message_end replaces it.
+func TestPiEventWriterKeepsOnlyLatestUpdate(t *testing.T) {
+	r := runtimeRunner(t)
+	capture := &transcriptCapture{}
+	w := &piEventWriter{r: r, transcript: capture}
+	text := ""
+	for i := range 2000 {
+		text += "thinking "
+		w.Write([]byte(fmt.Sprintf(`{"type":"message_update","n":%d,"text":%q}`+"\n", i, text)))
+	}
+	data, _ := capture.snapshot(0)
+	if n := bytes.Count(data, []byte("\n")); n != 1 || !bytes.Contains(data, []byte(`"n":1999`)) {
+		t.Fatalf("want only the latest update, got %d lines", n)
+	}
+	w.Write([]byte(`{"type":"message_end","text":"done"}` + "\n"))
+	w.Write([]byte(`{"type":"turn_end"}` + "\n"))
+	data, _ = capture.snapshot(0)
+	if string(data) != `{"type":"message_end","text":"done"}`+"\n"+`{"type":"turn_end"}`+"\n" {
+		t.Fatalf("transcript: %s", data)
 	}
 }
 

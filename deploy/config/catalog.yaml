@@ -65,6 +65,11 @@ runtimes:
   agent-go:
     image: ai-flow-agent-go:dev
     description: agent-base plus the Go toolchain.
+  agent-web:
+    image: ai-flow-agent-web:dev
+    description: >-
+      agent-base plus headless Chromium and `browse` (load a page at phone size, tap/click/press keys,
+      print console and page errors, save screenshots; `browse --help`). Use for QA of web UIs.
 
 grants:
   repo/ai-flow-sandbox:
@@ -619,7 +624,7 @@ presets:
       Read how to build and run the app (README, Makefile, docs), start it locally inside this workspace, and
       exercise the user-facing behavior the task changed: the main path first, then edge cases, error states,
       and anything nearby the diff could have broken. Prefer real requests (curl, the CLI, a headless browser
-      if available) over reading code. Stop what you started before finishing.
+      if available: on agent-web, `browse --help`) over reading code. Stop what you started before finishing.
       Return passed when the change works as the task asks, defects with one concrete repro per problem
       (steps, expected, actual), or blocked if the app cannot be started here (say exactly why).
     outputs: { defects: [string], tested: [string] }

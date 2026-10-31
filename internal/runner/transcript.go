@@ -26,15 +26,31 @@ const (
 type transcriptCapture struct {
 	mu            sync.Mutex
 	data          []byte
+	partial       []byte // latest message_update, until the message ends
 	droppedBytes  int64
 	droppedEvents int64
 	version       uint64
+}
+
+// pi streams a message_update per token delta, each carrying the whole
+// message so far: storing them all is quadratic and filled the 4 MiB cap
+// inside the first turn of a long-thinking step, losing the end of the
+// transcript (the part that says why a step failed). Only the latest update
+// is kept, as a replaceable tail; message_end carries the final message.
+var messageUpdatePrefix = []byte(`{"type":"message_update"`)
+
+func (t *transcriptCapture) recordPartial(line []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.version++
+	t.partial = append(t.partial[:0], line...)
 }
 
 func (t *transcriptCapture) record(line []byte) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.version++
+	t.partial = t.partial[:0]
 	if t.droppedEvents > 0 || len(line)+1 > maxCapturedTranscript-256-len(t.data) {
 		t.droppedBytes += int64(len(line) + 1)
 		t.droppedEvents++
@@ -66,8 +82,12 @@ func (t *transcriptCapture) snapshot(after uint64) ([]byte, uint64) {
 		marker = fmt.Sprintf("{\"type\":\"transcript_truncated\",\"limit_bytes\":%d,\"event_limit_bytes\":%d,\"dropped_events\":%d,\"dropped_bytes\":%d}\n",
 			maxCapturedTranscript, maxPiEventBytes, t.droppedEvents, t.droppedBytes)
 	}
-	out := make([]byte, 0, len(t.data)+len(marker))
+	out := make([]byte, 0, len(t.data)+len(t.partial)+1+len(marker))
 	out = append(out, t.data...)
+	if len(t.partial) > 0 && t.droppedEvents == 0 {
+		out = append(out, t.partial...)
+		out = append(out, '\n')
+	}
 	out = append(out, marker...)
 	return out, t.version
 }
@@ -174,7 +194,11 @@ func (w *piEventWriter) finishLine() {
 	if w.size > maxPiEventBytes {
 		w.transcript.drop(w.size + 1)
 	} else {
-		w.transcript.record(w.line)
+		if bytes.HasPrefix(w.line, messageUpdatePrefix) {
+			w.transcript.recordPartial(w.line)
+		} else {
+			w.transcript.record(w.line)
+		}
 		w.r.piProgress(w.line)
 	}
 	w.line = w.line[:0]

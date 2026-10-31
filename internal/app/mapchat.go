@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/store"
@@ -61,7 +63,7 @@ Story map files (paths are relative to the repository root):
     releases: slices top to bottom: [{id, title, goal, status: planned|in_progress|released, date}]
     metrics: [{id, title, description, kind: product|delivery, query (product: PromQL), measure (delivery: %[2]s), release, target, direction: up|down, unit}]
 - %[1]s/tasks/<task-id>.yaml, one user task per file:
-    title, activity (an activity id), release (a release id), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked
+    title, activity (an activity id), release (a release id; omit it for unscheduled ideas, which the map shows in its own row), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked
 Ids are lowercase slugs (a-z, 0-9, -). Use story-mapping vocabulary: the journey's phases hold activities (the backbone); user tasks hang under activities and are sliced into releases. Keep tasks small enough to ship one at a time, and give each testable acceptance criteria.
 
 Reply with one JSON object and nothing else:
@@ -100,18 +102,29 @@ func (a *App) AskMap(ctx context.Context, project, mapID, message string) (*MapM
 
 	var answer *MapMessage
 	for attempt := 0; attempt < 2; attempt++ {
-		reply, _, err := a.LLM.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, Stream: cfg.Catalog.Planner.Stream})
+		started := time.Now()
+		reply, usage, err := a.LLM.Chat(ctx, model, msgs, llm.Options{Temperature: 0.2, Stream: cfg.Catalog.Planner.Stream})
 		if err != nil {
 			return nil, err
 		}
+		slog.Info("map assistant reply", "project", project, "map", mapID, "attempt", attempt+1, "model", model,
+			"prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens,
+			"seconds", int(time.Since(started).Seconds()))
 		answer, err = parseMapReply(reply)
 		if err != nil {
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
 				llm.Message{Role: "user", Content: "That was not the JSON object described. Reply again with only the JSON object."})
 			continue
 		}
-		answer.Issues = a.checkChanges(work, mapID, answer.Changes)
-		if len(answer.Issues) == 0 || attempt == 1 {
+		issues, err := a.checkChanges(work, mapID, answer.Changes)
+		if err != nil {
+			// The check itself failed (disk, permissions): the model can't fix
+			// that, so don't spend another call asking it to.
+			answer.Issues = []string{"could not check the proposal: " + err.Error()}
+			break
+		}
+		answer.Issues = issues
+		if len(issues) == 0 || attempt == 1 {
 			break
 		}
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
@@ -149,16 +162,19 @@ func parseMapReply(reply string) (*MapMessage, error) {
 }
 
 // checkChanges validates proposed changes against the map as it would be
-// after applying them.
-func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
+// after applying them. It returns the problems the changes introduce, or an
+// error when the check itself could not run.
+func (a *App) checkChanges(work, mapID string, changes []FileChange) ([]string, error) {
 	var issues []string
-	tmp, err := os.MkdirTemp("", "ai-flow-map-")
+	// Next to the workspace rather than in os.TempDir: the control plane runs
+	// with a read-only root filesystem, and the data volume is always writable.
+	tmp, err := os.MkdirTemp(filepath.Dir(work), "check-")
 	if err != nil {
-		return []string{err.Error()}
+		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	if err := os.CopyFS(filepath.Join(tmp, "product"), os.DirFS(filepath.Join(work, "product"))); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return []string{err.Error()}
+		return nil, err
 	}
 	for _, c := range changes {
 		if err := workspace.CheckPath(c.Path); err != nil {
@@ -170,12 +186,16 @@ func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
 			os.RemoveAll(p)
 			continue
 		}
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, []byte(*c.Content), 0o644)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(p, []byte(*c.Content), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	l, err := storymap.Load(tmp, mapID)
 	if err != nil {
-		return append(issues, err.Error())
+		return append(issues, err.Error()), nil
 	}
 	// Report only problems the changes introduce.
 	before := map[string]bool{}
@@ -189,7 +209,7 @@ func (a *App) checkChanges(work, mapID string, changes []FileChange) []string {
 			issues = append(issues, p)
 		}
 	}
-	return issues
+	return issues, nil
 }
 
 // ApplyChanges writes proposed changes to the workspace (not committed).
