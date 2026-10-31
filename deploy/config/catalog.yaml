@@ -64,7 +64,7 @@ runtimes:
     description: pi, git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks. No Docker daemon in any runtime; run apps as processes.
   agent-go:
     image: ai-flow-agent-go:dev
-    description: agent-base plus the Go toolchain.
+    description: agent-base plus the Go toolchain and gcc (cgo works, so go test -race works).
   agent-web:
     image: ai-flow-agent-web:dev
     description: >-
