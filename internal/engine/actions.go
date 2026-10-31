@@ -62,6 +62,7 @@ func (e *Engine) execAction(ctx context.Context, r *store.Run, res *resolve.Reso
 func (e *Engine) forget(key string) {
 	delete(e.polls, key)
 	delete(e.health, key)
+	delete(e.badSince, key)
 	delete(e.passes, key)
 }
 
@@ -394,7 +395,8 @@ func (e *Engine) probeVersion(ctx context.Context, p config.VersionProbe) (strin
 }
 
 // checkHealth soaks the deployment: each poll runs every health query and
-// probes the deploy URL. A check that fails twice in a row is degraded. Query
+// probes the deploy URL. A check that fails on two polls in a row spanning at
+// least the sustain window (HealthSustain, with.sustain) is degraded. Query
 // errors are inconclusive (a metrics outage must not roll a deploy back); the
 // app is healthy only once the soak has passed and every check has been
 // evaluated successfully at least twice.
@@ -411,15 +413,26 @@ func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, 
 		}
 		soak = dur.Duration
 	}
+	sustain := e.HealthSustain
+	if s := strings.TrimSpace(with["sustain"]); s != "" {
+		var dur flow.Duration
+		if err := dur.UnmarshalJSON([]byte(strconv.Quote(s))); err != nil {
+			return nil, rejectf("sustain: %v", err)
+		}
+		sustain = dur.Duration
+	}
 	key := fmt.Sprintf("%s/%d", r.ID, v.Seq)
 	if e.health[key] == nil {
-		e.health[key], e.passes[key] = map[string]int{}, map[string]int{}
+		e.health[key], e.passes[key], e.badSince[key] = map[string]int{}, map[string]int{}, map[string]time.Time{}
 	}
-	streak, passes := e.health[key], e.passes[key]
+	streak, passes, since := e.health[key], e.passes[key], e.badSince[key]
 	var now, unknown []string
 	record := func(name string, bad bool, detail string) {
 		passes[name]++
 		if bad {
+			if streak[name] == 0 {
+				since[name] = time.Now()
+			}
 			streak[name]++
 			now = append(now, fmt.Sprintf("%s: %s", name, detail))
 		} else {
@@ -440,7 +453,7 @@ func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, 
 	}
 	var degraded []string
 	for name, n := range streak {
-		if n >= 2 {
+		if n >= 2 && time.Since(since[name]) >= sustain {
 			degraded = append(degraded, name)
 		}
 	}
