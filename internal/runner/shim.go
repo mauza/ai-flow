@@ -40,6 +40,7 @@ type Shim struct {
 	calls     int
 	tokensIn  int64
 	tokensOut int64
+	grace     int64 // tokens allowed past the limit to let the agent finish
 	stopped   *LimitStop
 
 	stop chan struct{}
@@ -105,7 +106,23 @@ func (s *Shim) Close() {
 }
 
 // Done is closed when a limit ends the node; StopInfo then says why.
-func (s *Shim) Done() <-chan struct{} { return s.stop }
+func (s *Shim) Done() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stop
+}
+
+// Grace lifts a token-budget stop once by extra tokens so the agent can
+// report what it has instead of losing all of it. It reports whether it did.
+func (s *Shim) Grace(extra int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped == nil || s.stopped.Kind != flow.LimitBudgetExceeded || s.grace > 0 {
+		return false
+	}
+	s.stopped, s.stop, s.grace = nil, make(chan struct{}), extra
+	return true
+}
 
 func (s *Shim) StopInfo() *LimitStop {
 	s.mu.Lock()
@@ -411,7 +428,10 @@ func (s *Shim) checkBudget() {
 		return
 	}
 	in, out, _ := s.Usage()
-	if in+out > int64(l.Tokens) {
+	s.mu.Lock()
+	grace := s.grace
+	s.mu.Unlock()
+	if in+out > int64(l.Tokens)+grace {
 		s.budgetStop(fmt.Sprintf("token limit %d reached (%d used)", l.Tokens, in+out))
 	}
 }

@@ -138,7 +138,23 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		}
 	}
 
-	if st := stop(); st != nil {
+	// Out of token budget: one short last turn to report what it has. A
+	// read-only web-games investigation hit its 3M cap after mapping most of
+	// the repo and returned nothing at all.
+	if st := stop(); st != nil && st.Kind == flow.LimitBudgetExceeded && st.Action == flow.ActFail && ctx.Err() == nil {
+		if _, err := os.Stat(resultPath); err != nil && b.LLM.Config != nil && b.LLM.Config.Limits != nil {
+			if shim.Grace(max(int64(b.LLM.Config.Limits.Tokens)*15/100, 150000)) {
+				r.progress("Out of token budget; asking the agent to report what it has")
+				args := append(append([]string{}, baseArgs...), "-c", fmt.Sprintf(
+					"You have used up your token budget. Do no more work: call flow_finish now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",
+					strings.Join(b.Outcomes, ", ")))
+				runErr = r.runPi(ctx, args, env, transcript, shim)
+			}
+		}
+	}
+	if _, err := os.Stat(resultPath); err == nil && stop() == nil {
+		// The grace turn reported: use its result below.
+	} else if st := stop(); st != nil {
 		if st.Action == flow.ActOutcome {
 			return &protocol.Result{Outcome: flow.OutcomeLimit, Summary: fmt.Sprintf("Stopped by %s: %s", st.Kind, st.Message),
 				Outputs: map[string]any{"limit": st.Kind}}

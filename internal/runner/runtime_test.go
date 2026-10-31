@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -469,5 +470,41 @@ func TestPushRetriesWhileTheProxyIsDown(t *testing.T) {
 	}
 	if attempts != 2 || git(r.work, "--git-dir", origin, "show", "ai-flow/x:game.js") != "tests" {
 		t.Fatalf("after %d retries the branch lacks the work", attempts)
+	}
+}
+
+// An agent out of token budget gets one short turn to report what it has
+// instead of failing with nothing.
+func TestAgentReportsAfterBudgetStop(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"looking"}}],"usage":{"prompt_tokens":150,"completion_tokens":10}}`)
+	}))
+	defer upstream.Close()
+	pi := filepath.Join(t.TempDir(), "fake-pi")
+	os.WriteFile(pi, []byte(`#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "-c" ]; then
+    printf '%s' '{"outcome":"stuck","summary":"stopped at the token budget; mapped server/ only","outputs":{}}' > "$AI_FLOW_RESULT"
+    exit 0
+  fi
+done
+url=$(python3 -c "import json,os;print(json.load(open(os.environ['PI_CODING_AGENT_DIR']+'/models.json'))['providers']['ai-flow']['baseUrl'])")
+curl -s -X POST "$url/chat/completions" -H 'content-type: application/json' -d '{"model":"m","messages":[{"role":"user","content":"hi"}]}' >/dev/null
+sleep 30
+`), 0o700)
+	t.Setenv("AI_FLOW_PI", pi)
+	r := runtimeRunner(t)
+	r.b.Type = flow.TypeAgent
+	r.b.Outcomes = []string{"done", "stuck"}
+	r.b.LLM = &protocol.LLMAccess{BaseURL: upstream.URL, Models: []protocol.ModelInfo{{Name: "m"}},
+		Config: &flow.LLMConfig{Limits: &flow.Limits{Tokens: 100}}}
+	start := time.Now()
+	res := r.runAgent(context.Background())
+	if res.Error != "" || res.Outcome != "stuck" || !strings.Contains(res.Summary, "token budget") {
+		t.Fatalf("result: %+v", res)
+	}
+	if time.Since(start) > 20*time.Second {
+		t.Fatal("the budget stop did not end the first session")
 	}
 }
