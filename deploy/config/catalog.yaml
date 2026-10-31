@@ -642,6 +642,27 @@ presets:
     outputs: { sha: string, number: integer, url: string }
     outcomes: [merged, conflict, blocked, timeout]
 
+  update-branch:
+    category: release
+    when_to_use: deploy returned conflict because other work merged into the base first; bring the run branch up to date, then ci-checks and deploy again.
+    requires: [Repo write grant on this node]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Merge the base branch into the run branch and resolve conflicts so both sides' work survives, then re-run the affected tests.
+    prompt: |
+      Other work merged into ${{ run.base }} after this branch was made, and the PR no longer merges cleanly.
+      Do not fetch: origin/${{ run.base }} in this checkout is already current.
+      Run `git merge --no-edit origin/${{ run.base }}`. Resolve every conflict so that both this branch's change
+      and the base's changes survive (for example, keep both entries in a shared list or registry); never drop
+      the other side's work to make the merge easy. Re-run the project's tests that cover the files you resolved,
+      then commit the merge.
+      Return merged when the branch contains origin/${{ run.base }} and those tests pass, or stuck naming the
+      files you could not reconcile and why.
+    outputs: { resolved: [string] }
+    outcomes: [merged, stuck]
+
   wait-for-deploy:
     category: release
     when_to_use: Right after deploy merged, before judging production health.

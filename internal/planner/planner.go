@@ -705,7 +705,7 @@ func writeDeploy(sb *strings.Builder, base string, d *config.Deploy) {
 
 1. work and its local verification (tests, lint, local-stack-test; qa-test for user-facing changes), in parallel where independent;
 2. open-pull-request, then ci-checks (passed → on; failed → back to the fix step);
-3. deploy (merge) → wait-for-deploy → monitor-deploy;
+3. deploy (merge) → wait-for-deploy → monitor-deploy; deploy conflict (other work merged first) → update-branch (repo write grant) → ci-checks, so the run re-verifies and merges again (deploy max_visits 2 or more);
 4. healthy → comment-task or $success; degraded or timeout → deploy-triage → revert-deploy (repo write grant) → open-pull-request → ci-checks → deploy → $fail, so the run reports the rollback.
 
 The validator enforces that every deploy follows a passing ci-checks with no repo-writing step after it, and that after a deploy the run only succeeds through wait-for-deploy then monitor-deploy (healthy). Tasks that should not ship (investigations, drafts) end before deploy.
