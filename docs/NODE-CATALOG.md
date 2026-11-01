@@ -55,7 +55,9 @@ work → (unit tests ‖ lint ‖ local-stack-test ‖ qa-test) → open-pull-re
 - `deploy` (`merge_pull_request`) merges at the PR head with a merge commit, so
   `revert-deploy` can revert it and push the run branch as a fast-forward. It
   waits (up to 90 minutes) while another run of the project has merged and is
-  still verifying that release, so two releases never soak at once.
+  still verifying that release, so two releases never soak at once. A PR behind
+  its base (CI tested an older base) reports `conflict`, so it is updated and
+  re-tested before merging.
 - `update-branch` handles `deploy`'s `conflict` (other work merged first): it
   merges `origin/<base>` (already current in the pod's clone, no fetch needed),
   resolves conflicts keeping both sides, and goes back through `ci-checks`.

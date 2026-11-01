@@ -646,7 +646,7 @@ presets:
 
   update-branch:
     category: release
-    when_to_use: deploy returned conflict because other work merged into the base first; bring the run branch up to date, then ci-checks and deploy again.
+    when_to_use: deploy returned conflict because other work merged into the base first (a textual conflict, or the PR is behind its base); bring the run branch up to date, then ci-checks and deploy again.
     requires: [Repo write grant on this node]
     type: agent
     min_size: medium
@@ -654,7 +654,8 @@ presets:
     on_exhausted: $fail
     description: Merge the base branch into the run branch and resolve conflicts so both sides' work survives, then re-run the affected tests.
     prompt: |
-      Other work merged into ${{ run.base }} after this branch was made, and the PR no longer merges cleanly.
+      Other work merged into ${{ run.base }} after this branch was tested: the PR is behind it or no longer merges
+      cleanly, so its CI pass no longer counts. Even without textual conflicts, the combination can break.
       Do not fetch: origin/${{ run.base }} in this checkout is already current.
       Run `git merge --no-edit origin/${{ run.base }}`. Resolve every conflict so that both this branch's change
       and the base's changes survive (for example, keep both entries in a shared list or registry); never drop
