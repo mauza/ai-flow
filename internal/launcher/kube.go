@@ -69,6 +69,9 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 		LabelRole:    "node",
 	}
 	podLabels := map[string]string{}
+	for k, v := range k.cfg.Runs.PodLabels {
+		podLabels[k] = v
+	}
 	for k, v := range labels {
 		podLabels[k] = v
 	}
@@ -125,8 +128,15 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 			BackoffLimit:            &backoff,
 			ActiveDeadlineSeconds:   &timeout,
 			TTLSecondsAfterFinished: &ttl,
+			// An evicted pod (descheduler, drain, preemption) is replaced
+			// without using up retries: the home cluster's descheduler
+			// evicted one browser_qa pod twice and failed a 60-step run.
+			PodFailurePolicy: &batchv1.PodFailurePolicy{Rules: []batchv1.PodFailurePolicyRule{{
+				Action:          batchv1.PodFailurePolicyActionIgnore,
+				OnPodConditions: []batchv1.PodFailurePolicyOnPodConditionsPattern{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue}},
+			}}},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: k.cfg.Runs.PodAnnotations},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           k.cfg.Runs.ServiceAccount,

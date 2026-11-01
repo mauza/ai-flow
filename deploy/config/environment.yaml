@@ -10,6 +10,9 @@ runs:
   namespace: ai-flow-runs
   maxConcurrent: 3
   defaultTimeout: 30m
+  # podLabels / podAnnotations go on every node pod, e.g. a label your
+  # descheduler skips (evictions never use up a step's retries either way):
+  # podLabels: { descheduler.example.com/exclude: "true" }
 llm:
   upstreams:
     # Any OpenAI-compatible endpoint: OpenAI, OpenRouter, a LiteLLM gateway,
