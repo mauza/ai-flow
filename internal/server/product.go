@@ -39,6 +39,28 @@ func (s *Server) productRoutes(api func(string, http.HandlerFunc)) {
 	api("POST /api/projects/{p}/maps/{map}/chat", s.askMap)
 	api("DELETE /api/projects/{p}/maps/{map}/chat", s.clearMapChat)
 	api("POST /api/projects/{p}/maps/{map}/apply", s.applyChanges)
+
+	// The project map: what exploration steps learned (see engine/projectmap.go).
+	api("GET /api/projects/{p}/project-map", s.getProjectMap)
+	api("DELETE /api/projects/{p}/project-map", s.resetProjectMap)
+}
+
+func (s *Server) getProjectMap(w http.ResponseWriter, r *http.Request) {
+	m := s.app.Engine.ProjectMap(r.Context(), r.PathValue("p"))
+	if m == nil {
+		writeErr(w, 404, "no project map yet: an exploration step (preset repo-map) writes it")
+		return
+	}
+	writeJSON(w, 200, m)
+}
+
+// resetProjectMap forgets the map, so the next exploration starts fresh.
+func (s *Server) resetProjectMap(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.Engine.ResetProjectMap(r.Context(), r.PathValue("p")); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	w.WriteHeader(204)
 }
 
 // ---- workspace ----

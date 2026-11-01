@@ -164,6 +164,14 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		writeResume(&sb, r, visits)
 	}
 	if n.Type == flow.TypeAgent || n.Type == flow.TypeLLM {
+		pm := e.ProjectMap(ctx, r.Project)
+		writeProjectMap(&sb, pm)
+		if _, ok := n.Outputs["project_map"]; ok {
+			sb.WriteString("## Updating the project map\n\nReturn outputs.project_map: the whole updated map as markdown (at most ~15KB), for every later step and run to start from: " +
+				"architecture and data flow, each module and what it owns, entry points, how to run, test and build (exact commands), conventions, " +
+				"security and ownership boundaries, and gotchas. Keep what is still true from the current map, fix what changed, add what you learned. " +
+				"Return outputs.map_commit: the commit it describes (`git rev-parse HEAD`).\n\n")
+		}
 		writeLaterSteps(&sb, res, n, done)
 		writeConverging(&sb, res, n, done)
 	}

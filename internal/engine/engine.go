@@ -445,6 +445,7 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 		return e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: outcome %q has no transition", v.Node, v.Outcome))
 	}
 	e.event(ctx, r, v.Node, "outcome", fmt.Sprintf("%s#%d → %s", v.Node, v.Visit, v.Outcome))
+	e.saveProjectMap(ctx, r, v)
 	ln, err := e.laneOf(ctx, res, v)
 	if err != nil {
 		return err
