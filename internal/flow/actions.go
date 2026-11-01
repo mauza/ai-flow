@@ -43,9 +43,9 @@ var Actions = map[string]ActionSpec{
 	},
 	"wait_for_deploy": {
 		Outcomes: []string{"deployed"}, With: []string{"expect"},
-		Outputs: map[string]any{"version": "string"},
+		Outputs: map[string]any{"version": "string", "failed": []any{"string"}, "log_tail": "string"},
 		Waits:   true, Timeout: 20 * time.Minute,
-		Doc: "waits until every version endpoint of the project's deploy target reports the expected commit (default: the run's latest merge). Outcomes: deployed, timeout.",
+		Doc: "waits until every version endpoint of the project's deploy target reports the expected commit (default: the run's latest merge). Outcomes: deployed, timeout (also at once when CI on that commit fails: outputs.failed, outputs.log_tail).",
 	},
 	"rollback_deploy": {
 		Outcomes: []string{"rolled_back", "failed"}, With: []string{"sha"},
