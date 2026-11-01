@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"github.com/mauza/ai-flow/internal/config"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,46 @@ func TestContextConvergesRepeatVerification(t *testing.T) {
 	h.finish(id, "done", nil)
 	if got := md("qa"); !strings.Contains(got, "already judged this work 1 time(s)") {
 		t.Fatalf("second QA pass:\n%s", got)
+	}
+}
+
+// A project that wants thorough reviews gets a full re-review on every pass.
+func TestContextThoroughReview(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Projects["sandbox"].Spec.Review = &config.Review{Rounds: 6, Mode: config.ReviewThorough}
+	id := h.flow(header + `  start: work
+  nodes:
+    work:
+      type: agent
+      model: ` + testModel + `
+      grants: [repo/ai-flow-sandbox:write]
+      prompt: build it
+      outcomes: [done]
+      max_visits: 3
+      next: { done: qa }
+    qa:
+      type: agent
+      model: ` + testModel + `
+      prompt: check it
+      outcomes: [passed, defects]
+      max_visits: 3
+      next: { passed: $success, defects: work }
+`)
+	h.finish(id, "done", nil)
+	h.finish(id, "defects", nil)
+	h.finish(id, "done", nil)
+	v, _ := h.st.LastVisit(h.ctx, id)
+	r := h.run(id)
+	res, err := h.e.Resolved(h.ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Nodes["qa"].MaxVisits != 6 {
+		t.Errorf("rounds not applied: max_visits %d", res.Nodes["qa"].MaxVisits)
+	}
+	got := h.e.ContextMarkdown(h.ctx, r, res, res.Nodes["qa"], v.Seq)
+	if !strings.Contains(got, "## Another full review") || !strings.Contains(got, "problems no earlier pass found") || strings.Contains(got, "## Converging") {
+		t.Fatalf("thorough mode:\n%s", got)
 	}
 }
 
