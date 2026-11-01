@@ -161,6 +161,7 @@ func (r *Runner) sendTranscript(ctx context.Context, data []byte, final bool) er
 // as Cmd.Stdout lets os/exec's WaitDelay bound pipes held open by descendants.
 type piEventWriter struct {
 	r          *Runner
+	onLine     func([]byte) // progress from one complete line
 	transcript *transcriptCapture
 	line       []byte
 	size       int64
@@ -199,7 +200,7 @@ func (w *piEventWriter) finishLine() {
 		} else {
 			w.transcript.record(w.line)
 		}
-		w.r.piProgress(w.line)
+		w.onLine(w.line)
 	}
 	w.line = w.line[:0]
 	w.size = 0

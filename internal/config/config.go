@@ -121,6 +121,10 @@ type Runs struct {
 	// Affinity is the pods' Kubernetes affinity, e.g. to keep builds off
 	// control-plane nodes.
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+	// PodLabels and PodAnnotations are added to node pods, e.g. a label that
+	// keeps a descheduler from evicting them. ai-flow's own labels win.
+	PodLabels      map[string]string `json:"podLabels,omitempty"`
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
 	// Local mode runs pod-type nodes as child processes instead of Jobs (tests, no cluster).
 	Local bool `json:"local,omitempty"`
 }

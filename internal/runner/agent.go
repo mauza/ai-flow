@@ -37,8 +37,13 @@ var RepoSkillDirs = []string{".agents/skills", ".claude/skills"}
 
 func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	b := r.b
-	if b.Harness != "" && b.Harness != "pi" {
-		return &protocol.Result{Error: fmt.Sprintf("harness %q is not supported yet", b.Harness)}
+	name := b.Harness
+	if name == "" {
+		name = "pi"
+	}
+	h, ok := Harnesses[name]
+	if !ok {
+		return &protocol.Result{Error: fmt.Sprintf("harness %q is not supported", name)}
 	}
 	if b.LLM == nil || len(b.LLM.Models) == 0 {
 		return &protocol.Result{Error: "agent node has no model"}
@@ -51,25 +56,29 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	defer shim.Close()
 
 	flowDir := filepath.Join(r.work, "flow")
-	piDir := filepath.Join(flowDir, "pi")
-	home := filepath.Join(flowDir, "home")
-	resultPath := filepath.Join(flowDir, "result.json")
-	bundlePath := filepath.Join(flowDir, "bundle.json")
-	for _, d := range []string{piDir, home, filepath.Join(flowDir, "sessions")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return &protocol.Result{Error: err.Error()}
-		}
+	s := &agentSession{
+		b:          b,
+		dir:        flowDir,
+		home:       filepath.Join(flowDir, "home"),
+		repo:       r.repo,
+		shimURL:    shimURL,
+		resultPath: filepath.Join(flowDir, "result.json"),
+		bundlePath: filepath.Join(flowDir, "bundle.json"),
+		sysPath:    filepath.Join(flowDir, "system.md"),
 	}
-	os.Remove(resultPath)
-	if err := writePiConfig(piDir, shimURL, b.LLM.Models[0], b.Agent); err != nil {
+	if s.repo == "" {
+		s.repo = flowDir
+	}
+	if err := os.MkdirAll(s.home, 0o755); err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
+	os.Remove(s.resultPath)
 	skillDirs, err := writeSkills(filepath.Join(flowDir, "skills"), b.Skills)
 	if err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
-	skillDirs = append(skillDirs, repoSkills(r.repo, b.Skills)...)
-	if err := writeJSONFile(bundlePath, map[string]any{
+	s.skills = append(skillDirs, repoSkills(r.repo, b.Skills)...)
+	if err := writeJSONFile(s.bundlePath, map[string]any{
 		"outcomes":      b.Outcomes,
 		"result_schema": b.ResultSchema,
 		"mcp":           b.MCP,
@@ -78,61 +87,38 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	}); err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
-	sysPath := filepath.Join(flowDir, "system.md")
-	if err := os.WriteFile(sysPath, []byte(agentSystemPrompt(b)), 0o644); err != nil {
+	s.system = agentSystemPrompt(b, h.finishTool())
+	if err := os.WriteFile(s.sysPath, []byte(s.system), 0o644); err != nil {
 		return &protocol.Result{Error: err.Error()}
 	}
-
-	tools := b.Tools
-	if len(tools) == 0 {
-		tools = DefaultAgentTools
-	}
-	tools = append(append([]string{}, tools...), "flow_finish")
-	for _, t := range b.MCP {
-		tools = append(tools, MCPToolName(t.Server, t.Name))
-	}
-
-	baseArgs := []string{"-p", "--mode", "json", "--offline",
-		"--session-dir", filepath.Join(flowDir, "sessions"),
-		"--no-extensions", "-e", envOr("AI_FLOW_PI_EXT", "/opt/ai-flow/pi-ext/index.ts"),
-		"--no-skills", "--no-prompt-templates", "--no-themes",
-		"--tools", strings.Join(tools, ","),
-		"--provider", "ai-flow", "--model", b.LLM.Models[0].Name,
-		"--append-system-prompt", sysPath,
-	}
-	for _, d := range skillDirs {
-		baseArgs = append(baseArgs, "--skill", d)
-	}
-	if t := b.LLM.Config.Thinking; t != "" && b.LLM.Models[0].Reasoning {
-		baseArgs = append(baseArgs, "--thinking", t)
+	extra, err := h.setup(s)
+	if err != nil {
+		return &protocol.Result{Error: fmt.Sprintf("%s setup: %v", name, err)}
 	}
 	env := append(cleanEnv(b.SecretEnv...),
-		"PI_CODING_AGENT_DIR="+piDir,
-		"PI_OFFLINE=1",
-		"PI_TELEMETRY=0",
-		"HOME="+home,
+		"HOME="+s.home,
 		"NO_COLOR=1",
-		"AI_FLOW_BUNDLE="+bundlePath,
-		"AI_FLOW_RESULT="+resultPath,
+		"AI_FLOW_BUNDLE="+s.bundlePath,
+		"AI_FLOW_RESULT="+s.resultPath,
 		"AI_FLOW_GRANT="+b.Grant,
 	)
+	env = append(env, extra...)
 
 	transcript := &transcriptCapture{}
 	finishUploads := r.startTranscriptUploads(transcript, transcriptUploadInterval)
 	defer finishUploads()
 	stop := shim.StopInfo
+	resultPath := s.resultPath
+	finish := h.finishTool()
 
 	prompt := b.Prompt
 	var runErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		args := append([]string{}, baseArgs...)
 		if attempt > 0 {
-			args = append(args, "-c")
-			prompt = fmt.Sprintf("You have not called flow_finish yet. Call flow_finish now with the outcome (one of: %s), a short summary, and the outputs.", strings.Join(b.Outcomes, ", "))
+			prompt = fmt.Sprintf("You have not called %s yet. Call %s now with the outcome (one of: %s), a short summary, and the outputs.", finish, finish, strings.Join(b.Outcomes, ", "))
 			r.progress("Asking the agent to finish")
 		}
-		args = append(args, prompt)
-		runErr = r.runPi(ctx, args, env, transcript, shim)
+		runErr = r.runHarness(ctx, h, h.args(s, prompt, attempt > 0), env, transcript, shim)
 		if _, err := os.Stat(resultPath); err == nil || stop() != nil || ctx.Err() != nil {
 			break
 		}
@@ -145,10 +131,9 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		if _, err := os.Stat(resultPath); err != nil && b.LLM.Config != nil && b.LLM.Config.Limits != nil {
 			if shim.Grace(max(int64(b.LLM.Config.Limits.Tokens)*15/100, 150000)) {
 				r.progress("Out of token budget; asking the agent to report what it has")
-				args := append(append([]string{}, baseArgs...), "-c", fmt.Sprintf(
-					"You have used up your token budget. Do no more work: call flow_finish now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",
-					strings.Join(b.Outcomes, ", ")))
-				runErr = r.runPi(ctx, args, env, transcript, shim)
+				runErr = r.runHarness(ctx, h, h.args(s, fmt.Sprintf(
+					"You have used up your token budget. Do no more work: call %s now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",
+					finish, strings.Join(b.Outcomes, ", ")), true), env, transcript, shim)
 			}
 		}
 	}
@@ -171,7 +156,7 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 			msg += ": " + runErr.Error()
 		}
 		r.progressMu.Lock()
-		if r.lastStop != "" && r.lastStop != "toolUse" {
+		if r.lastStop != "" && r.lastStop != "toolUse" && r.lastStop != "tool-calls" {
 			// e.g. "length" (output cap), "error: context window exceeded".
 			msg += fmt.Sprintf(" (last model reply ended with %s)", r.lastStop)
 		}
@@ -181,8 +166,14 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	return res
 }
 
-func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *transcriptCapture, shim *Shim) error {
-	pi := envOr("AI_FLOW_PI", "pi")
+func (r *Runner) setLastStop(s string) {
+	r.progressMu.Lock()
+	r.lastStop = s
+	r.progressMu.Unlock()
+}
+
+func (r *Runner) runHarness(ctx context.Context, h harness, args, env []string, transcript *transcriptCapture, shim *Shim) error {
+	bin := h.binary()
 	cctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	defer func() { cancel(); <-done }()
@@ -194,21 +185,22 @@ func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *tran
 			cancel()
 		}
 	}()
-	cmd := exec.CommandContext(cctx, pi, args...)
+	cmd := exec.CommandContext(cctx, bin, args...)
 	cmd.Dir = r.repo
 	if cmd.Dir == "" {
 		cmd.Dir = filepath.Join(r.work, "flow")
 	}
 	cmd.Env = env
+	cmd.Stdin = nil // codex reads a piped stdin as part of the prompt
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
-	events := &piEventWriter{r: r, transcript: transcript}
+	events := &piEventWriter{r: r, transcript: transcript, onLine: func(line []byte) { h.event(r, line) }}
 	cmd.Stdout = events
 	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start pi: %w", err)
+		return fmt.Errorf("start %s: %w", filepath.Base(bin), err)
 	}
 	r.progress("Agent started")
 	err := cmd.Wait()
@@ -216,8 +208,8 @@ func (r *Runner) runPi(ctx context.Context, args, env []string, transcript *tran
 		events.finishLine()
 	}
 	if err != nil && ctx.Err() == nil && cctx.Err() == nil {
-		slog.Warn("pi exited", "err", err, "stderr", tail(stderr.String(), 2000))
-		return fmt.Errorf("pi: %v: %s", err, tail(strings.TrimSpace(stderr.String()), 500))
+		slog.Warn("harness exited", "harness", bin, "err", err, "stderr", tail(stderr.String(), 2000))
+		return fmt.Errorf("%s: %v: %s", filepath.Base(bin), err, tail(strings.TrimSpace(stderr.String()), 500))
 	}
 	return nil
 }
@@ -282,8 +274,8 @@ func describeToolCall(tool string, raw json.RawMessage) string {
 	case "bash":
 		return "$ " + pick("command")
 	case "read", "write", "edit":
-		return tool + " " + pick("path", "file_path")
-	case "grep", "find", "ls":
+		return tool + " " + pick("path", "file_path", "filePath")
+	case "grep", "find", "ls", "glob", "list":
 		return tool + " " + pick("pattern", "path")
 	case "flow_finish":
 		return "Finishing: " + pick("outcome")
@@ -291,13 +283,13 @@ func describeToolCall(tool string, raw json.RawMessage) string {
 	return tool
 }
 
-func agentSystemPrompt(b *protocol.Bundle) string {
+func agentSystemPrompt(b *protocol.Bundle, finish string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "\n# You are one step in an automated flow\n\n")
 	fmt.Fprintf(&sb, "This step is %q (attempt %d). Other steps handle the rest of the task: do only what this step asks.\n", b.Node, b.Visit)
 	sb.WriteString("Nobody will answer questions. Work autonomously with the tools you have.\n\n")
 	sb.WriteString("## How to finish\n\n")
-	sb.WriteString("When the step is done, call the `flow_finish` tool exactly once with:\n")
+	fmt.Fprintf(&sb, "When the step is done, call the `%s` tool exactly once with:\n", finish)
 	fmt.Fprintf(&sb, "- `outcome`: one of %s\n", quoteList(b.Outcomes))
 	sb.WriteString("- `summary`: one or two sentences on what you did and why you chose that outcome\n")
 	if len(b.Outputs) > 0 {
@@ -314,7 +306,7 @@ func agentSystemPrompt(b *protocol.Bundle) string {
 	} else {
 		sb.WriteString("- `outputs`: {} (this step declares no outputs)\n")
 	}
-	sb.WriteString("\nIf you cannot complete the step, still call flow_finish with the outcome that fits best.\n")
+	fmt.Fprintf(&sb, "\nIf you cannot complete the step, still call %s with the outcome that fits best.\n", finish)
 	if b.Repo != nil {
 		if b.Repo.Write {
 			sb.WriteString("Do not run `git commit` or `git push`: your working-tree changes are committed and pushed for you after you finish.\n")

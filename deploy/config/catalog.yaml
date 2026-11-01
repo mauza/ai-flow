@@ -57,6 +57,25 @@ harnesses:
       - Never weaken, skip or delete a test to make it pass.
     # settings merge into pi's settings.json, e.g.
     # settings: {compaction: {keepRecentTokens: 40000}}
+  opencode:
+    description: opencode (sst/opencode) — read/edit/write/bash/grep/glob plus granted tools over MCP.
+    # Read as opencode's global AGENTS.md, like pi's.
+    instructions: |
+      - Read the code you are about to change, and its tests, before editing.
+      - Verify with the repository's own test and build commands. Say in the
+        flow_finish summary which commands you ran and what they reported, and
+        what you could not check.
+      - Never weaken, skip or delete a test to make it pass.
+    # settings merge into the generated opencode.json.
+  codex:
+    description: OpenAI Codex CLI — shell and apply_patch plus granted tools over MCP. Needs a model served over the Responses API.
+    # Read as codex's global AGENTS.md ($CODEX_HOME), like pi's.
+    instructions: |
+      - Read the code you are about to change, and its tests, before editing.
+      - Verify with the repository's own test and build commands. Say in the
+        flow_finish summary which commands you ran and what they reported, and
+        what you could not check.
+      - Never weaken, skip or delete a test to make it pass.
 
 runtimes:
   agent-base:
