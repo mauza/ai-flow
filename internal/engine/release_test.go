@@ -27,6 +27,7 @@ type fakeWorld struct {
 	merged    bool
 	merges    int
 	merged8   bool             // a second PR, for two runs releasing at once
+	mainCI    []map[string]any // check runs on the merge commit (the release build)
 	checks    []map[string]any // check runs
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
@@ -77,6 +78,8 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			reply(map[string]any{"commit": map[string]any{"sha": "headsha"}})
 		case p == "/repos/your-org/ai-flow-sandbox/actions/jobs/77/logs":
 			io.WriteString(rw, "2026-10-31T21:27:20.07Z ok 75 - claims bind the owner\n2026-10-31T21:27:22.86Z not ok 285 - Signal Breach campaign win: saved result reopens\n2026-10-31T21:27:22.86Z   error: \"Cannot read properties of undefined (reading 'lastResult')\"\n2026-10-31T21:27:23.80Z # fail 1\n")
+		case p == "/repos/your-org/ai-flow-sandbox/commits/mergedsha0000001/check-runs" && w.mainCI != nil:
+			reply(map[string]any{"check_runs": w.mainCI})
 		case strings.HasSuffix(p, "/check-runs"):
 			reply(map[string]any{"check_runs": w.checks})
 		case strings.HasSuffix(p, "/status"):
@@ -381,6 +384,31 @@ func TestCIFailureCarriesTheJobLog(t *testing.T) {
 	}
 	if !strings.Contains(v.Summary, "merge origin/main into the checkout") {
 		t.Errorf("summary %q", v.Summary)
+	}
+}
+
+// A release whose build failed on the merge commit is reported at once, with
+// the failure, instead of waiting out the deploy timeout.
+func TestFailedReleaseBuildEndsWaitForDeploy(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "oldsha0000000", metric: "0", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}},
+		mainCI: []map[string]any{{"id": 77, "name": "release", "status": "completed", "conclusion": "failure"}}}
+	h, id := releaseHarness(t, w, "1h")
+	for i := 0; i < 4 && !store.RunDone(h.run(id).Status); i++ {
+		h.e.Tick(h.ctx)
+	}
+	if got := h.path(id); !strings.HasSuffix(got, "live:timeout") {
+		t.Fatalf("path %s", got)
+	}
+	var live *store.Visit
+	vs, _ := h.st.Visits(h.ctx, id)
+	for _, v := range vs {
+		if v.Node == "live" {
+			live = v
+		}
+	}
+	if !strings.Contains(live.Summary, "deploy pipeline failed (release)") || !strings.Contains(string(live.Outputs), "not ok 285") {
+		t.Fatalf("live: %s %s", live.Summary, live.Outputs)
 	}
 }
 

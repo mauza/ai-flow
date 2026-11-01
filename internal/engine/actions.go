@@ -234,7 +234,7 @@ func (e *Engine) failureLogs(ctx context.Context, repo github.Repo, checks []git
 }
 
 var (
-	logStamp   = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[\d:.]+Z |\x1b\[[0-9;]*[A-Za-z]`)
+	logStamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[\d:.]+Z |\x1b\[[0-9;]*[A-Za-z]`)
 	// Strong markers say a test or job failed; weak ones only matter when
 	// there are none (passing tests can be named "…undefined…").
 	logFailure = regexp.MustCompile(`^(not ok |--- FAIL|FAIL\b|panic:)|##\[error\]`)
@@ -282,6 +282,35 @@ func failureExcerpt(log string, limit int) string {
 		text = "…" + text[len(text)-limit:]
 	}
 	return text
+}
+
+// deployPipelineFailure reports CI on the merged commit that finished and
+// failed (the build/release workflow), as a timeout: the release cannot go
+// live, and the timeout route is where flows handle that.
+func (e *Engine) deployPipelineFailure(ctx context.Context, res *resolve.Resolved, sha string) *actionResult {
+	repo, err := e.repoOf(res)
+	if err != nil {
+		return nil
+	}
+	checks, err := e.gh.Checks(ctx, repo, sha)
+	if err != nil {
+		return nil // inconclusive; keep waiting
+	}
+	var failed []string
+	for _, c := range checks {
+		if c.Done && !c.OK {
+			failed = append(failed, c.Name)
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	out := map[string]any{"failed": failed}
+	if logs := e.failureLogs(ctx, repo, checks); logs != "" {
+		out["log_tail"] = logs
+	}
+	return &actionResult{outcome: flow.OutcomeTimeout, outputs: out, summary: fmt.Sprintf(
+		"%s will not go live: its deploy pipeline failed (%s), so no release was built", short(sha), strings.Join(failed, ", "))}
 }
 
 // runPR fetches the run's pull request, or nil when it has none or GitHub
@@ -429,6 +458,12 @@ func (e *Engine) waitForDeploy(ctx context.Context, r *store.Run, res *resolve.R
 		}
 	}
 	if len(pending) > 0 {
+		// A failed build on the merged commit never deploys: say so now, with
+		// the failure, instead of timing out. A web-games release waited 20
+		// minutes for an image whose Docker build had failed in 2.
+		if failed := e.deployPipelineFailure(ctx, res, expect); failed != nil {
+			return failed, nil
+		}
 		e.refreshArgo(ctx, d)
 		return waiting("Waiting for %s to go live; %s", short(expect), strings.Join(pending, "; ")), nil
 	}
