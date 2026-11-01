@@ -136,3 +136,21 @@ spec:
 plan says. `mode: converge` (the default) tells a review that runs again to block
 only on findings still open and acceptance or test failures, so loops end;
 `thorough` makes every pass a full review that may find new problems.
+## Work queue: one finding per visit
+
+When an audit or review returns several separate findings, `fix-next-finding`
+fixes one per visit (a fresh session, its own test and commit) and reports
+`remaining`; a switch loops back while any remain, then verification runs once:
+
+```yaml
+    fix:
+      uses: preset/fix-next-finding
+      next: { fixed: queue, rebutted: queue, stuck: $fail }
+    queue:
+      type: switch
+      cases:
+        - when: 'nodes.fix.outputs.remaining > 0'
+          outcome: more
+      default: done
+      next: { more: fix, done: verify }
+```

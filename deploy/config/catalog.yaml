@@ -307,6 +307,27 @@ presets:
     outputs: { summary_of_change: string, resolutions: [string], verification: [string] }
     outcomes: [addressed, stuck]
 
+  fix-next-finding:
+    category: implementation
+    when_to_use: An audit or review found several separate problems; fix them one per visit instead of all at once (a work queue), looping back through a switch while any remain.
+    requires: [Project repo write grant, Findings supplied through previous outputs (e.g. a review's comments or an audit's findings)]
+    type: agent
+    min_size: medium
+    skills: [small-diffs]
+    max_visits: 12
+    on_exhausted: $fail
+    description: Take the next open finding, fix it with a focused test, commit, and report what is left.
+    prompt: |
+      You work through a queue of findings, one per visit. The findings are in your context (the audit or review
+      step's outputs); earlier visits of this step, in Loop history, record which ones are already fixed or rebutted.
+      Pick the most important finding that is still open, and only that one: reproduce it with a focused test,
+      fix it with a minimal change, run the relevant tests, and commit. If it is not a real problem, rebut it with
+      evidence instead of changing correct behavior. Do not start on the next finding.
+      Return fixed (or rebutted) with outputs.finding (which one), outputs.remaining (how many are still open after
+      this one) and outputs.open (their short descriptions); return stuck if this finding cannot be fixed here.
+    outputs: { finding: string, remaining: integer, open: [string], verification: [string] }
+    outcomes: [fixed, rebutted, stuck]
+
   refactor:
     category: implementation
     when_to_use: The task explicitly requests internal simplification without behavior changes.
