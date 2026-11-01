@@ -7,7 +7,9 @@ import (
 
 // CompareFile pairs cases by stable ID, not position. Versions may change, but
 // suite, provenance, flow names, case set and scoring rules must match.
-func CompareFile(current *Report, path string) error {
+// acrossFlows lets a case's flow differ: an A/B of two flow variants (another
+// harness, model or prompt) runs the same task under different flow names.
+func CompareFile(current *Report, path string, acrossFlows bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -39,10 +41,10 @@ func CompareFile(current *Report, path string) error {
 	comparison := &Comparison{BaselineSHA256: digest(data), Cases: []CaseDelta{}}
 	for _, c := range current.Cases {
 		b, ok := byID[c.ID]
-		if !ok || b.FlowName != c.FlowName || b.RubricSHA256 != c.RubricSHA256 {
+		if !ok || (b.FlowName != c.FlowName && !acrossFlows) || b.RubricSHA256 != c.RubricSHA256 {
 			return fmt.Errorf("baseline case %s missing or has different flow/scoring rules", c.ID)
 		}
-		comparison.Cases = append(comparison.Cases, CaseDelta{
+		d := CaseDelta{
 			ID: c.ID, BaselineFlowVersion: b.FlowVersion, CurrentFlowVersion: c.FlowVersion,
 			BaselinePassed: b.Passed, CurrentPassed: c.Passed, Regression: b.Passed && !c.Passed,
 			Delta: Metrics{
@@ -53,7 +55,11 @@ func CompareFile(current *Report, path string) error {
 				GateDecisions:    c.Metrics.GateDecisions - b.Metrics.GateDecisions,
 				HumanCorrections: subtract(c.Metrics.HumanCorrections, b.Metrics.HumanCorrections),
 			},
-		})
+		}
+		if b.FlowName != c.FlowName {
+			d.BaselineFlow, d.CurrentFlow = b.FlowName, c.FlowName
+		}
+		comparison.Cases = append(comparison.Cases, d)
 	}
 	current.Comparison = comparison
 	return nil

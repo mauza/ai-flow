@@ -19,8 +19,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	suite := flags.String("suite", "", "evaluation suite JSON (required; capture paths relative to this file)")
 	baseline := flags.String("baseline", "", "prior JSON report with matching case IDs and scoring rules")
+	acrossFlows := flags.Bool("across-flows", false, "with -baseline: pair cases whose flows differ (an A/B of flow variants, e.g. another harness or model)")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: ai-flow-eval -suite suite.json [-baseline report.json] > report.json")
+		fmt.Fprintln(stderr, "Usage: ai-flow-eval -suite suite.json [-baseline report.json [-across-flows]] > report.json")
 		fmt.Fprintln(stderr, "Offline export scoring. Exit 0: all pass; 1: scoring failure; 2: invalid input/I/O.")
 		flags.PrintDefaults()
 	}
@@ -36,7 +37,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	report, err := eval.EvaluateFile(*suite)
 	if err == nil && *baseline != "" {
-		err = eval.CompareFile(report, *baseline)
+		err = eval.CompareFile(report, *baseline, *acrossFlows)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "ai-flow-eval:", err)

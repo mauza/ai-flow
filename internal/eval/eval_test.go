@@ -59,7 +59,7 @@ func TestExamplesAndComparison(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CompareFile(candidate, path); err != nil {
+	if err := CompareFile(candidate, path, false); err != nil {
 		t.Fatal(err)
 	}
 	delta := candidate.Comparison.Cases[0]
@@ -231,7 +231,7 @@ func TestComparisonRejectsIncompatibleBaseline(t *testing.T) {
 			mutate(&baseline)
 			path := filepath.Join(t.TempDir(), "baseline.json")
 			writeJSON(t, path, baseline)
-			if err := CompareFile(current, path); err == nil {
+			if err := CompareFile(current, path, false); err == nil {
 				t.Fatal("accepted incompatible baseline")
 			}
 		})
@@ -272,5 +272,28 @@ func TestStoreExportCompatibility(t *testing.T) {
 	r, err := score(testCase(), data)
 	if err != nil || !r.Passed || *r.Metrics.Tokens != 42 || *r.Metrics.DurationMS != 2000 {
 		t.Fatalf("public store export mismatch: %+v %v", r, err)
+	}
+}
+
+// An A/B of flow variants (another harness or model) pairs the same task under
+// different flow names only when asked, and records both names.
+func TestComparisonAcrossFlows(t *testing.T) {
+	current, err := EvaluateFile("../../examples/evals/baseline-suite.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline Report
+	if err := decode(raw(t, current), &baseline, true); err != nil {
+		t.Fatal(err)
+	}
+	baseline.Cases[0].FlowName = "variant-a"
+	path := filepath.Join(t.TempDir(), "baseline.json")
+	writeJSON(t, path, baseline)
+	if err := CompareFile(current, path, true); err != nil {
+		t.Fatal(err)
+	}
+	d := current.Comparison.Cases[0]
+	if d.BaselineFlow != "variant-a" || d.CurrentFlow != current.Cases[0].FlowName || current.Comparison.Cases[1].BaselineFlow != "" {
+		t.Fatalf("deltas: %+v", current.Comparison.Cases)
 	}
 }

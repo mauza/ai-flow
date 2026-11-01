@@ -143,6 +143,8 @@ type CaseDelta struct {
 	ID                  string  `json:"id"`
 	BaselineFlowVersion int     `json:"baseline_flow_version"`
 	CurrentFlowVersion  int     `json:"current_flow_version"`
+	BaselineFlow        string  `json:"baseline_flow,omitempty"` // set when -across-flows paired different flows
+	CurrentFlow         string  `json:"current_flow,omitempty"`
 	BaselinePassed      bool    `json:"baseline_passed"`
 	CurrentPassed       bool    `json:"current_passed"`
 	Regression          bool    `json:"regression"`
