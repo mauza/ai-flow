@@ -500,6 +500,16 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	if g := strings.TrimSpace(cat.Planner.Guidance); g != "" {
 		sb.WriteString(g + "\n\n")
 	}
+	if rv := proj.Spec.Review; rv != nil && (rv.Rounds > 0 || rv.Mode != "") {
+		sb.WriteString("\n## Review budget\n\n")
+		if rv.Rounds > 0 {
+			fmt.Fprintf(&sb, "This project gives every fix/review loop at least %d rounds (ai-flow raises lower max_visits to %d): plan reviews that keep finding and fixing problems rather than stopping early. ", rv.Rounds, rv.Rounds)
+		}
+		if rv.Mode == config.ReviewThorough {
+			sb.WriteString("Repeat reviews re-check everything and block on any real defect, new or old, so route review findings back to the fix step every time.")
+		}
+		sb.WriteString("\n")
+	}
 	if g := strings.TrimSpace(proj.Spec.Planner.Guidance); g != "" {
 		sb.WriteString(g + "\n\n")
 	}

@@ -348,7 +348,24 @@ type ProjectSpec struct {
 	Agent       AgentGuide   `json:"agent,omitempty"`
 	Defaults    *flow.Node   `json:"defaults,omitempty"`
 	Deploy      *Deploy      `json:"deploy,omitempty"`
+	Review      *Review      `json:"review,omitempty"`
 }
+
+// Review sets how hard a project's flows work to find and fix problems.
+type Review struct {
+	// Rounds is the least max_visits of every bounded step (fix and review
+	// loops), whatever the plan says: more rounds, more found and fixed.
+	Rounds int `json:"rounds,omitempty"`
+	// Mode is how a review that runs again judges: "converge" (default)
+	// blocks only on findings still open and acceptance or test failures;
+	// "thorough" reviews everything again and blocks on any real defect.
+	Mode string `json:"mode,omitempty"`
+}
+
+const (
+	ReviewConverge = "converge"
+	ReviewThorough = "thorough"
+)
 
 // Deploy says that merging a PR into Branch ships the project to production
 // (its CI/CD builds and rolls out main). wait_for_deploy and check_health read
@@ -752,6 +769,16 @@ func (c *Config) check() error {
 	if v := c.Env.Runs.TmpSize; v != "" {
 		if _, err := resource.ParseQuantity(v); err != nil {
 			errs = append(errs, fmt.Sprintf("runs.tmpSize: %q is not a Kubernetes quantity", v))
+		}
+	}
+	for name, p := range c.Projects {
+		if r := p.Spec.Review; r != nil {
+			if r.Rounds < 0 || r.Rounds > 50 {
+				errs = append(errs, fmt.Sprintf("project %s: review.rounds must be between 0 and 50", name))
+			}
+			if r.Mode != "" && r.Mode != ReviewConverge && r.Mode != ReviewThorough {
+				errs = append(errs, fmt.Sprintf("project %s: review.mode must be %s or %s", name, ReviewConverge, ReviewThorough))
+			}
 		}
 	}
 	for field, v := range map[string]string{"cpu": c.Env.Runs.CPU, "memory": c.Env.Runs.Memory, "cpuRequest": c.Env.Runs.CPURequest, "memoryRequest": c.Env.Runs.MemoryRequest} {

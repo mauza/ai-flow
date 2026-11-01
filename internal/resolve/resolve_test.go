@@ -141,3 +141,37 @@ func TestEvalCEL(t *testing.T) {
 		t.Fatalf("got %v %v", ok, err)
 	}
 }
+
+// A project's review budget raises every bounded step to at least its rounds.
+func TestReviewRoundsRaiseMaxVisits(t *testing.T) {
+	cfg := loadCfg(t)
+	cfg.Projects["sandbox"].Spec.Review = &config.Review{Rounds: 8}
+	f, err := flow.Parse([]byte(`apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: rounds, project: sandbox }
+spec:
+  start: fix
+  nodes:
+    fix:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: fix
+      outcomes: [done]
+      max_visits: 3
+      next: { done: review }
+    review:
+      type: llm
+      model: gpt-6.1-sol
+      prompt: review
+      outcomes: [approve, changes]
+      max_visits: 12
+      next: { approve: $success, changes: fix }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Resolve(f, cfg)
+	if r.Nodes["fix"].MaxVisits != 8 || r.Nodes["review"].MaxVisits != 12 {
+		t.Fatalf("max_visits fix=%d review=%d", r.Nodes["fix"].MaxVisits, r.Nodes["review"].MaxVisits)
+	}
+}

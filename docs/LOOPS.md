@@ -120,3 +120,19 @@ the **existing** task criteria, as stated in the example's work prompt. It does
 not secretly provide new instructions or reset any limit. If a reviewer has new
 requirements or needs more attempts, revise the task/flow through the normal
 workflow and start a new run; saved run snapshots retain their original flow.
+
+## Review budget (project `review`)
+
+A project can say how hard its flows work to find and fix problems:
+
+```yaml
+spec:
+  review:
+    rounds: 10        # every bounded step (fix and review loops) gets at least this many visits
+    mode: thorough    # repeat reviews re-check everything and block on any real defect
+```
+
+`rounds` raises every `max_visits` below it when a run is resolved, whatever the
+plan says. `mode: converge` (the default) tells a review that runs again to block
+only on findings still open and acceptance or test failures, so loops end;
+`thorough` makes every pass a full review that may find new problems.

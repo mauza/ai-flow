@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"log/slog"
 	"strings"
@@ -231,6 +232,13 @@ func writeConverging(sb *strings.Builder, res *resolve.Resolved, n *resolve.Node
 		}
 	}
 	if passes == 0 {
+		return
+	}
+	if p := res.Project; p != nil && p.Spec.Review != nil && p.Spec.Review.Mode == config.ReviewThorough {
+		fmt.Fprintf(sb, "## Another full review\n\nThis step already judged this work %d time(s) (see Loop history). Review everything again, not just the last fixes: "+
+			"check that earlier findings are really fixed and look for problems no earlier pass found. "+
+			"Block on any real defect (correctness, security, data loss, an acceptance criterion, a test). "+
+			"Report polish, nice-to-haves and things this environment cannot verify as non-blocking notes, and choose the passing outcome when nothing real is left.\n\n", passes)
 		return
 	}
 	fmt.Fprintf(sb, "## Converging\n\nThis step already judged this work %d time(s) (see Loop history), and every blocking finding sends it back for another round. "+
