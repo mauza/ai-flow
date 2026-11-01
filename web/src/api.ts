@@ -116,6 +116,7 @@ export interface Visit {
   model?: string;
   tokens_in: number;
   tokens_out: number;
+  tokens_cached?: number;
   cost_usd: number;
   llm_calls: number;
   transcript_key?: string;

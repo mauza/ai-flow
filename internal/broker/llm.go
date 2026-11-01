@@ -96,6 +96,10 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// One session per visit keeps a step's calls on the same upstream prompt
+	// cache. Without it LiteLLM's ChatGPT bridge picks a random session per
+	// call and agent steps got ~10% cache hits instead of ~90%.
+	req.Header.Set("X-Litellm-Session-Id", SessionID(c.Run, c.Seq))
 	if key := config.Secret(up.APIKeyEnv); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -154,13 +158,29 @@ func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, 
 	u, _ := usage.(map[string]any)
 	in, _ := u["prompt_tokens"].(float64)
 	out, _ := u["completion_tokens"].(float64)
+	cached := cachedTokens(u)
 	cost := headerCost
 	if cost == 0 {
 		cost = in*m.InputPer1M/1e6 + out*m.OutputPer1M/1e6
 	}
-	if err := b.store.AddUsage(ctx, c.Run, c.Seq, name, int64(in), int64(out), cost); err != nil {
+	if err := b.store.AddUsage(ctx, c.Run, c.Seq, name, int64(in), int64(out), int64(cached), cost); err != nil {
 		slog.Warn("record usage", "err", err)
 	}
+}
+
+// SessionID names the upstream session of one visit.
+func SessionID(run string, seq int) string { return fmt.Sprintf("ai-flow-%s-%d", run, seq) }
+
+// cachedTokens reads the prompt tokens served from cache, in the OpenAI shape
+// (prompt_tokens_details.cached_tokens) or LiteLLM's Anthropic-style field.
+func cachedTokens(u map[string]any) float64 {
+	if d, ok := u["prompt_tokens_details"].(map[string]any); ok {
+		if v, ok := d["cached_tokens"].(float64); ok {
+			return v
+		}
+	}
+	v, _ := u["cache_read_input_tokens"].(float64)
+	return v
 }
 
 // overBudget checks the node's USD limit, the flow budget and the project's per-run cap.

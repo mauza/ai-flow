@@ -482,6 +482,7 @@ function VisitDetail({ runId, v }: { runId: string; v: Visit }) {
           {v.llm_calls > 0 && (
             <span>
               {v.llm_calls} calls · {tokens(v.tokens_in)} in / {tokens(v.tokens_out)} out
+              {v.tokens_in > 0 && v.tokens_cached ? ` · ${Math.round((100 * v.tokens_cached) / v.tokens_in)}% cached` : ""}
             </span>
           )}
           {v.commit_sha && (
