@@ -168,12 +168,23 @@ func TestCommentTaskOnlyClaimsALinkedTask(t *testing.T) {
 		}
 		h.e.Tick(h.ctx)
 		v := h.current(r.ID)
-		want := "No linked task to comment on"
+		want := "Recorded the comment on the run (no linked tracker)"
 		if linked {
 			want = "Commented on MAU-9"
 		}
 		if v.Summary != want || len(hooks.posted) != map[bool]int{false: 0, true: 1}[linked] {
 			t.Errorf("linked=%v: summary %q, posted %v", linked, v.Summary, hooks.posted)
+		}
+		if !linked {
+			// The report is kept in ai-flow, on the run and the task.
+			evs, _ := h.st.Events(h.ctx, "run_id", r.ID, 50)
+			found := false
+			for _, ev := range evs {
+				found = found || ev.Kind == "comment" && ev.Message == "hi" && ev.TaskID == "t-1"
+			}
+			if !found {
+				t.Errorf("comment not recorded: %+v", evs)
+			}
 		}
 	}
 }

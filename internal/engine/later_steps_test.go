@@ -112,3 +112,26 @@ func TestContextNamesTheRuntime(t *testing.T) {
 		t.Fatalf("context:\n%s", md)
 	}
 }
+
+// Agent steps are told their clone is current and that they cannot fetch.
+func TestContextSaysTheCloneIsCurrent(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(header + `  start: work
+  nodes:
+    work:
+      type: agent
+      model: ` + testModel + `
+      prompt: build it
+      outcomes: [done]
+      next: { done: $success }
+`)
+	v, _ := h.st.LastVisit(h.ctx, id)
+	r := h.run(id)
+	res, err := h.e.Resolved(h.ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := h.e.ContextMarkdown(h.ctx, r, res, res.Nodes["work"], v.Seq); !strings.Contains(md, "fresh clone made when this step started") || !strings.Contains(md, "Do not fetch, pull or push") {
+		t.Fatalf("context:\n%s", md)
+	}
+}
