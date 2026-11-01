@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,8 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			reply(w.rollbackRun)
 		case strings.HasPrefix(p, "/repos/your-org/ai-flow-sandbox/branches/"):
 			reply(map[string]any{"commit": map[string]any{"sha": "headsha"}})
+		case p == "/repos/your-org/ai-flow-sandbox/actions/jobs/77/logs":
+			io.WriteString(rw, "2026-10-31T21:27:20.07Z ok 75 - claims bind the owner\n2026-10-31T21:27:22.86Z not ok 285 - Signal Breach campaign win: saved result reopens\n2026-10-31T21:27:22.86Z   error: \"Cannot read properties of undefined (reading 'lastResult')\"\n2026-10-31T21:27:23.80Z # fail 1\n")
 		case strings.HasSuffix(p, "/check-runs"):
 			reply(map[string]any{"check_runs": w.checks})
 		case strings.HasSuffix(p, "/status"):
@@ -364,6 +367,20 @@ func TestHealthViolationMustBeSustained(t *testing.T) {
 	v := h.current(id)
 	if v.Node != "soak" || v.Status != store.VisitRunning || !strings.Contains(v.Progress, "watching 5xx rate") {
 		t.Fatalf("a short violation must be watched, not degraded: %+v (path %s)", v, h.path(id))
+	}
+}
+
+// A failed CI job's failing lines reach the fix step, with how PR CI ran.
+func TestCIFailureCarriesTheJobLog(t *testing.T) {
+	w := &fakeWorld{checks: []map[string]any{{"id": 77, "name": "web-test", "status": "completed", "conclusion": "failure"}}}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	v := h.current(id)
+	if !strings.Contains(string(v.Outputs), `not ok 285 - Signal Breach`) || !strings.Contains(string(v.Outputs), "lastResult") {
+		t.Fatalf("outputs %s", v.Outputs)
+	}
+	if !strings.Contains(v.Summary, "merge origin/main into the checkout") {
+		t.Errorf("summary %q", v.Summary)
 	}
 }
 

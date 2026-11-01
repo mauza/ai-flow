@@ -598,7 +598,7 @@ presets:
     on_exhausted: $fail
     description: Wait for the repo's GitHub CI (check runs and statuses) on the PR head and report failures.
     action: wait_for_checks
-    outputs: { ref: string, failed: [string], checks: [string] }
+    outputs: { ref: string, failed: [string], checks: [string], log_tail: string }
     outcomes: [passed, failed, none, timeout]
 
   local-stack-test:
