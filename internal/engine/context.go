@@ -199,6 +199,12 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		}
 	}
 	fmt.Fprintf(&sb, "## Branch\n\nWorking on `%s` (base `%s`).", r.Branch, r.Base)
+	if res.Repo != "" && (n.Type == flow.TypeAgent || n.Type == flow.TypeCheck) {
+		// A web-games agent tried `git fetch`, could not authenticate, and
+		// blocked, though its clone was current.
+		sb.WriteString(" The checkout is a fresh clone made when this step started, so origin/" + r.Base +
+			" (and origin/" + r.Branch + " once pushed) are current. Do not fetch, pull or push (this step has no git credentials); commit your work and the runner pushes it.")
+	}
 	var diff map[string]any
 	json.Unmarshal(r.Diff, &diff)
 	if f, _ := diff["files_changed"].(float64); f > 0 {
@@ -433,8 +439,16 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":
 		// Only an intake-linked task (e.g. a Linear issue) has somewhere to post.
+		// Otherwise keep the report in ai-flow: a web-games run's failure
+		// report was dropped with "No linked task to comment on".
 		if t == nil || e.hooks == nil || t.ExternalID == "" {
-			return &actionResult{outcome: "done", summary: "No linked task to comment on"}, nil
+			body := strings.TrimSpace(with["body"])
+			ev := &store.Event{RunID: r.ID, FlowName: r.FlowName, Node: v.Node, Kind: "comment", Message: body}
+			if t != nil {
+				ev.TaskID = t.ID
+			}
+			e.store.AddEvent(ctx, ev)
+			return &actionResult{outcome: "done", summary: "Recorded the comment on the run (no linked tracker)", outputs: map[string]any{"body": body}}, nil
 		}
 		if c, ok := e.hooks.(interface {
 			Comment(ctx context.Context, t *store.Task, body string) error
