@@ -131,12 +131,13 @@ presets:
     min_size: medium
     max_visits: 2
     on_exhausted: $fail
-    description: Locate task-relevant code, instructions, and verification commands.
+    description: Locate task-relevant code, instructions, and verification commands; keep the project map current.
     prompt: |
       Read repository instructions and trace the task's entry points, modules, and tests without editing files.
-      Report relevant paths with their roles and exact commands documented by the repo; do not guess commands.
-      Include runtime/dependency needs. Return mapped when evidence is sufficient, blocked when it is not.
-    outputs: { files: [string], commands: [string], constraints: [string] }
+      If your context has a Project map, start from it: check what changed since its commit and read only what the
+      task needs beyond it. Report relevant paths with their roles and exact commands documented by the repo; do not
+      guess commands. Include runtime/dependency needs. Return mapped when evidence is sufficient, blocked when it is not.
+    outputs: { files: [string], commands: [string], constraints: [string], project_map: string, map_commit: string }
     outcomes: [mapped, blocked]
 
   investigate-bug:

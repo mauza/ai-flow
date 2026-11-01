@@ -220,3 +220,15 @@ flows for every preset, real output schemas and CEL contexts, template reference
 shell commands on passing/failing/missing-project fixtures, planner contracts and
 context size, and overview definitions. Command tests skip if a required local
 tool is unavailable. These checks do not contact models, GitHub, or a cluster.
+
+## The project map
+
+Exploration is expensive (a read-only investigation of a mid-size repository
+can use millions of tokens), so what it learns is kept. A step that returns
+`outputs.project_map` (markdown: architecture, modules and what they own,
+commands, conventions, security boundaries, gotchas) and `outputs.map_commit`
+(the commit it describes) updates the project's map. Every later agent and llm
+step, in this run and later ones, gets the map in its context with that commit,
+so it can `git diff --stat <commit>..HEAD` to see what changed instead of
+exploring again. `repo-map` declares both outputs and starts from the existing
+map. View or reset it at `GET`/`DELETE /api/projects/<project>/project-map`.
