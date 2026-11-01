@@ -199,6 +199,18 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	} else if other != "" {
 		return waiting("Waiting to merge #%d: %s", number, other), nil
 	}
+	// CI tested the branch against the base as it was. If the base moved
+	// since (often another run's release, merged while this one waited), the
+	// pass is stale: web-games Play anywhere merged on a green CI from before
+	// accounts landed, and the combination failed its release build. Behind
+	// is reported as conflict, which flows route to update-branch → CI.
+	if behind, err := e.gh.BehindBy(ctx, repo, r.Base, pr.Head.SHA); err != nil {
+		return nil, err
+	} else if behind > 0 {
+		return &actionResult{outcome: "conflict", summary: fmt.Sprintf(
+			"#%d is %d commit(s) behind %s, so its CI pass predates them: merge origin/%s into the branch and run CI again before merging",
+			number, behind, r.Base, r.Base)}, nil
+	}
 	sha, err := e.gh.MergePR(ctx, repo, number, method, pr.Head.SHA)
 	var api *github.APIError
 	if errors.As(err, &api) {
