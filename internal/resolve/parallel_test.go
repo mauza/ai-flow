@@ -178,3 +178,43 @@ func TestJoinOnlyFromItsBranches(t *testing.T) {
 		}
 	}
 }
+
+// The planner is told to give branch steps on_exhausted: their join.
+func TestBranchStepExhaustsToItsJoin(t *testing.T) {
+	_, issues := validateYAML(t, `
+  start: verify
+  nodes:
+    verify:
+      type: parallel
+      branches: [tests, review]
+      join: verified
+    tests:
+      type: check
+      run: make test
+      max_visits: 2
+      on_exhausted: verified
+      next: { pass: verified, fail: verified }
+    review:
+      type: llm
+      model: gpt-6.1-sol
+      prompt: review
+      outcomes: [approve, changes]
+      next: { approve: verified, changes: verified }
+    verified:
+      type: join
+      cases:
+        - when: 'nodes.tests.outcome == "pass" && nodes.review.outcome == "approve"'
+          outcome: ok
+      default: report
+      next: { ok: $success, report: report }
+    report:
+      type: llm
+      model: gpt-6.1-sol
+      prompt: report
+      outcomes: [done]
+      next: { done: $fail }
+`)
+	if len(issues) != 0 {
+		t.Fatalf("issues: %v", issues)
+	}
+}
