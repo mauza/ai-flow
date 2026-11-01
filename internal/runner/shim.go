@@ -85,7 +85,8 @@ func (s *Shim) Start() (string, error) {
 		return "", err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
+	mux.HandleFunc("POST /v1/chat/completions", s.handle("/chat/completions"))
+	mux.HandleFunc("POST /v1/responses", s.handle("/responses")) // codex speaks only the Responses API
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		var data []map[string]any
 		for _, m := range s.models {
@@ -179,7 +180,7 @@ type upstreamErr struct {
 func (s *Shim) Complete(ctx context.Context, body map[string]any) (map[string]any, error) {
 	stream, _ := body["stream"].(bool)
 	body["stream"] = stream
-	resp, uerr, err := s.do(ctx, body)
+	resp, uerr, err := s.do(ctx, body, "/chat/completions")
 	if err != nil {
 		return nil, err
 	}
@@ -215,14 +216,19 @@ func (s *Shim) Complete(ctx context.Context, body map[string]any) (map[string]an
 	return out, nil
 }
 
-func (s *Shim) handleChat(w http.ResponseWriter, r *http.Request) {
+// handle proxies one endpoint (chat completions or responses) upstream.
+func (s *Shim) handle(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { s.proxy(w, r, path) }
+}
+
+func (s *Shim) proxy(w http.ResponseWriter, r *http.Request, path string) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	resp, uerr, err := s.do(r.Context(), body)
+	resp, uerr, err := s.do(r.Context(), body, path)
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"error": map[string]any{"message": err.Error(), "type": "shim_error"}})
 		return
@@ -263,9 +269,7 @@ func (s *Shim) handleChat(w http.ResponseWriter, r *http.Request) {
 		if bytes.HasPrefix(line, []byte("data: {")) {
 			var chunk map[string]any
 			if json.Unmarshal(line[6:], &chunk) == nil {
-				if _, ok := chunk["usage"].(map[string]any); ok {
-					s.recordUsage(chunk)
-				}
+				s.recordUsage(chunk)
 			}
 		}
 		w.Write(line)
@@ -282,7 +286,7 @@ func (s *Shim) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // do sends body upstream, applying on_limit until it succeeds, gives up, or
 // the node is stopped. A non-nil *upstreamErr is a final error to pass back.
-func (s *Shim) do(ctx context.Context, body map[string]any) (*http.Response, *upstreamErr, error) {
+func (s *Shim) do(ctx context.Context, body map[string]any, path string) (*http.Response, *upstreamErr, error) {
 	s.mu.Lock()
 	if s.stopped != nil {
 		st := *s.stopped
@@ -305,7 +309,7 @@ outer:
 		s.mu.Unlock()
 		model := s.models[cur].Name
 		body["model"] = model
-		if stream, _ := body["stream"].(bool); stream {
+		if stream, _ := body["stream"].(bool); stream && path == "/chat/completions" {
 			opts, _ := body["stream_options"].(map[string]any)
 			if opts == nil {
 				opts = map[string]any{}
@@ -314,7 +318,7 @@ outer:
 			body["stream_options"] = opts
 		}
 		raw, _ := json.Marshal(forModel(body, s.models[0], s.models[cur]))
-		req, err := http.NewRequestWithContext(ctx, "POST", s.upstream+"/chat/completions", bytes.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, "POST", s.upstream+path, bytes.NewReader(raw))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -437,16 +441,36 @@ func (s *Shim) checkBudget() {
 }
 
 func (s *Shim) recordUsage(resp map[string]any) {
-	u, ok := resp["usage"].(map[string]any)
+	in, out, ok := UsageTokens(resp)
 	if !ok {
 		return
 	}
-	in, _ := u["prompt_tokens"].(float64)
-	out, _ := u["completion_tokens"].(float64)
 	s.mu.Lock()
 	s.tokensIn += int64(in)
 	s.tokensOut += int64(out)
 	s.mu.Unlock()
+}
+
+// UsageTokens reads prompt and completion tokens from a chat completion (or
+// stream chunk) or a Responses API reply (or its response.completed event).
+func UsageTokens(resp map[string]any) (in, out float64, ok bool) {
+	u, ok := resp["usage"].(map[string]any)
+	if !ok {
+		if r, isMap := resp["response"].(map[string]any); isMap {
+			u, ok = r["usage"].(map[string]any)
+		}
+	}
+	if !ok {
+		return 0, 0, false
+	}
+	if v, has := u["prompt_tokens"].(float64); has {
+		in = v
+		out, _ = u["completion_tokens"].(float64)
+	} else {
+		in, _ = u["input_tokens"].(float64)
+		out, _ = u["output_tokens"].(float64)
+	}
+	return in, out, true
 }
 
 func classify(status int, body []byte, h http.Header) *upstreamErr {
@@ -578,7 +602,7 @@ func forModel(body map[string]any, primary, m protocol.ModelInfo) map[string]any
 		}
 	}
 	if capped {
-		for _, k := range []string{"max_completion_tokens", "max_tokens"} {
+		for _, k := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
 			if v, ok := out[k].(float64); ok && v > float64(m.MaxOutputTokens) {
 				out[k] = m.MaxOutputTokens
 			} else if v, ok := out[k].(int); ok && v > m.MaxOutputTokens {

@@ -16,6 +16,7 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/grant"
+	"github.com/mauza/ai-flow/internal/runner"
 )
 
 func (b *Broker) llmModels(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
@@ -30,6 +31,15 @@ func (b *Broker) llmModels(w http.ResponseWriter, r *http.Request, c *grant.Clai
 // catalog models; only models in its grant are allowed. Budgets are checked
 // before each call and usage is recorded after it.
 func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
+	b.llmProxy(w, r, c, "/chat/completions")
+}
+
+// llmResponses is llmChat for the Responses API (codex speaks nothing else).
+func (b *Broker) llmResponses(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
+	b.llmProxy(w, r, c, "/responses")
+}
+
+func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claims, path string) {
 	ctx := r.Context()
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
 	if err != nil {
@@ -81,7 +91,7 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 
 	body["model"] = model.Model
 	stream, _ := body["stream"].(bool)
-	if stream {
+	if stream && path == "/chat/completions" {
 		opts, _ := body["stream_options"].(map[string]any)
 		if opts == nil {
 			opts = map[string]any{}
@@ -90,7 +100,7 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		body["stream_options"] = opts
 	}
 	out, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(up.BaseURL, "/")+"/chat/completions", bytes.NewReader(out))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(up.BaseURL, "/")+path, bytes.NewReader(out))
 	if err != nil {
 		httpErr(w, 500, err.Error())
 		return
@@ -123,7 +133,7 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		if resp.StatusCode < 300 {
 			var parsed map[string]any
 			if json.Unmarshal(data, &parsed) == nil {
-				b.recordUsage(ctx, c, name, model, parsed["usage"], headerCost)
+				b.recordUsage(ctx, c, name, model, usageOf(parsed), headerCost)
 			}
 		}
 		return
@@ -136,8 +146,10 @@ func (b *Broker) llmChat(w http.ResponseWriter, r *http.Request, c *grant.Claims
 		line := sc.Bytes()
 		if bytes.HasPrefix(line, []byte("data: {")) && bytes.Contains(line, []byte(`"usage"`)) {
 			var chunk map[string]any
-			if json.Unmarshal(line[6:], &chunk) == nil && chunk["usage"] != nil {
-				usage = chunk["usage"]
+			if json.Unmarshal(line[6:], &chunk) == nil {
+				if u := usageOf(chunk); u != nil {
+					usage = u
+				}
 			}
 		}
 		w.Write(line)
@@ -156,8 +168,7 @@ func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	u, _ := usage.(map[string]any)
-	in, _ := u["prompt_tokens"].(float64)
-	out, _ := u["completion_tokens"].(float64)
+	in, out, _ := runner.UsageTokens(map[string]any{"usage": u})
 	cached := cachedTokens(u)
 	cost := headerCost
 	if cost == 0 {
@@ -171,12 +182,29 @@ func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, 
 // SessionID names the upstream session of one visit.
 func SessionID(run string, seq int) string { return fmt.Sprintf("ai-flow-%s-%d", run, seq) }
 
-// cachedTokens reads the prompt tokens served from cache, in the OpenAI shape
-// (prompt_tokens_details.cached_tokens) or LiteLLM's Anthropic-style field.
+// usageOf finds the usage object of a chat completion or stream chunk, or of
+// a Responses API reply or its response.completed event.
+func usageOf(m map[string]any) map[string]any {
+	if u, ok := m["usage"].(map[string]any); ok {
+		return u
+	}
+	if r, ok := m["response"].(map[string]any); ok {
+		if u, ok := r["usage"].(map[string]any); ok {
+			return u
+		}
+	}
+	return nil
+}
+
+// cachedTokens reads the prompt tokens served from cache: chat completions'
+// prompt_tokens_details, the Responses API's input_tokens_details, or
+// LiteLLM's Anthropic-style field.
 func cachedTokens(u map[string]any) float64 {
-	if d, ok := u["prompt_tokens_details"].(map[string]any); ok {
-		if v, ok := d["cached_tokens"].(float64); ok {
-			return v
+	for _, k := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if d, ok := u[k].(map[string]any); ok {
+			if v, ok := d["cached_tokens"].(float64); ok {
+				return v
+			}
 		}
 	}
 	v, _ := u["cache_read_input_tokens"].(float64)

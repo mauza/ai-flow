@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log/slog"
 	"net"
 	"net/http"
@@ -71,6 +72,12 @@ func main() {
 		err = validateCmd(os.Args[2:])
 	case "plan":
 		err = planCmd(ctx, os.Args[2:])
+	case "flow-tools":
+		// stdio MCP server an agent harness starts: flow_finish + granted MCP tools.
+		var srv *mcp.Server
+		if srv, err = runner.FlowToolsServer(); err == nil {
+			err = srv.Run(ctx, &mcp.StdioTransport{})
+		}
 	case "mcp-demo":
 		listen := ":8090"
 		if len(os.Args) > 2 {
@@ -91,7 +98,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ai-flow server|node|validate|plan|mcp-demo|version [flags]")
+	fmt.Fprintln(os.Stderr, "usage: ai-flow server|node|flow-tools|validate|plan|mcp-demo|version [flags]")
 }
 
 func logLevel() slog.Level {

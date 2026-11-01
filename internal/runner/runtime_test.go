@@ -215,7 +215,7 @@ func TestTranscriptCaptureBoundAndMetadata(t *testing.T) {
 func TestPiEventWriterDrainsOversizedLines(t *testing.T) {
 	r := runtimeRunner(t)
 	capture := &transcriptCapture{}
-	w := &piEventWriter{r: r, transcript: capture}
+	w := &piEventWriter{r: r, transcript: capture, onLine: r.piProgress}
 	w.Write([]byte("{\"type\":"))
 	w.Write([]byte("\"first\"}\n"))
 	chunk := bytes.Repeat([]byte{'x'}, 32<<10)
@@ -237,7 +237,7 @@ func TestPiEventWriterDrainsOversizedLines(t *testing.T) {
 func TestPiEventWriterKeepsOnlyLatestUpdate(t *testing.T) {
 	r := runtimeRunner(t)
 	capture := &transcriptCapture{}
-	w := &piEventWriter{r: r, transcript: capture}
+	w := &piEventWriter{r: r, transcript: capture, onLine: r.piProgress}
 	text := ""
 	for i := range 2000 {
 		text += "thinking "
@@ -373,7 +373,7 @@ func TestPiWaitBoundsInheritedOutputPipe(t *testing.T) {
 	defer cancel()
 	capture := &transcriptCapture{}
 	start := time.Now()
-	err := r.runPi(ctx, []string{"-c", `sleep 30 & printf '%s' "$!" > "$PID_FILE"; printf '%s\n' '{"type":"before-exit"}'`}, append(cleanEnv(), "PID_FILE="+pidFile), capture, shim)
+	err := r.runHarness(ctx, piHarness{}, []string{"-c", `sleep 30 & printf '%s' "$!" > "$PID_FILE"; printf '%s\n' '{"type":"before-exit"}'`}, append(cleanEnv(), "PID_FILE="+pidFile), capture, shim)
 	if err == nil || time.Since(start) > 8*time.Second {
 		t.Fatalf("inherited pipe was not bounded by WaitDelay: %v after %s", err, time.Since(start))
 	}

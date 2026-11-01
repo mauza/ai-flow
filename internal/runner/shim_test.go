@@ -173,7 +173,7 @@ func TestShimOwnTokenLimit(t *testing.T) {
 	s, _ := newTestShim(t, u, &flow.LLMConfig{Limits: &flow.Limits{Tokens: 1000}, OnLimit: map[string]*flow.OnLimit{
 		flow.LimitBudgetExceeded: {Action: flow.ActOutcome},
 	}}, "a")
-	srv := httptest.NewServer(http.HandlerFunc(s.handleChat)) // exercise the harness-facing path
+	srv := httptest.NewServer(s.handle("/chat/completions")) // exercise the harness-facing path
 	defer srv.Close()
 	for i := 0; i < 2; i++ {
 		resp, err := http.Post(srv.URL, "application/json", jsonBody(map[string]any{"messages": []any{}}))

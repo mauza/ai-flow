@@ -75,6 +75,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/mcp/call", b.withGrant(b.mcpCall))
 	mux.HandleFunc("GET /llm/v1/models", b.withGrant(b.llmModels))
 	mux.HandleFunc("POST /llm/v1/chat/completions", b.withGrant(b.llmChat))
+	mux.HandleFunc("POST /llm/v1/responses", b.withGrant(b.llmResponses))
 	mux.HandleFunc("/git/", b.git)
 	return mux
 }

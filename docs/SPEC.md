@@ -76,7 +76,7 @@ Components (all in `ai-flow`, one binary and image, plus the agent runtime image
 
 ### Off the shelf
 
-pi (agent harness), Kubernetes Jobs + NetworkPolicy + TokenReview, Garage (object
+pi, opencode and codex (agent harnesses), Kubernetes Jobs + NetworkPolicy + TokenReview, Garage (object
 store), any OpenAI-compatible model server (LiteLLM, llama.cpp, vLLM, Ollama…),
 the MCP Go SDK, CEL (`cel-go`), React Flow + ELK.js, CodeMirror, the `yaml` library.
 
@@ -103,7 +103,7 @@ spec:
       description: why this step exists
       model: <catalog model>        # shorthand for llm.model
       llm:                          # full model config, §4.3
-      harness: pi                   # agent nodes (default pi)
+      harness: pi                   # agent nodes: pi (default), opencode or codex
       runtime: <catalog runtime>
       grants: [repo/x:write, mcp/y]
       skills: [small-diffs]
@@ -403,6 +403,32 @@ example `compaction: {keepRecentTokens: 40000}`).
 `flow_finish` and granted MCP tools. A step without `repo:write` has no `edit`
 or `write`.
 
+#### 7.2.2 opencode and codex
+
+`harness:` picks the coding agent of an agent node: `pi` (the default),
+`opencode` or `codex`; the catalog lists the ones a deployment offers, and a
+project can make one its default (`defaults: {harness: codex}`). The runner
+(`internal/runner/harness.go`) does the same work around each one, so grants,
+limits, budgets, transcripts, nudges and results behave alike:
+
+| | pi | opencode | codex |
+|---|---|---|---|
+| Model | shim as its only provider (chat completions) | shim through `@ai-sdk/openai-compatible` | shim over the Responses API (`wire_api = "responses"`; codex speaks nothing else, so shim and broker proxy `/responses` too) |
+| Config | `PI_CODING_AGENT_DIR` | a generated `opencode.json` (`OPENCODE_CONFIG`), project config off, no autoupdate, LSP, formatters, snapshots or web tools | a generated `$CODEX_HOME/config.toml`: approvals off, no sandbox (the pod is the sandbox), no web search or update checks, retries off |
+| flow_finish and MCP tools | pi-ext (`-e`) | `ai-flow flow-tools`, a stdio MCP server (`flow_flow_finish`) | the same server (`flow_finish`) |
+| Instructions | global `AGENTS.md` | global `AGENTS.md` (`$XDG_CONFIG_HOME/opencode`) | `$CODEX_HOME/AGENTS.md` |
+| Step prompt + context | `--append-system-prompt` | `instructions` | `developer_instructions` |
+| Skills | `--skill <dir>` | linked into its global skills dir | linked into `$CODEX_HOME/skills` |
+| Read-only steps | no `edit`/`write` tools | `edit` permission denied | prompt only |
+| Thinking | `thinking_format` | `reasoningEffort` when the model's format is `reasoning_effort` | `model_reasoning_effort`, likewise |
+| Nudge / budget turn | `-c` | `--continue` | `exec resume --last` |
+
+`harnesses.<name>.settings` merge into pi's `settings.json` or into
+`opencode.json`; codex ignores them. Every LLM call carries
+`X-Litellm-Session-Id: ai-flow-<run>-<seq>`, so a step's calls stay on one
+upstream prompt cache whichever harness makes them; `tokens_cached` on each
+visit shows the hit rate.
+
 Harness instructions and settings and a model's `thinking_format` and
 `max_output_tokens` are execution settings: changing them fails active runs
 that use them as configuration drift (the UI asks first). Project instructions
@@ -511,7 +537,7 @@ secrets via an existing Secret (`ai-flow-secrets`).
 
 - `map` (fan-out over a list) and sub-flow nodes; parallel branches that write
   to the repo.
-- Claude Code / opencode harnesses.
+- A Claude Code harness.
 - GitLab forge (Git hosting is GitHub only, including product workspaces).
 - Egress domain allowlists (today: none or public internet).
 - Planner exploration by an agent; multi-repo flows.
