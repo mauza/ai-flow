@@ -35,6 +35,12 @@ JSON goes to stdout; a short summary/errors go to stderr. Exit codes:
 | 1 | Valid captures, one or more scoring checks failed; JSON report emitted |
 | 2 | Bad arguments, invalid/incomplete input, incompatible baseline or I/O error; no evaluation report |
 
+To compare flow **variants** (the same tasks run under another harness, model
+or prompt, so each case's flow name differs), add `-across-flows` with
+`-baseline`: cases still pair by ID and must share scoring rules, and each delta
+records `baseline_flow` and `current_flow`. The 2026-11-01 harness comparison
+(pi vs opencode vs codex on three web-games tasks) used this.
+
 Use the built command to consume exit codes directly. `go run` wraps a child
 exit code and can obscure the distinction between 1 and 2. Write a comparison
 to a **different file** from its baseline; shell redirection truncates files
