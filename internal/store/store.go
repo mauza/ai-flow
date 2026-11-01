@@ -485,6 +485,7 @@ type Visit struct {
 	Model         string          `json:"model,omitempty"`
 	TokensIn      int64           `json:"tokens_in"`
 	TokensOut     int64           `json:"tokens_out"`
+	TokensCached  int64           `json:"tokens_cached"` // prompt tokens served from the upstream's cache
 	CostUSD       float64         `json:"cost_usd"`
 	LLMCalls      int64           `json:"llm_calls"`
 	TranscriptKey string          `json:"transcript_key,omitempty"`
@@ -500,13 +501,13 @@ type Visit struct {
 	Lane          string          `json:"lane,omitempty"`     // the branch (its first node)
 }
 
-const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at, launch_state, fork_seq, lane`
+const visitCols = `run_id, seq, node, visit, type, status, outcome, outputs, summary, error, prompt, job_name, model, tokens_in, tokens_out, cost_usd, llm_calls, transcript_key, log_tail, commit_sha, progress, decided_by, deadline, created_at, started_at, finished_at, launch_state, fork_seq, lane, tokens_cached`
 
 func scanVisit(row interface{ Scan(...any) error }) (*Visit, error) {
 	var v Visit
 	var outputs string
 	err := row.Scan(&v.RunID, &v.Seq, &v.Node, &v.Visit, &v.Type, &v.Status, &v.Outcome, &outputs, &v.Summary, &v.Error, &v.Prompt, &v.JobName, &v.Model,
-		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt, &v.LaunchState, &v.ForkSeq, &v.Lane)
+		&v.TokensIn, &v.TokensOut, &v.CostUSD, &v.LLMCalls, &v.TranscriptKey, &v.LogTail, &v.CommitSHA, &v.Progress, &v.DecidedBy, &v.Deadline, &v.CreatedAt, &v.StartedAt, &v.FinishedAt, &v.LaunchState, &v.ForkSeq, &v.Lane, &v.TokensCached)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -625,14 +626,14 @@ func (s *Store) UpdateVisitIf(ctx context.Context, runID string, seq int, status
 }
 
 // AddUsage adds LLM usage to a visit and its run.
-func (s *Store) AddUsage(ctx context.Context, runID string, seq int, model string, in, out int64, cost float64) error {
+func (s *Store) AddUsage(ctx context.Context, runID string, seq int, model string, in, out, cached int64, cost float64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE visits SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cost_usd = cost_usd + ?, llm_calls = llm_calls + 1, model = ? WHERE run_id = ? AND seq = ?`,
-		in, out, cost, model, runID, seq)
+	result, err := tx.ExecContext(ctx, `UPDATE visits SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, tokens_cached = tokens_cached + ?, cost_usd = cost_usd + ?, llm_calls = llm_calls + 1, model = ? WHERE run_id = ? AND seq = ?`,
+		in, out, cached, cost, model, runID, seq)
 	if err != nil {
 		return err
 	}

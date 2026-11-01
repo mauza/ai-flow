@@ -209,3 +209,30 @@ func TestMaxConcurrencyQueuesCallsPerModel(t *testing.T) {
 		t.Fatalf("%d slots still held", got)
 	}
 }
+
+// Every call of one visit names the same upstream session, so the upstream
+// keeps the step's prompt cache; cached prompt tokens are recorded.
+func TestSessionPerVisitAndCachedTokens(t *testing.T) {
+	b, c := llmTestBroker(t)
+	var sessions []string
+	b.http.Transport = llmTransport(func(r *http.Request) (*http.Response, error) {
+		sessions = append(sessions, r.Header.Get("X-Litellm-Session-Id"))
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
+			`{"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":80}}}`))}, nil
+	})
+	for range 2 {
+		req := httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`))
+		b.llmChat(httptest.NewRecorder(), req, c)
+	}
+	want := SessionID(c.Run, c.Seq)
+	if len(sessions) != 2 || sessions[0] != want || sessions[1] != want {
+		t.Fatalf("sessions = %q, want %q twice", sessions, want)
+	}
+	v, err := b.store.GetVisit(context.Background(), c.Run, c.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.TokensIn != 200 || v.TokensCached != 160 {
+		t.Fatalf("tokens in %d cached %d, want 200 and 160", v.TokensIn, v.TokensCached)
+	}
+}

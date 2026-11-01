@@ -21,7 +21,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
+	if version > 5 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -52,6 +52,12 @@ func migrate(db *sql.DB) error {
 		if _, err := tx.Exec(`ALTER TABLE visits ADD COLUMN fork_seq INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE visits ADD COLUMN lane TEXT NOT NULL DEFAULT '';
 		PRAGMA user_version = 4;`); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		// Prompt tokens the upstream served from its cache (a subset of tokens_in).
+		if _, err := tx.Exec(`ALTER TABLE visits ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 5;`); err != nil {
 			return err
 		}
 	}

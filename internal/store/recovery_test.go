@@ -53,7 +53,7 @@ func TestMigrateOriginalDatabaseAndReopen(t *testing.T) {
 		}
 		var version int
 		check(t, s.db.QueryRow(`PRAGMA user_version`).Scan(&version))
-		if version != 4 {
+		if version != 5 {
 			t.Fatalf("version %d", version)
 		}
 		check(t, s.Ping(ctx))
@@ -194,7 +194,7 @@ func TestUsageMissingVisitDoesNotChargeRun(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	check(t, s.CreateRun(ctx, &Run{ID: "r", FlowName: "f", Status: RunRunning}))
-	if err := s.AddUsage(ctx, "r", 99, "model", 10, 20, 3); !errors.Is(err, ErrNotFound) {
+	if err := s.AddUsage(ctx, "r", 99, "model", 10, 20, 0, 3); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
 	r, err := s.GetRun(ctx, "r")
