@@ -23,7 +23,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: mcp-demo
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "ai-flow.image" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["mcp-demo", ":8090"]
           ports:

@@ -58,7 +58,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ai-flow
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "ai-flow.image" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["server", "-config", "/config"]
           ports:
