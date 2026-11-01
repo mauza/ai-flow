@@ -85,7 +85,7 @@ func TestContextConvergesRepeatVerification(t *testing.T) {
 		t.Fatal("the code-writing step must not get them")
 	}
 	h.finish(id, "done", nil)
-	if got := md("qa"); !strings.Contains(got, "already judged this work 1 time(s)") {
+	if got := md("qa"); !strings.Contains(got, "already judged this work 1 time(s)") || !strings.Contains(got, "Evidence for blocking findings") {
 		t.Fatalf("second QA pass:\n%s", got)
 	}
 }
@@ -125,7 +125,8 @@ func TestContextThoroughReview(t *testing.T) {
 		t.Errorf("rounds not applied: max_visits %d", res.Nodes["qa"].MaxVisits)
 	}
 	got := h.e.ContextMarkdown(h.ctx, r, res, res.Nodes["qa"], v.Seq)
-	if !strings.Contains(got, "## Another full review") || !strings.Contains(got, "problems no earlier pass found") || strings.Contains(got, "## Converging") {
+	if !strings.Contains(got, "## Another full review") || !strings.Contains(got, "problems no earlier pass found") || strings.Contains(got, "## Converging") ||
+		!strings.Contains(got, "A suspicion you could not reproduce is a note, not a blocker") {
 		t.Fatalf("thorough mode:\n%s", got)
 	}
 }

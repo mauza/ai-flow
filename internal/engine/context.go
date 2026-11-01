@@ -247,12 +247,23 @@ func writeConverging(sb *strings.Builder, res *resolve.Resolved, n *resolve.Node
 			"check that earlier findings are really fixed and look for problems no earlier pass found. "+
 			"Block on any real defect (correctness, security, data loss, an acceptance criterion, a test). "+
 			"Report polish, nice-to-haves and things this environment cannot verify as non-blocking notes, and choose the passing outcome when nothing real is left.\n\n", passes)
+		sb.WriteString(blockingEvidence)
 		return
 	}
 	fmt.Fprintf(sb, "## Converging\n\nThis step already judged this work %d time(s) (see Loop history), and every blocking finding sends it back for another round. "+
 		"This time, block only on (1) findings from earlier passes that are still present, or (2) new problems that break an acceptance criterion of the task or a test. "+
 		"Report anything else (polish, nice-to-haves, things this environment cannot verify) as non-blocking notes in your summary, and choose the passing outcome when nothing blocks.\n\n", passes)
+	sb.WriteString(blockingEvidence)
 }
+
+// blockingEvidence keeps repeat reviews honest. On web-games a thorough
+// leaderboards review blocked 17 times; the last repairs added regression
+// tests showing the reported defects did not exist, and the reviewer raised
+// new unreproduced ones until the budget ran out.
+const blockingEvidence = "**Evidence for blocking findings.** Back each blocking finding with evidence: a test or command you ran and its output, " +
+	"or exact steps with the expected and the observed result, plus the file and line. A suspicion you could not reproduce is a note, not a blocker. " +
+	"When a fix step answered an earlier finding with evidence (a regression test that passes, or a reasoned explanation that the behaviour is already correct), " +
+	"do not raise it again unless you can show it still fails; record any remaining disagreement as a note.\n\n"
 
 // writeLaterSteps lists what the flow still does after this step. On
 // web-games, reviewers blocked a change three times over a criterion only the
