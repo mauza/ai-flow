@@ -28,6 +28,7 @@ type fakeWorld struct {
 	merges    int
 	merged8   bool             // a second PR, for two runs releasing at once
 	mainCI    []map[string]any // check runs on the merge commit (the release build)
+	behind    int              // commits on main the PR head does not contain
 	checks    []map[string]any // check runs
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
@@ -80,6 +81,8 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			io.WriteString(rw, "2026-10-31T21:27:20.07Z ok 75 - claims bind the owner\n2026-10-31T21:27:22.86Z not ok 285 - Signal Breach campaign win: saved result reopens\n2026-10-31T21:27:22.86Z   error: \"Cannot read properties of undefined (reading 'lastResult')\"\n2026-10-31T21:27:23.80Z # fail 1\n")
 		case p == "/repos/your-org/ai-flow-sandbox/commits/mergedsha0000001/check-runs" && w.mainCI != nil:
 			reply(map[string]any{"check_runs": w.mainCI})
+		case strings.HasPrefix(p, "/repos/your-org/ai-flow-sandbox/compare/main..."):
+			reply(map[string]any{"behind_by": w.behind})
 		case strings.HasSuffix(p, "/check-runs"):
 			reply(map[string]any{"check_runs": w.checks})
 		case strings.HasSuffix(p, "/status"):
@@ -258,6 +261,7 @@ func TestMergeOutcomesAndCIOutcomes(t *testing.T) {
 		want  string
 	}{
 		{"conflict", &fakeWorld{mergeable: false, state: "dirty", checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}, "ship:conflict"},
+		{"behind main", &fakeWorld{mergeable: true, state: "clean", behind: 2, checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}, "ship:conflict"},
 		{"blocked", &fakeWorld{mergeable: true, state: "blocked", checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}, "ship:blocked"},
 		{"ci failed", &fakeWorld{checks: []map[string]any{{"name": "lint", "status": "completed", "conclusion": "failure"}, {"name": "t", "status": "completed", "conclusion": "success"}}}, "ci:failed"},
 	} {

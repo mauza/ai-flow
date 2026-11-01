@@ -194,6 +194,15 @@ type PRState struct {
 	} `json:"head"`
 }
 
+// BehindBy counts the commits on base that head does not contain.
+func (c *Client) BehindBy(ctx context.Context, r Repo, base, head string) (int, error) {
+	var cmp struct {
+		BehindBy int `json:"behind_by"`
+	}
+	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, url.PathEscape(base), url.PathEscape(head)), nil, &cmp)
+	return cmp.BehindBy, err
+}
+
 func (c *Client) PR(ctx context.Context, r Repo, number int) (*PRState, error) {
 	var pr PRState
 	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/pulls/%d", r.Owner, r.Name, number), nil, &pr)
