@@ -215,6 +215,75 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	return merged(sha), nil
 }
 
+// failureLogs collects the failing lines of each failed Actions job's log.
+// Best effort: CI without job logs (other providers) just has none.
+func (e *Engine) failureLogs(ctx context.Context, repo github.Repo, checks []github.Check) string {
+	var parts []string
+	for _, c := range checks {
+		if !c.Done || c.OK || c.JobID == 0 {
+			continue
+		}
+		log, err := e.gh.JobLog(ctx, repo, c.JobID)
+		if err != nil {
+			slog.Warn("ci job log", "job", c.JobID, "err", err)
+			continue
+		}
+		parts = append(parts, "== "+c.Name+"\n"+failureExcerpt(log, 3000))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+var (
+	logStamp   = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[\d:.]+Z |\x1b\[[0-9;]*[A-Za-z]`)
+	// Strong markers say a test or job failed; weak ones only matter when
+	// there are none (passing tests can be named "…undefined…").
+	logFailure = regexp.MustCompile(`^(not ok |--- FAIL|FAIL\b|panic:)|##\[error\]`)
+	logWeak    = regexp.MustCompile(`(?i)(error:|\berror\b.*:|assert|expected|Cannot )`)
+)
+
+// failureExcerpt keeps the lines around failures in a CI log, within max
+// bytes, falling back to the log's tail.
+func failureExcerpt(log string, limit int) string {
+	lines := strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = logStamp.ReplaceAllString(l, "") // timestamps and colour codes
+	}
+	keep := make([]bool, len(lines))
+	hits := 0
+	mark := func(re *regexp.Regexp, before, after int) {
+		for i, l := range lines {
+			if re.MatchString(strings.TrimSpace(l)) {
+				hits++
+				for j := max(0, i-before); j <= min(len(lines)-1, i+after); j++ {
+					keep[j] = true
+				}
+			}
+		}
+	}
+	mark(logFailure, 0, 8) // a TAP failure's details follow it
+	if hits == 0 {
+		mark(logWeak, 2, 3)
+	}
+	var out []string
+	if hits == 0 {
+		out = lines[max(0, len(lines)-40):]
+	} else {
+		gap := false
+		for i, l := range lines {
+			if keep[i] {
+				out, gap = append(out, l), false
+			} else if !gap && len(out) > 0 {
+				out, gap = append(out, "…"), true
+			}
+		}
+	}
+	text := strings.TrimSpace(strings.Join(out, "\n"))
+	if len(text) > limit {
+		text = "…" + text[len(text)-limit:]
+	}
+	return text
+}
+
 // runPR fetches the run's pull request, or nil when it has none or GitHub
 // does not answer (callers treat that as "unknown").
 func (e *Engine) runPR(ctx context.Context, repo github.Repo, r *store.Run) (*github.PRState, int) {
@@ -316,7 +385,17 @@ func (e *Engine) waitForChecks(ctx context.Context, r *store.Run, res *resolve.R
 	outputs["checks"] = names
 	if len(failed) > 0 {
 		outputs["failed"] = failed
-		return &actionResult{outcome: "failed", summary: fmt.Sprintf("CI failed on %s: %s", short(ref), strings.Join(failed, ", ")), outputs: outputs}, nil
+		summary := fmt.Sprintf("CI failed on %s: %s", short(ref), strings.Join(failed, ", "))
+		// The fix step needs the failure, not just the job name: on web-games
+		// it ran the suite 30 times, never saw the 3 failing tests, and gave up.
+		if logs := e.failureLogs(ctx, repo, checks); logs != "" {
+			outputs["log_tail"] = logs
+		}
+		if strings.TrimSpace(with["ref"]) == "" && r.PRURL != "" {
+			// That failure only existed in the merge with main.
+			summary += fmt.Sprintf(". PR CI runs on the merge of the branch into %s: to reproduce, merge origin/%s into the checkout first (no fetch needed).", r.Base, r.Base)
+		}
+		return &actionResult{outcome: "failed", summary: summary, outputs: outputs}, nil
 	}
 	return &actionResult{outcome: "passed", summary: fmt.Sprintf("All %d checks passed on %s", len(checks), short(ref)), outputs: outputs}, nil
 }

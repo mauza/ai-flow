@@ -216,14 +216,16 @@ func (c *Client) MergePR(ctx context.Context, r Repo, number int, method, headSH
 
 // Check is one CI result on a commit: a check run or a commit status.
 type Check struct {
-	Name string
-	Done bool
-	OK   bool
-	URL  string
-	Note string // conclusion or state
+	Name  string
+	Done  bool
+	OK    bool
+	URL   string
+	Note  string // conclusion or state
+	JobID int64  // GitHub Actions job (its check run id), 0 for commit statuses
 }
 
 type checkRun struct {
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -265,12 +267,34 @@ func (c *Client) Checks(ctx context.Context, r Repo, ref string) ([]Check, error
 		if note == "" {
 			note = cr.Status
 		}
-		out = append(out, Check{Name: cr.Name, Done: cr.Status == "completed", OK: ok, URL: cr.HTMLURL, Note: note})
+		out = append(out, Check{Name: cr.Name, Done: cr.Status == "completed", OK: ok, URL: cr.HTMLURL, Note: note, JobID: cr.ID})
 	}
 	for _, s := range status.Statuses {
 		out = append(out, Check{Name: s.Context, Done: s.State != "pending", OK: s.State == "success", URL: s.TargetURL, Note: s.State})
 	}
 	return out, nil
+}
+
+// JobLog returns a GitHub Actions job's log (GitHub redirects to storage).
+func (c *Client) JobLog(ctx context.Context, r Repo, jobID int64) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/repos/%s/%s/actions/jobs/%d/logs", c.api, r.Owner, r.Name, jobID), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode >= 300 {
+		return "", &APIError{resp.StatusCode, string(raw)}
+	}
+	return string(raw), nil
 }
 
 // actionsJobs lists the latest attempt of every GitHub Actions job run for
