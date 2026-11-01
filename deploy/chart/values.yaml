@@ -3,7 +3,7 @@
 
 image:
   repository: ai-flow
-  tag: dev
+  tag: dev        # always quote real tags: an all-digit sha is a YAML number
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
