@@ -31,7 +31,13 @@ func (e *Engine) execAction(ctx context.Context, r *store.Run, res *resolve.Reso
 	spec := flow.Actions[n.Action]
 	key := fmt.Sprintf("%s/%d", r.ID, v.Seq)
 	if spec.Waits && v.Status == store.VisitRunning {
-		if v.Deadline > 0 && store.Now() > v.Deadline {
+		// The deadline counts from the start: an action whose polls keep
+		// erroring never records one, and must still time out.
+		deadline := v.Deadline
+		if deadline == 0 && v.StartedAt > 0 {
+			deadline = v.StartedAt + n.Timeout.Duration.Milliseconds()
+		}
+		if deadline > 0 && store.Now() > deadline {
 			e.forget(key)
 			return e.finishAction(ctx, r, v, &actionResult{outcome: flow.OutcomeTimeout,
 				summary: fmt.Sprintf("Gave up after %s: %s", shortDuration(n.Timeout.Duration), strings.TrimSpace(v.Progress))})
@@ -48,7 +54,7 @@ func (e *Engine) execAction(ctx context.Context, r *store.Run, res *resolve.Reso
 	if out.waiting {
 		fields := map[string]any{"progress": out.summary}
 		if v.Deadline == 0 {
-			fields["deadline"] = time.Now().Add(n.Timeout.Duration).UnixMilli()
+			fields["deadline"] = v.StartedAt + n.Timeout.Duration.Milliseconds()
 		}
 		if out.summary != v.Progress {
 			e.hub.Publish(hub.Event{Type: "progress", ID: r.ID, Seq: v.Seq, Text: out.summary})
@@ -194,6 +200,20 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	case pr.MergeableState == "blocked" || pr.MergeableState == "behind" || pr.MergeableState == "draft":
 		return &actionResult{outcome: "blocked", summary: fmt.Sprintf("GitHub will not merge #%d yet: %s (required reviews, checks or an out-of-date branch)", number, pr.MergeableState)}, nil
 	}
+	// Merge only the commit CI passed on: a push after the pass (or a check
+	// of some other ref) is untested. Conflict routes back through CI.
+	if passed, err := e.ciPassedRef(ctx, r, res); err != nil {
+		return nil, err
+	} else if _, deployErr := e.deployOf(r); passed != pr.Head.SHA && (passed != "" || deployErr == nil) {
+		// Without a deploy config (no CI required by validation) a run
+		// that never ran CI may still merge.
+		what := "no CI pass is recorded in this run"
+		if passed != "" {
+			what = "CI passed on " + short(passed)
+		}
+		return &actionResult{outcome: "conflict", summary: fmt.Sprintf(
+			"#%d head is %s but %s: run CI on the current head before merging", number, short(pr.Head.SHA), what)}, nil
+	}
 	if other, err := e.releaseInFlight(ctx, r); err != nil {
 		return nil, err
 	} else if other != "" {
@@ -225,6 +245,27 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 		return nil, err
 	}
 	return merged(sha), nil
+}
+
+// ciPassedRef is the commit the run's latest passing wait_for_checks
+// checked, or "" when none passed.
+func (e *Engine) ciPassedRef(ctx context.Context, r *store.Run, res *resolve.Resolved) (string, error) {
+	vs, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
+	for i := len(vs) - 1; i >= 0; i-- {
+		v := vs[i]
+		if n := res.Nodes[v.Node]; n == nil || n.Action != "wait_for_checks" || v.Outcome != "passed" {
+			continue
+		}
+		var out struct {
+			Ref string `json:"ref"`
+		}
+		json.Unmarshal(v.Outputs, &out)
+		return out.Ref, nil
+	}
+	return "", nil
 }
 
 // failureLogs collects the failing lines of each failed Actions job's log.
@@ -525,7 +566,7 @@ func (e *Engine) probeVersion(ctx context.Context, p config.VersionProbe) (strin
 // least the sustain window (HealthSustain, with.sustain) is degraded. Query
 // errors are inconclusive (a metrics outage must not roll a deploy back); the
 // app is healthy only once the soak has passed and every check has been
-// evaluated successfully at least twice.
+// evaluated successfully at least twice and the latest poll is clean.
 func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, with map[string]string) (*actionResult, error) {
 	d, err := e.deployOf(r)
 	if err != nil {
@@ -588,7 +629,14 @@ func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, 
 			outputs: map[string]any{"violations": now, "polls": maxCount(passes)}}, nil
 	}
 	elapsed := time.Since(time.UnixMilli(v.StartedAt))
-	confirmed := true
+	// Healthy needs every check evaluated twice since this process started
+	// watching (counters are in memory, so a restart re-earns them) and a
+	// clean latest poll: a violation that is younger than the sustain window
+	// when the soak ends keeps the soak going until it clears or degrades.
+	confirmed := len(now) == 0
+	for name := range streak {
+		confirmed = confirmed && passes[name] >= 2
+	}
 	for _, h := range d.Health {
 		confirmed = confirmed && passes[h.Name] >= 2
 	}
@@ -681,9 +729,13 @@ func (e *Engine) refreshArgo(ctx context.Context, d *config.Deploy) {
 	}
 }
 
+// rollbackPickup is how long a dispatched rollback may take to show up as a
+// workflow run before the dispatch is presumed lost and sent again.
+var rollbackPickup = 3 * time.Minute
+
 // rollbackDeploy dispatches the project's rollback workflow for a release and
-// waits for it. The dispatch is recorded in kv first-thing after it succeeds,
-// so polls and restarts never dispatch twice.
+// waits for it. The dispatch is recorded in kv before it is sent, so polls
+// and restarts look for its run rather than dispatching twice.
 func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
 	d, err := e.deployOf(r)
 	if err != nil {
@@ -706,17 +758,21 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 	key := fmt.Sprintf("dispatch/%s/%d", r.ID, v.Seq)
 	state, err := e.store.GetKV(ctx, key)
 	if errors.Is(err, store.ErrNotFound) {
+		// Record the dispatch before sending it: if the reply is lost (or
+		// the process dies) the next poll looks for the run instead of
+		// dispatching a second rollback.
 		at := time.Now()
+		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
+			return nil, err
+		}
 		err := e.gh.DispatchWorkflow(ctx, repo, d.Rollback.Workflow, d.Branch, map[string]string{"sha": sha})
 		var api *github.APIError
 		if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
 			return &actionResult{outcome: "failed", summary: fmt.Sprintf("GitHub refused to start %s: %s", d.Rollback.Workflow, strings.TrimSpace(api.Body))}, nil
 		}
 		if err != nil {
-			return nil, err
-		}
-		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
-			return nil, err
+			slog.Warn("rollback dispatch", "run", r.ID, "err", err)
+			return waiting("Dispatching %s to roll back %s (reply lost: %v)", d.Rollback.Workflow, short(sha), err), nil
 		}
 		return waiting("Dispatched %s to roll back %s", d.Rollback.Workflow, short(sha)), nil
 	}
@@ -742,6 +798,14 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 			}
 		}
 		if runID == 0 {
+			if time.Since(time.UnixMilli(ms)) > rollbackPickup {
+				// No run ever appeared: the dispatch did not land. Send it
+				// again on the next poll.
+				if err := e.store.WriteKV(ctx, nil, []string{key}); err != nil {
+					return nil, err
+				}
+				return waiting("GitHub never started %s; dispatching it again", d.Rollback.Workflow), nil
+			}
 			return waiting("Waiting for GitHub to start %s", d.Rollback.Workflow), nil
 		}
 		if err := e.store.SetKV(ctx, key, fmt.Sprintf("%d:%d", ms, runID)); err != nil {

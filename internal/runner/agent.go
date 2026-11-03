@@ -309,7 +309,7 @@ func agentSystemPrompt(b *protocol.Bundle, finish string) string {
 	fmt.Fprintf(&sb, "\nIf you cannot complete the step, still call %s with the outcome that fits best.\n", finish)
 	if b.Repo != nil {
 		if b.Repo.Write {
-			sb.WriteString("Do not run `git commit` or `git push`: your working-tree changes are committed and pushed for you after you finish.\n")
+			sb.WriteString("Do not run `git push`. You may commit; anything left uncommitted is committed and pushed for you after you finish.\n")
 		} else {
 			sb.WriteString("This step is read-only: do not modify files in the repository.\n")
 		}

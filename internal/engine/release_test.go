@@ -33,9 +33,12 @@ type fakeWorld struct {
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
 	appStatus int
+	down      bool   // every GitHub/metrics/app request fails with 502
+	prHead    string // PR #7 head when it moved after CI ("" = headsha)
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
 	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
+	loseReply   bool             // accept the next dispatch but answer 502
 }
 
 func (w *fakeWorld) handler(t *testing.T) http.Handler {
@@ -44,10 +47,18 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 		defer w.mu.Unlock()
 		p := r.URL.Path
 		reply := func(v any) { json.NewEncoder(rw).Encode(v) }
+		if w.down {
+			rw.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		switch {
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7" && r.Method == "GET":
+			head := "headsha"
+			if w.prHead != "" {
+				head = w.prHead
+			}
 			reply(map[string]any{"number": 7, "state": "open", "merged": w.merged, "mergeable": w.mergeable, "mergeable_state": w.state,
-				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": "headsha"}})
+				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": head}})
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7/merge" && r.Method == "PUT":
 			w.merges++
 			w.merged = true
@@ -66,6 +77,11 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			w.dispatches = append(w.dispatches, body)
+			if w.loseReply {
+				w.loseReply = false
+				rw.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			rw.WriteHeader(204)
 		case p == "/repos/your-org/ai-flow-sandbox/actions/workflows/rollback.yml/runs":
 			runs := []any{map[string]any{"id": 1, "status": "completed", "conclusion": "success", "created_at": "2020-01-01T00:00:00Z"}}
@@ -377,6 +393,74 @@ func TestHealthViolationMustBeSustained(t *testing.T) {
 	}
 }
 
+// A soak that ends while a check is failing (not yet for the sustain window)
+// keeps watching instead of reporting healthy, and passes once it recovers.
+func TestSoakEndingMidViolationIsNotHealthy(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.9", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, nil, `    ship:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: $fail }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: 1ms, sustain: 1h }
+      next: { healthy: $success, degraded: $fail, timeout: $fail }
+`)
+	for i := 0; i < 8; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if v := h.current(id); v.Node != "soak" || v.Status != store.VisitRunning {
+		t.Fatalf("a failing check must not pass the soak: %+v (path %s)", v, h.path(id))
+	}
+	w.set(func(w *fakeWorld) { w.metric = "0" })
+	for i := 0; i < 3; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if r, _ := h.st.GetRun(h.ctx, id); r.Status != store.RunSucceeded {
+		t.Fatalf("recovered soak should pass: %s (path %s)", r.Status, h.path(id))
+	}
+}
+
+// A waiting action whose every poll errors still times out: its deadline
+// counts from when it started, not from its first successful poll.
+func TestWaitingActionErrorsStillTimeOut(t *testing.T) {
+	w := &fakeWorld{down: true}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	v := h.current(id)
+	if v.Node != "ci" || v.Status != store.VisitRunning || v.Deadline != 0 {
+		t.Fatalf("ci should be running without a recorded deadline: %+v", v)
+	}
+	if err := h.st.UpdateVisit(h.ctx, id, v.Seq, map[string]any{"started_at": store.Now() - 24*time.Hour.Milliseconds()}); err != nil {
+		t.Fatal(err)
+	}
+	h.e.Tick(h.ctx)
+	if v, _ := h.st.GetVisit(h.ctx, id, v.Seq); v.Outcome != "timeout" {
+		t.Fatalf("ci should time out: %+v (path %s)", v, h.path(id))
+	}
+}
+
+// A commit pushed after CI passed is not merged on the stale pass.
+func TestMergeRequiresCIOnTheCurrentHead(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "oldsha0000000", metric: "0", appStatus: 200, prHead: "pushedlater1",
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	h.e.Tick(h.ctx)
+	if w.merges != 0 || !strings.Contains(h.path(id), "ship:conflict") {
+		t.Fatalf("merged a head CI never saw: merges=%d path %s", w.merges, h.path(id))
+	}
+	if v, _ := h.st.Visits(h.ctx, id); !strings.Contains(v[1].Summary, "CI passed on headsha") {
+		t.Errorf("summary %q", v[1].Summary)
+	}
+}
+
 // A failed CI job's failing lines reach the fix step, with how PR CI ran.
 func TestCIFailureCarriesTheJobLog(t *testing.T) {
 	w := &fakeWorld{checks: []map[string]any{{"id": 77, "name": "web-test", "status": "completed", "conclusion": "failure"}}}
@@ -500,6 +584,30 @@ func TestFastRollbackRestoresThePreviousRelease(t *testing.T) {
 	}
 	if len(w.dispatches) != 1 {
 		t.Errorf("dispatched %d times", len(w.dispatches))
+	}
+}
+
+// A rollback dispatch whose reply is lost is not sent a second time: the
+// next polls look for the run it started.
+func TestLostRollbackReplyIsNotRedispatched(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.5", appStatus: 200, loseReply: true,
+		checks: []map[string]any{{"name": "test", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, func(d *config.Deploy) { d.Rollback = &config.RollbackSpec{Workflow: "rollback.yml"} }, rollbackNodes)
+	for i := 0; i < 10; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if v := h.current(id); v.Node != "rollback" || v.Status != store.VisitRunning {
+		t.Fatalf("rollback should be waiting: %+v (%s)", v, h.path(id))
+	}
+	if len(w.dispatches) != 1 {
+		t.Fatalf("dispatched %d times", len(w.dispatches))
+	}
+	w.set(func(w *fakeWorld) {
+		w.rollbackRun = map[string]any{"id": 42, "status": "completed", "conclusion": "success", "html_url": "https://gh/run/42", "created_at": time.Now().UTC().Format(time.RFC3339)}
+	})
+	h.e.Tick(h.ctx)
+	if got := h.path(id); !strings.Contains(got, "rollback:rolled_back") {
+		t.Fatalf("path %s", got)
 	}
 }
 

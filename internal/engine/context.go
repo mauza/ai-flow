@@ -212,7 +212,7 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		// A web-games agent tried `git fetch`, could not authenticate, and
 		// blocked, though its clone was current.
 		sb.WriteString(" The checkout is a fresh clone made when this step started, so origin/" + r.Base +
-			" (and origin/" + r.Branch + " once pushed) are current. Do not fetch, pull or push (this step has no git credentials); commit your work and the runner pushes it.")
+			" (and origin/" + r.Branch + " once pushed) are current. Do not fetch, pull or push (this step has no git credentials). Committing is optional: when you finish, the runner commits anything left in the working tree and pushes the branch.")
 	}
 	var diff map[string]any
 	json.Unmarshal(r.Diff, &diff)
