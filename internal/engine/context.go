@@ -521,7 +521,7 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 	case "wait_for_deploy":
 		return e.waitForDeploy(ctx, r, res, with)
 	case "check_health":
-		return e.checkHealth(ctx, r, v, with)
+		return e.checkHealth(ctx, r, res, v, with)
 	case "rollback_deploy":
 		return e.rollbackDeploy(ctx, r, res, v, with)
 	case "open_pull_request":

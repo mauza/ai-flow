@@ -131,7 +131,7 @@ var prNumberRe = regexp.MustCompile(`/pull/(\d+)$`)
 // next rollout as its own release failing, and their rollbacks undid each
 // other. Runs waiting at a gate don't hold the deploy target.
 func (e *Engine) releaseInFlight(ctx context.Context, r *store.Run) (string, error) {
-	d, err := e.deployOf(r)
+	d, err := e.deployOf(r, nil)
 	if err != nil || d.Branch != r.Base {
 		return "", nil // merging this run does not deploy
 	}
@@ -204,7 +204,7 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	// of some other ref) is untested. Conflict routes back through CI.
 	if passed, err := e.ciPassedRef(ctx, r, res); err != nil {
 		return nil, err
-	} else if _, deployErr := e.deployOf(r); passed != pr.Head.SHA && (passed != "" || deployErr == nil) {
+	} else if _, deployErr := e.deployOf(r, res); passed != pr.Head.SHA && (passed != "" || deployErr == nil) {
 		// Without a deploy config (no CI required by validation) a run
 		// that never ran CI may still merge.
 		what := "no CI pass is recorded in this run"
@@ -484,7 +484,7 @@ func (e *Engine) waitForChecks(ctx context.Context, r *store.Run, res *resolve.R
 
 // waitForDeploy waits until every version endpoint reports the expected commit.
 func (e *Engine) waitForDeploy(ctx context.Context, r *store.Run, res *resolve.Resolved, with map[string]string) (*actionResult, error) {
-	d, err := e.deployOf(r)
+	d, err := e.deployOf(r, res)
 	if err != nil {
 		return nil, err
 	}
@@ -567,8 +567,8 @@ func (e *Engine) probeVersion(ctx context.Context, p config.VersionProbe) (strin
 // errors are inconclusive (a metrics outage must not roll a deploy back); the
 // app is healthy only once the soak has passed and every check has been
 // evaluated successfully at least twice and the latest poll is clean.
-func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, with map[string]string) (*actionResult, error) {
-	d, err := e.deployOf(r)
+func (e *Engine) checkHealth(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
+	d, err := e.deployOf(r, res)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +662,14 @@ func maxCount(m map[string]int) int {
 	return n
 }
 
-func (e *Engine) deployOf(r *store.Run) (*config.Deploy, error) {
+// deployOf is the project's deploy config as pinned when the run started (its
+// resolved snapshot), so editing health checks, versions or the rollback
+// workflow never changes a release mid-run; resume with refresh re-pins it.
+// Without a pinned one (res nil, or no deploy config then) it is the current.
+func (e *Engine) deployOf(r *store.Run, res *resolve.Resolved) (*config.Deploy, error) {
+	if res != nil && res.Project != nil && res.Project.Spec.Deploy != nil {
+		return res.Project.Spec.Deploy, nil
+	}
 	p := e.cfg.Current().Projects[r.Project]
 	if p == nil || p.Spec.Deploy == nil {
 		return nil, rejectf("project %q has no deploy configuration", r.Project)
@@ -737,7 +744,7 @@ var rollbackPickup = 3 * time.Minute
 // waits for it. The dispatch is recorded in kv before it is sent, so polls
 // and restarts look for its run rather than dispatching twice.
 func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
-	d, err := e.deployOf(r)
+	d, err := e.deployOf(r, res)
 	if err != nil {
 		return nil, err
 	}
