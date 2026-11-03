@@ -142,7 +142,8 @@ func TestEvalCEL(t *testing.T) {
 	}
 }
 
-// A project's review budget raises every bounded step to at least its rounds.
+// A project's review budget raises every bounded fix/review step to at least
+// its rounds, but never an action's limit.
 func TestReviewRoundsRaiseMaxVisits(t *testing.T) {
 	cfg := loadCfg(t)
 	cfg.Projects["sandbox"].Spec.Review = &config.Review{Rounds: 8}
@@ -165,13 +166,18 @@ spec:
       prompt: review
       outcomes: [approve, changes]
       max_visits: 12
-      next: { approve: $success, changes: fix }
+      next: { approve: ship, changes: fix }
+    ship:
+      type: action
+      action: open_pull_request
+      max_visits: 2
+      next: { opened: $success }
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := Resolve(f, cfg)
-	if r.Nodes["fix"].MaxVisits != 8 || r.Nodes["review"].MaxVisits != 12 {
-		t.Fatalf("max_visits fix=%d review=%d", r.Nodes["fix"].MaxVisits, r.Nodes["review"].MaxVisits)
+	if r.Nodes["fix"].MaxVisits != 8 || r.Nodes["review"].MaxVisits != 12 || r.Nodes["ship"].MaxVisits != 2 {
+		t.Fatalf("max_visits fix=%d review=%d ship=%d", r.Nodes["fix"].MaxVisits, r.Nodes["review"].MaxVisits, r.Nodes["ship"].MaxVisits)
 	}
 }

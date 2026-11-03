@@ -87,9 +87,11 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 		if spec, ok := flow.Actions[n.Action]; ok && n.Type == flow.TypeAction && spec.Waits && n.Timeout.Duration == 0 {
 			n.Timeout.Duration = spec.Timeout
 		}
-		if proj != nil && proj.Spec.Review != nil && n.MaxVisits > 0 && n.MaxVisits < proj.Spec.Review.Rounds {
-			// The project's review budget: bounded steps are the fix and
-			// review loops, so each gets at least that many rounds.
+		if proj != nil && proj.Spec.Review != nil && n.MaxVisits > 0 && n.MaxVisits < proj.Spec.Review.Rounds &&
+			(n.Type == flow.TypeAgent || n.Type == flow.TypeLLM || n.Type == flow.TypeCheck) {
+			// The project's review budget: the fix and review loops get at
+			// least that many rounds. Actions (publish, merge, deploy,
+			// rollback) and gates keep their own limits.
 			n.MaxVisits = proj.Spec.Review.Rounds
 		}
 		if n.OnExhausted == "" && n.MaxVisits > 0 {
