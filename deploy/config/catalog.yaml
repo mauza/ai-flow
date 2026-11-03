@@ -394,7 +394,8 @@ presets:
       Approve when the change does what the task asks, is small, and has no obvious bugs.
       Ask for changes for real problems only, for example: wrong behaviour, missing tests for the
       change, duplicated or copied tests, unrelated edits, or debugging leftovers.
-      List each problem concretely (file and what to change) so the next step can fix it.
+      List each problem concretely (file and what to change) so the next step can fix it. Start each comment
+      with an ID (F1, F2, …) so later passes can say which ones are fixed.
     outputs: { comments: [string] }
     outcomes: [approve, changes]
 
@@ -410,6 +411,7 @@ presets:
     prompt: |
       Review the supplied diff and context for injection, authorization errors, secret exposure, and unsafe data handling.
       Report actionable findings with file, scenario, impact, and suggested correction; distinguish assumptions.
+      Start each finding with an ID (F1, F2, …) so later passes can say which ones are fixed.
       Return approve with no supported findings, changes for concrete defects, needs_context if missing code prevents judgment.
       Do not claim to have run a scanner or consulted an advisory database.
     outputs: { findings: [string], assumptions: [string], missing_context: [string] }
@@ -669,7 +671,8 @@ presets:
       and anything nearby the diff could have broken. Prefer real requests (curl, the CLI, a headless browser
       if available: on agent-web, `browse --help`) over reading code. Stop what you started before finishing.
       Return passed when the change works as the task asks, defects with one concrete repro per problem
-      (steps, expected, actual), or blocked if the app cannot be started here (say exactly why).
+      (steps, expected, actual; start each with an ID: D1, D2, …), or blocked if the app cannot be started
+      here (say exactly why and which acceptance criteria stay unverified).
     outputs: { defects: [string], tested: [string] }
     outcomes: [passed, defects, blocked]
 

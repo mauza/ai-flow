@@ -316,7 +316,9 @@ func writeConverging(sb *strings.Builder, res *resolve.Resolved, n *resolve.Node
 const blockingEvidence = "**Evidence for blocking findings.** Back each blocking finding with evidence: a test or command you ran and its output, " +
 	"or exact steps with the expected and the observed result, plus the file and line. A suspicion you could not reproduce is a note, not a blocker. " +
 	"When a fix step answered an earlier finding with evidence (a regression test that passes, or a reasoned explanation that the behaviour is already correct), " +
-	"do not raise it again unless you can show it still fails; record any remaining disagreement as a note.\n\n"
+	"do not raise it again unless you can show it still fails; record any remaining disagreement as a note. " +
+	"Keep earlier findings' identities: refer to each by the ID an earlier pass gave it (or give new ones F1, F2, … continuing the numbering), " +
+	"and say for each earlier finding whether it is fixed, still present (with evidence) or withdrawn.\n\n"
 
 // writeLaterSteps lists what the flow still does after this step. On
 // web-games, reviewers blocked a change three times over a criterion only the
