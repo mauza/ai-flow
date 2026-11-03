@@ -525,7 +525,7 @@ func (e *Engine) probeVersion(ctx context.Context, p config.VersionProbe) (strin
 // least the sustain window (HealthSustain, with.sustain) is degraded. Query
 // errors are inconclusive (a metrics outage must not roll a deploy back); the
 // app is healthy only once the soak has passed and every check has been
-// evaluated successfully at least twice.
+// evaluated successfully at least twice and the latest poll is clean.
 func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, with map[string]string) (*actionResult, error) {
 	d, err := e.deployOf(r)
 	if err != nil {
@@ -588,7 +588,14 @@ func (e *Engine) checkHealth(ctx context.Context, r *store.Run, v *store.Visit, 
 			outputs: map[string]any{"violations": now, "polls": maxCount(passes)}}, nil
 	}
 	elapsed := time.Since(time.UnixMilli(v.StartedAt))
-	confirmed := true
+	// Healthy needs every check evaluated twice since this process started
+	// watching (counters are in memory, so a restart re-earns them) and a
+	// clean latest poll: a violation that is younger than the sustain window
+	// when the soak ends keeps the soak going until it clears or degrades.
+	confirmed := len(now) == 0
+	for name := range streak {
+		confirmed = confirmed && passes[name] >= 2
+	}
 	for _, h := range d.Health {
 		confirmed = confirmed && passes[h.Name] >= 2
 	}

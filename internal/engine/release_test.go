@@ -377,6 +377,40 @@ func TestHealthViolationMustBeSustained(t *testing.T) {
 	}
 }
 
+// A soak that ends while a check is failing (not yet for the sustain window)
+// keeps watching instead of reporting healthy, and passes once it recovers.
+func TestSoakEndingMidViolationIsNotHealthy(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.9", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, nil, `    ship:
+      type: action
+      action: merge_pull_request
+      next: { merged: live, conflict: $fail, blocked: $fail, timeout: $fail }
+    live:
+      type: action
+      action: wait_for_deploy
+      next: { deployed: soak, timeout: $fail }
+    soak:
+      type: action
+      action: check_health
+      with: { duration: 1ms, sustain: 1h }
+      next: { healthy: $success, degraded: $fail, timeout: $fail }
+`)
+	for i := 0; i < 8; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if v := h.current(id); v.Node != "soak" || v.Status != store.VisitRunning {
+		t.Fatalf("a failing check must not pass the soak: %+v (path %s)", v, h.path(id))
+	}
+	w.set(func(w *fakeWorld) { w.metric = "0" })
+	for i := 0; i < 3; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if r, _ := h.st.GetRun(h.ctx, id); r.Status != store.RunSucceeded {
+		t.Fatalf("recovered soak should pass: %s (path %s)", r.Status, h.path(id))
+	}
+}
+
 // A failed CI job's failing lines reach the fix step, with how PR CI ran.
 func TestCIFailureCarriesTheJobLog(t *testing.T) {
 	w := &fakeWorld{checks: []map[string]any{{"id": 77, "name": "web-test", "status": "completed", "conclusion": "failure"}}}
