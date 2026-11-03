@@ -352,3 +352,28 @@ func TestConcurrencyLimit(t *testing.T) {
 		t.Error("oldest run should start first")
 	}
 }
+
+// Cancel also kills the Job of an errored visit: a timed-out pod can outlive
+// its visit, and nothing cleans it up once the run is canceled.
+func TestCancelKillsErroredVisitJobs(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(header + `  start: fix
+  nodes:
+    fix:
+      type: agent
+      model: ` + testModel + `
+      prompt: fix it
+      outcomes: [done]
+      next: { done: $success }
+`)
+	v, _ := h.st.LastVisit(h.ctx, id)
+	if err := h.st.UpdateVisit(h.ctx, id, v.Seq, map[string]any{"status": store.VisitError, "error": "timed out"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.Cancel(h.ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if h.l.state[v.JobName] != engine.JobFailed {
+		t.Errorf("errored visit's job left %s", h.l.state[v.JobName])
+	}
+}
