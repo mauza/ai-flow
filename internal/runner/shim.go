@@ -35,13 +35,14 @@ type Shim struct {
 	client   *http.Client
 	sleep    func(context.Context, time.Duration) error
 
-	mu        sync.Mutex
-	current   int
-	calls     int
-	tokensIn  int64
-	tokensOut int64
-	grace     int64 // tokens allowed past the limit to let the agent finish
-	stopped   *LimitStop
+	mu         sync.Mutex
+	current    int
+	calls      int
+	tokensIn   int64
+	tokensOut  int64
+	grace      int64 // tokens allowed past the limit to let the agent finish
+	graceTurns int   // calls allowed past the turn limit, likewise
+	stopped    *LimitStop
 
 	stop chan struct{}
 	srv  *http.Server
@@ -113,17 +114,22 @@ func (s *Shim) Done() <-chan struct{} {
 	return s.stop
 }
 
-// Grace lifts a token-budget stop once by extra tokens so the agent can
-// report what it has instead of losing all of it. It reports whether it did.
+// Grace lifts a token- or turn-budget stop once by extra tokens and
+// graceTurnCalls calls so the agent can report what it has instead of losing
+// all of it. It reports whether it did.
 func (s *Shim) Grace(extra int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped == nil || s.stopped.Kind != flow.LimitBudgetExceeded || s.grace > 0 {
 		return false
 	}
-	s.stopped, s.stop, s.grace = nil, make(chan struct{}), extra
+	s.stopped, s.stop, s.grace, s.graceTurns = nil, make(chan struct{}), extra, graceTurnCalls
 	return true
 }
+
+// graceTurnCalls is enough calls for a final turn: a tool call or two and
+// flow_finish.
+const graceTurnCalls = 4
 
 func (s *Shim) StopInfo() *LimitStop {
 	s.mu.Lock()
@@ -294,9 +300,9 @@ func (s *Shim) do(ctx context.Context, body map[string]any, path string) (*http.
 		return nil, &upstreamErr{status: 429, body: errBody(st.Kind, "node stopped: "+st.Message), kind: st.Kind, message: st.Message}, nil
 	}
 	s.calls++
-	calls := s.calls
+	calls, graceTurns := s.calls, s.graceTurns
 	s.mu.Unlock()
-	if l := s.limits(); l != nil && l.Turns > 0 && calls > l.Turns {
+	if l := s.limits(); l != nil && l.Turns > 0 && calls > l.Turns+graceTurns {
 		return nil, s.budgetStop(fmt.Sprintf("turn limit %d reached", l.Turns)), nil
 	}
 

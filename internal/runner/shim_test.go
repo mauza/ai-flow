@@ -198,3 +198,21 @@ func TestShimNonLimitErrorPassesThrough(t *testing.T) {
 		t.Error("a plain 400 must not stop the node")
 	}
 }
+
+// A step stopped by its turn limit gets a few calls of grace to report, as a
+// token-budget stop does (its call counter is already past the limit).
+func TestShimGraceAfterTurnLimit(t *testing.T) {
+	u := &upstream{}
+	s, _ := newTestShim(t, u, &flow.LLMConfig{Limits: &flow.Limits{Turns: 2}}, "a")
+	call(s)
+	call(s)
+	if err := call(s); err == nil || s.StopInfo() == nil {
+		t.Fatalf("third call should hit the turn limit: %v", err)
+	}
+	if !s.Grace(1000) {
+		t.Fatal("grace refused")
+	}
+	if err := call(s); err != nil {
+		t.Fatalf("grace call: %v", err)
+	}
+}
