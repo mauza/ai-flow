@@ -31,7 +31,13 @@ func (e *Engine) execAction(ctx context.Context, r *store.Run, res *resolve.Reso
 	spec := flow.Actions[n.Action]
 	key := fmt.Sprintf("%s/%d", r.ID, v.Seq)
 	if spec.Waits && v.Status == store.VisitRunning {
-		if v.Deadline > 0 && store.Now() > v.Deadline {
+		// The deadline counts from the start: an action whose polls keep
+		// erroring never records one, and must still time out.
+		deadline := v.Deadline
+		if deadline == 0 && v.StartedAt > 0 {
+			deadline = v.StartedAt + n.Timeout.Duration.Milliseconds()
+		}
+		if deadline > 0 && store.Now() > deadline {
 			e.forget(key)
 			return e.finishAction(ctx, r, v, &actionResult{outcome: flow.OutcomeTimeout,
 				summary: fmt.Sprintf("Gave up after %s: %s", shortDuration(n.Timeout.Duration), strings.TrimSpace(v.Progress))})
@@ -48,7 +54,7 @@ func (e *Engine) execAction(ctx context.Context, r *store.Run, res *resolve.Reso
 	if out.waiting {
 		fields := map[string]any{"progress": out.summary}
 		if v.Deadline == 0 {
-			fields["deadline"] = time.Now().Add(n.Timeout.Duration).UnixMilli()
+			fields["deadline"] = v.StartedAt + n.Timeout.Duration.Milliseconds()
 		}
 		if out.summary != v.Progress {
 			e.hub.Publish(hub.Event{Type: "progress", ID: r.ID, Seq: v.Seq, Text: out.summary})

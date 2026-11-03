@@ -33,6 +33,7 @@ type fakeWorld struct {
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
 	appStatus int
+	down      bool // every GitHub/metrics/app request fails with 502
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
 	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
@@ -44,6 +45,10 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 		defer w.mu.Unlock()
 		p := r.URL.Path
 		reply := func(v any) { json.NewEncoder(rw).Encode(v) }
+		if w.down {
+			rw.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		switch {
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7" && r.Method == "GET":
 			reply(map[string]any{"number": 7, "state": "open", "merged": w.merged, "mergeable": w.mergeable, "mergeable_state": w.state,
@@ -408,6 +413,25 @@ func TestSoakEndingMidViolationIsNotHealthy(t *testing.T) {
 	}
 	if r, _ := h.st.GetRun(h.ctx, id); r.Status != store.RunSucceeded {
 		t.Fatalf("recovered soak should pass: %s (path %s)", r.Status, h.path(id))
+	}
+}
+
+// A waiting action whose every poll errors still times out: its deadline
+// counts from when it started, not from its first successful poll.
+func TestWaitingActionErrorsStillTimeOut(t *testing.T) {
+	w := &fakeWorld{down: true}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	v := h.current(id)
+	if v.Node != "ci" || v.Status != store.VisitRunning || v.Deadline != 0 {
+		t.Fatalf("ci should be running without a recorded deadline: %+v", v)
+	}
+	if err := h.st.UpdateVisit(h.ctx, id, v.Seq, map[string]any{"started_at": store.Now() - 24*time.Hour.Milliseconds()}); err != nil {
+		t.Fatal(err)
+	}
+	h.e.Tick(h.ctx)
+	if v, _ := h.st.GetVisit(h.ctx, id, v.Seq); v.Outcome != "timeout" {
+		t.Fatalf("ci should time out: %+v (path %s)", v, h.path(id))
 	}
 }
 
