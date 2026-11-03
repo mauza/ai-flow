@@ -200,6 +200,20 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 	case pr.MergeableState == "blocked" || pr.MergeableState == "behind" || pr.MergeableState == "draft":
 		return &actionResult{outcome: "blocked", summary: fmt.Sprintf("GitHub will not merge #%d yet: %s (required reviews, checks or an out-of-date branch)", number, pr.MergeableState)}, nil
 	}
+	// Merge only the commit CI passed on: a push after the pass (or a check
+	// of some other ref) is untested. Conflict routes back through CI.
+	if passed, err := e.ciPassedRef(ctx, r, res); err != nil {
+		return nil, err
+	} else if _, deployErr := e.deployOf(r); passed != pr.Head.SHA && (passed != "" || deployErr == nil) {
+		// Without a deploy config (no CI required by validation) a run
+		// that never ran CI may still merge.
+		what := "no CI pass is recorded in this run"
+		if passed != "" {
+			what = "CI passed on " + short(passed)
+		}
+		return &actionResult{outcome: "conflict", summary: fmt.Sprintf(
+			"#%d head is %s but %s: run CI on the current head before merging", number, short(pr.Head.SHA), what)}, nil
+	}
 	if other, err := e.releaseInFlight(ctx, r); err != nil {
 		return nil, err
 	} else if other != "" {
@@ -231,6 +245,27 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 		return nil, err
 	}
 	return merged(sha), nil
+}
+
+// ciPassedRef is the commit the run's latest passing wait_for_checks
+// checked, or "" when none passed.
+func (e *Engine) ciPassedRef(ctx context.Context, r *store.Run, res *resolve.Resolved) (string, error) {
+	vs, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
+	for i := len(vs) - 1; i >= 0; i-- {
+		v := vs[i]
+		if n := res.Nodes[v.Node]; n == nil || n.Action != "wait_for_checks" || v.Outcome != "passed" {
+			continue
+		}
+		var out struct {
+			Ref string `json:"ref"`
+		}
+		json.Unmarshal(v.Outputs, &out)
+		return out.Ref, nil
+	}
+	return "", nil
 }
 
 // failureLogs collects the failing lines of each failed Actions job's log.

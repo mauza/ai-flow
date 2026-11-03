@@ -33,7 +33,8 @@ type fakeWorld struct {
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
 	appStatus int
-	down      bool // every GitHub/metrics/app request fails with 502
+	down      bool   // every GitHub/metrics/app request fails with 502
+	prHead    string // PR #7 head when it moved after CI ("" = headsha)
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
 	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
@@ -51,8 +52,12 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 		}
 		switch {
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7" && r.Method == "GET":
+			head := "headsha"
+			if w.prHead != "" {
+				head = w.prHead
+			}
 			reply(map[string]any{"number": 7, "state": "open", "merged": w.merged, "mergeable": w.mergeable, "mergeable_state": w.state,
-				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": "headsha"}})
+				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": head}})
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7/merge" && r.Method == "PUT":
 			w.merges++
 			w.merged = true
@@ -432,6 +437,21 @@ func TestWaitingActionErrorsStillTimeOut(t *testing.T) {
 	h.e.Tick(h.ctx)
 	if v, _ := h.st.GetVisit(h.ctx, id, v.Seq); v.Outcome != "timeout" {
 		t.Fatalf("ci should time out: %+v (path %s)", v, h.path(id))
+	}
+}
+
+// A commit pushed after CI passed is not merged on the stale pass.
+func TestMergeRequiresCIOnTheCurrentHead(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "oldsha0000000", metric: "0", appStatus: 200, prHead: "pushedlater1",
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseHarness(t, w, "1h")
+	h.e.Tick(h.ctx)
+	h.e.Tick(h.ctx)
+	if w.merges != 0 || !strings.Contains(h.path(id), "ship:conflict") {
+		t.Fatalf("merged a head CI never saw: merges=%d path %s", w.merges, h.path(id))
+	}
+	if v, _ := h.st.Visits(h.ctx, id); !strings.Contains(v[1].Summary, "CI passed on headsha") {
+		t.Errorf("summary %q", v[1].Summary)
 	}
 }
 
