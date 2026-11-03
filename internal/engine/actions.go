@@ -729,9 +729,13 @@ func (e *Engine) refreshArgo(ctx context.Context, d *config.Deploy) {
 	}
 }
 
+// rollbackPickup is how long a dispatched rollback may take to show up as a
+// workflow run before the dispatch is presumed lost and sent again.
+var rollbackPickup = 3 * time.Minute
+
 // rollbackDeploy dispatches the project's rollback workflow for a release and
-// waits for it. The dispatch is recorded in kv first-thing after it succeeds,
-// so polls and restarts never dispatch twice.
+// waits for it. The dispatch is recorded in kv before it is sent, so polls
+// and restarts look for its run rather than dispatching twice.
 func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
 	d, err := e.deployOf(r)
 	if err != nil {
@@ -754,17 +758,21 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 	key := fmt.Sprintf("dispatch/%s/%d", r.ID, v.Seq)
 	state, err := e.store.GetKV(ctx, key)
 	if errors.Is(err, store.ErrNotFound) {
+		// Record the dispatch before sending it: if the reply is lost (or
+		// the process dies) the next poll looks for the run instead of
+		// dispatching a second rollback.
 		at := time.Now()
+		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
+			return nil, err
+		}
 		err := e.gh.DispatchWorkflow(ctx, repo, d.Rollback.Workflow, d.Branch, map[string]string{"sha": sha})
 		var api *github.APIError
 		if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
 			return &actionResult{outcome: "failed", summary: fmt.Sprintf("GitHub refused to start %s: %s", d.Rollback.Workflow, strings.TrimSpace(api.Body))}, nil
 		}
 		if err != nil {
-			return nil, err
-		}
-		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
-			return nil, err
+			slog.Warn("rollback dispatch", "run", r.ID, "err", err)
+			return waiting("Dispatching %s to roll back %s (reply lost: %v)", d.Rollback.Workflow, short(sha), err), nil
 		}
 		return waiting("Dispatched %s to roll back %s", d.Rollback.Workflow, short(sha)), nil
 	}
@@ -790,6 +798,14 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 			}
 		}
 		if runID == 0 {
+			if time.Since(time.UnixMilli(ms)) > rollbackPickup {
+				// No run ever appeared: the dispatch did not land. Send it
+				// again on the next poll.
+				if err := e.store.WriteKV(ctx, nil, []string{key}); err != nil {
+					return nil, err
+				}
+				return waiting("GitHub never started %s; dispatching it again", d.Rollback.Workflow), nil
+			}
 			return waiting("Waiting for GitHub to start %s", d.Rollback.Workflow), nil
 		}
 		if err := e.store.SetKV(ctx, key, fmt.Sprintf("%d:%d", ms, runID)); err != nil {

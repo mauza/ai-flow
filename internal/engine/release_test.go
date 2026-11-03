@@ -38,6 +38,7 @@ type fakeWorld struct {
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
 	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
+	loseReply   bool             // accept the next dispatch but answer 502
 }
 
 func (w *fakeWorld) handler(t *testing.T) http.Handler {
@@ -76,6 +77,11 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			w.dispatches = append(w.dispatches, body)
+			if w.loseReply {
+				w.loseReply = false
+				rw.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			rw.WriteHeader(204)
 		case p == "/repos/your-org/ai-flow-sandbox/actions/workflows/rollback.yml/runs":
 			runs := []any{map[string]any{"id": 1, "status": "completed", "conclusion": "success", "created_at": "2020-01-01T00:00:00Z"}}
@@ -578,6 +584,30 @@ func TestFastRollbackRestoresThePreviousRelease(t *testing.T) {
 	}
 	if len(w.dispatches) != 1 {
 		t.Errorf("dispatched %d times", len(w.dispatches))
+	}
+}
+
+// A rollback dispatch whose reply is lost is not sent a second time: the
+// next polls look for the run it started.
+func TestLostRollbackReplyIsNotRedispatched(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.5", appStatus: 200, loseReply: true,
+		checks: []map[string]any{{"name": "test", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseFlow(t, w, func(d *config.Deploy) { d.Rollback = &config.RollbackSpec{Workflow: "rollback.yml"} }, rollbackNodes)
+	for i := 0; i < 10; i++ {
+		h.e.Tick(h.ctx)
+	}
+	if v := h.current(id); v.Node != "rollback" || v.Status != store.VisitRunning {
+		t.Fatalf("rollback should be waiting: %+v (%s)", v, h.path(id))
+	}
+	if len(w.dispatches) != 1 {
+		t.Fatalf("dispatched %d times", len(w.dispatches))
+	}
+	w.set(func(w *fakeWorld) {
+		w.rollbackRun = map[string]any{"id": 42, "status": "completed", "conclusion": "success", "html_url": "https://gh/run/42", "created_at": time.Now().UTC().Format(time.RFC3339)}
+	})
+	h.e.Tick(h.ctx)
+	if got := h.path(id); !strings.Contains(got, "rollback:rolled_back") {
+		t.Fatalf("path %s", got)
 	}
 }
 
