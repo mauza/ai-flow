@@ -4,11 +4,9 @@ package launcher
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -111,12 +109,6 @@ func (l *Local) Kill(ctx context.Context, name string) error {
 	return nil
 }
 
-// JobName is a DNS-1123 name unique per visit: af-<run>-<seq>-<node>.
-func JobName(s engine.LaunchSpec) string {
-	node := strings.ReplaceAll(s.Node, "_", "-")
-	name := fmt.Sprintf("af-%s-%d-%s", strings.TrimPrefix(s.RunID, "r-"), s.Seq, node)
-	if len(name) > 52 { // leave room for the pod suffix
-		name = strings.TrimRight(name[:52], "-")
-	}
-	return name
-}
+// JobName is engine.JobName: the engine predicts the name to recover a
+// launch whose reply was lost, so the two must never differ.
+func JobName(s engine.LaunchSpec) string { return engine.JobName(s) }

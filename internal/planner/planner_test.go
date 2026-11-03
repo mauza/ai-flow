@@ -89,6 +89,13 @@ func TestConvergeLastCandidateDiagnostics(t *testing.T) {
 			if res.Valid != tc.valid || res.Attempts != len(tc.replies) || calls != len(tc.replies) {
 				t.Fatalf("unexpected result: %+v, calls=%d", res, calls)
 			}
+			rejected := len(tc.replies)
+			if tc.valid {
+				rejected--
+			}
+			if len(res.Repairs) != rejected || (rejected > 0 && !strings.HasPrefix(res.Repairs[0], "attempt 1: ")) {
+				t.Fatalf("repairs %q, want %d", res.Repairs, rejected)
+			}
 			body := tc.body
 			if body != "" {
 				if normalized, err := p.normalize(body, req); err == nil {

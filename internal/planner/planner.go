@@ -46,6 +46,9 @@ type Result struct {
 	Issues      []resolve.Issue
 	Attempts    int
 	Valid       bool
+	// Repairs says why each rejected attempt was sent back, oldest first.
+	Repairs []string
+	Elapsed time.Duration
 }
 
 // Turn is one earlier chat exchange, oldest first.
@@ -109,6 +112,9 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 	}
 	res := &Result{}
 	firstExplanation := ""
+	var repairs []string
+	began := time.Now()
+	defer func() { res.Repairs, res.Elapsed = repairs, time.Since(began) }()
 	for attempt := 1; attempt <= p.cfg.Current().Catalog.Planner.MaxAttempts; attempt++ {
 		res.Attempts = attempt
 		started := time.Now()
@@ -132,6 +138,7 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 		if strings.TrimSpace(body) == "" {
 			res.YAML = ""
 			res.Issues = []resolve.Issue{{Severity: resolve.Error, Message: "planner reply did not contain a non-empty YAML flow"}}
+			repairs = append(repairs, fmt.Sprintf("attempt %d: no yaml block", attempt))
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
 				llm.Message{Role: "user", Content: "I could not find a ```yaml block. Reply with the complete flow in one ```yaml block."})
 			continue
@@ -142,6 +149,7 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 			msgs = append(msgs, llm.Message{Role: "assistant", Content: reply},
 				llm.Message{Role: "user", Content: fmt.Sprintf("That YAML does not parse: %v\nReply with the complete corrected flow in one ```yaml block.", perr)})
 			res.YAML, res.Explanation = body, explanation
+			repairs = append(repairs, fmt.Sprintf("attempt %d: yaml does not parse: %v", attempt, perr))
 			continue
 		}
 		res.YAML, res.Explanation = fixed, explanation
@@ -160,6 +168,7 @@ func (p *Planner) converge(ctx context.Context, msgs []llm.Message, req Request)
 			}
 		}
 		slog.Info("planner repair", "flow", req.FlowName, "attempt", attempt, "errors", strings.Join(errs, " | "))
+		repairs = append(repairs, fmt.Sprintf("attempt %d: %s", attempt, strings.Join(errs, " | ")))
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: reply}, llm.Message{Role: "user", Content: sb.String()})
 	}
 	return res, nil

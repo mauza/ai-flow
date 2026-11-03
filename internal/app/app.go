@@ -171,6 +171,7 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 	}
 	a.Store.UpdateTask(ctx, t.ID, map[string]any{"status": status, "error": errText})
 	a.Store.AddEvent(ctx, &store.Event{TaskID: t.ID, FlowName: name, Kind: "plan", Message: msg})
+	a.Store.AddEvent(ctx, &store.Event{TaskID: t.ID, FlowName: name, Kind: "plan_stats", Message: planStats(res)})
 	a.Hub.Publish(hub.Event{Type: "task", ID: t.ID})
 	a.Hub.Publish(hub.Event{Type: "flow", ID: name})
 	t.FlowName = name
@@ -183,6 +184,19 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 		}
 	}
 	return nil
+}
+
+// planStats records how the draft went, so planner changes can be measured:
+// attempts, time and why each rejected attempt was sent back.
+func planStats(res *planner.Result) string {
+	s := fmt.Sprintf("%d attempt(s) in %ds, valid=%t", res.Attempts, int(res.Elapsed.Seconds()), res.Valid)
+	for _, r := range res.Repairs {
+		s += "\n" + r
+	}
+	if len(s) > 4000 {
+		s = s[:4000] + "…"
+	}
+	return s
 }
 
 func planSummary(res *planner.Result) string {

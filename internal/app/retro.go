@@ -244,6 +244,7 @@ func (a *App) runRecord(ctx context.Context, run *store.Run) (string, error) {
 			fmt.Fprintf(&b, "log tail:\n%s\n", tail)
 		}
 	}
+	writeStepInstructions(&b, a, ctx, run, visits)
 	events, _ := a.Store.Events(ctx, "run_id", run.ID, 80)
 	if len(events) > 0 {
 		b.WriteString("\n## Events\n")
@@ -252,6 +253,40 @@ func (a *App) runRecord(ctx context.Context, run *store.Run) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// writeStepInstructions adds the instructions each visited step ran with,
+// from the run's pinned snapshot: the flow YAML only names presets, and the
+// catalog may have changed since the run.
+func writeStepInstructions(b *strings.Builder, a *App, ctx context.Context, run *store.Run, visits []*store.Visit) {
+	if a.Engine == nil {
+		return
+	}
+	res, err := a.Engine.Resolved(ctx, run)
+	if err != nil {
+		return
+	}
+	seen := map[string]bool{}
+	budget := 20000
+	var parts []string
+	for _, v := range visits {
+		n := res.Nodes[v.Node]
+		if n == nil || seen[v.Node] || strings.TrimSpace(n.Prompt) == "" || budget <= 0 {
+			continue
+		}
+		seen[v.Node] = true
+		kind := n.Preset
+		if kind == "" {
+			kind = string(n.Type)
+		}
+		text := clip(strings.TrimSpace(n.Prompt), min(2000, budget))
+		budget -= len(text)
+		parts = append(parts, fmt.Sprintf("### %s (%s)\n%s\n", v.Node, kind, text))
+	}
+	if len(parts) > 0 {
+		b.WriteString("\n## Instructions the steps ran with (pinned when the run started)\n")
+		b.WriteString(strings.Join(parts, "\n"))
+	}
 }
 
 func clip(s string, n int) string {

@@ -461,6 +461,21 @@ func TestMergeRequiresCIOnTheCurrentHead(t *testing.T) {
 	}
 }
 
+// Deploy settings are pinned when the run starts: loosening a health
+// threshold mid-release does not turn a degraded deploy healthy.
+func TestDeploySettingsArePinnedPerRun(t *testing.T) {
+	w := &fakeWorld{state: "clean", mergeable: true, version: "mergedsha0000001", metric: "0.9", appStatus: 200,
+		checks: []map[string]any{{"name": "t", "status": "completed", "conclusion": "success"}}}
+	h, id := releaseHarness(t, w, "1h")
+	h.cfg.Projects["sandbox"].Spec.Deploy.Health[0].Max = 100
+	for i := 0; i < 8 && !store.RunDone(h.run(id).Status); i++ {
+		h.e.Tick(h.ctx)
+	}
+	if got := h.path(id); !strings.HasSuffix(got, "soak:degraded") {
+		t.Fatalf("the run's own threshold should apply: %s", got)
+	}
+}
+
 // A failed CI job's failing lines reach the fix step, with how PR CI ran.
 func TestCIFailureCarriesTheJobLog(t *testing.T) {
 	w := &fakeWorld{checks: []map[string]any{{"id": 77, "name": "web-test", "status": "completed", "conclusion": "failure"}}}

@@ -332,7 +332,10 @@ under a parallel node, at the latest visit of each branch):
 - a pod node whose Job ended without a result → error after a grace period;
 - a gate past its deadline → `timeout` outcome.
 
-Resolved settings and runtime image references are also pinned. Restart recovery
+Resolved settings and runtime image references are also pinned, including the
+project's `deploy` config: release actions use the health checks, version probes
+and rollback workflow the run started with (resume with `refresh` re-pins them).
+Restart recovery
 reconciles pending visits and uncertain launches using durable transition state.
 See [RELIABILITY.md](RELIABILITY.md) for configuration drift, legacy migration,
 action replay, budget and transcript semantics.
