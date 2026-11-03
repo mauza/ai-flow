@@ -934,11 +934,10 @@ func (e *Engine) Cancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	// Errored visits too: a timed-out pod can outlive its visit.
 	for _, v := range pods {
-		if !visitDone(v.Status) {
-			if err := e.launcher.Kill(ctx, v.JobName); err != nil {
-				return err
-			}
+		if err := e.launcher.Kill(ctx, v.JobName); err != nil {
+			return err
 		}
 	}
 	if err := e.finish(ctx, r, store.RunCanceled, "canceled"); err != nil {

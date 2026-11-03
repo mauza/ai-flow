@@ -66,25 +66,36 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		httpErr(w, 500, "model "+name+" has no upstream")
 		return
 	}
-	msg, err := b.overBudget(ctx, c)
-	if err != nil {
-		slog.Warn("budget lookup", "run", c.Run, "err", err)
-		w.Header().Set("Retry-After", "3")
-		limitErr(w, 503, "budget_unavailable", "budget accounting unavailable; retry shortly")
-		return
+	withinBudget := func() bool {
+		msg, err := b.overBudget(ctx, c)
+		if err != nil {
+			slog.Warn("budget lookup", "run", c.Run, "err", err)
+			w.Header().Set("Retry-After", "3")
+			limitErr(w, 503, "budget_unavailable", "budget accounting unavailable; retry shortly")
+			return false
+		}
+		if msg != "" {
+			limitErr(w, 429, flow.LimitBudgetExceeded, msg)
+			return false
+		}
+		return true
 	}
-	if msg != "" {
-		limitErr(w, 429, flow.LimitBudgetExceeded, msg)
+	if !withinBudget() {
 		return
 	}
 
 	// max_concurrency caps simultaneous calls per model across every pod (a
-	// local GPU server, parallel branches). Extra calls wait for a slot.
+	// local GPU server, parallel branches). Extra calls wait for a slot, and
+	// check the budget again once they have one: calls that finished while
+	// this one queued may have used it up.
 	if slots := b.modelSlots(name, model.MaxConcurrency); slots != nil {
 		select {
 		case slots <- struct{}{}:
 			defer func() { <-slots }()
 		case <-ctx.Done():
+			return
+		}
+		if !withinBudget() {
 			return
 		}
 	}
@@ -269,7 +280,9 @@ func (b *Broker) modelSlots(name string, max int) chan struct{} {
 	if b.slots == nil {
 		b.slots = map[string]chan struct{}{}
 	}
-	if b.slots[name] == nil {
+	// A max_concurrency edit takes effect for new calls; calls holding a
+	// slot release it into the channel they took it from.
+	if b.slots[name] == nil || cap(b.slots[name]) != max {
 		b.slots[name] = make(chan struct{}, max)
 	}
 	return b.slots[name]

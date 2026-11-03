@@ -58,8 +58,12 @@ spec:
       cases:
         - when: 'nodes.unit.outcome == "pass" && nodes.qa.outcome == "passed"'
           outcome: ok
+        # QA could not run here (environment): implement cannot fix that, so
+        # stop for a person instead of spending a repair round on it.
+        - when: 'nodes.unit.outcome == "pass" && nodes.qa.outcome == "blocked"'
+          outcome: unverified
       default: fix
-      next: { ok: open_pr, fix: implement }
+      next: { ok: open_pr, fix: implement, unverified: $fail }
 
     open_pr:
       type: action

@@ -229,3 +229,32 @@ func TestBranchContextShowsOnlyItsOwnBranch(t *testing.T) {
 		}
 	}
 }
+
+// The step after a join sees every branch's findings, not just how the join
+// routed.
+func TestStepAfterJoinSeesBranchResults(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(parallelFlow)
+	h.finishNode(id, "lint", "pass")
+	review := h.active(id)["review"]
+	if err := h.st.UpdateVisit(h.ctx, id, review.Seq, map[string]any{"status": store.VisitSucceeded, "outcome": "changes",
+		"summary": "Two blocking findings", "outputs": `{"findings":["F1: score saved for the wrong account"]}`, "finished_at": store.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.e.Tick(h.ctx)
+	h.finishNode(id, "test", "pass")
+	r := h.run(id)
+	if r.CurrentNode != "fix" {
+		t.Fatalf("at %s (%s)", r.CurrentNode, h.path(id))
+	}
+	res, err := h.e.Resolved(h.ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := h.e.ContextMarkdown(h.ctx, r, res, res.Nodes["fix"], h.active(id)["fix"].Seq)
+	for _, want := range []string{"## Branch results (checks#1)", "### review#1 → changes", "Two blocking findings", "F1: score saved for the wrong account", "### lint#1 → pass"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("missing %q in:\n%s", want, md)
+		}
+	}
+}

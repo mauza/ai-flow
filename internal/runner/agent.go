@@ -124,7 +124,7 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		}
 	}
 
-	// Out of token budget: one short last turn to report what it has. A
+	// Out of token or turn budget: one short last turn to report what it has. A
 	// read-only web-games investigation hit its 3M cap after mapping most of
 	// the repo and returned nothing at all.
 	if st := stop(); st != nil && st.Kind == flow.LimitBudgetExceeded && st.Action == flow.ActFail && ctx.Err() == nil {
@@ -132,7 +132,7 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 			if shim.Grace(max(int64(b.LLM.Config.Limits.Tokens)*15/100, 150000)) {
 				r.progress("Out of token budget; asking the agent to report what it has")
 				runErr = r.runHarness(ctx, h, h.args(s, fmt.Sprintf(
-					"You have used up your token budget. Do no more work: call %s now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",
+					"You have used up your budget (tokens or turns). Do no more work: call %s now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",
 					finish, strings.Join(b.Outcomes, ", ")), true), env, transcript, shim)
 			}
 		}

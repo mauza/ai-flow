@@ -176,6 +176,7 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 		writeConverging(&sb, res, n, done)
 	}
 	if prev != nil {
+		writeBranchResults(&sb, res, visits, prev)
 		fmt.Fprintf(&sb, "## Previous step: %s → %s\n\n", prev.Node, prev.Outcome)
 		if prev.Summary != "" {
 			sb.WriteString(prev.Summary)
@@ -221,6 +222,58 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+const branchResultBudget = 4000
+
+// writeBranchResults gives the step after a join what each parallel branch
+// found: the join itself only records how it routed, so a repair step after
+// it saw one-line summaries and none of the reviewers' findings.
+func writeBranchResults(sb *strings.Builder, res *resolve.Resolved, visits []*store.Visit, prev *store.Visit) {
+	if j := res.Nodes[prev.Node]; j == nil || j.Type != flow.TypeJoin {
+		return
+	}
+	var fork *store.Visit
+	for _, v := range visits {
+		if v.Seq < prev.Seq && v.Outcome == flow.OutcomeJoined {
+			if f := res.Nodes[v.Node]; f != nil && f.Type == flow.TypeParallel && f.Join == prev.Node {
+				fork = v
+			}
+		}
+	}
+	if fork == nil {
+		return
+	}
+	var lanes []string
+	last := map[string]*store.Visit{}
+	for _, v := range visits {
+		if v.ForkSeq != fork.Seq || v.Status != store.VisitSucceeded {
+			continue
+		}
+		if _, ok := last[v.Lane]; !ok {
+			lanes = append(lanes, v.Lane)
+		}
+		last[v.Lane] = v
+	}
+	if len(lanes) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "## Branch results (%s#%d)\n\nThe latest result of each parallel branch that reached %s:\n\n", fork.Node, fork.Visit, prev.Node)
+	for _, lane := range lanes {
+		v := last[lane]
+		fmt.Fprintf(sb, "### %s#%d → %s\n\n", v.Node, v.Visit, v.Outcome)
+		if v.Summary != "" {
+			sb.WriteString(headStr(strings.TrimSpace(v.Summary), branchResultBudget))
+			sb.WriteString("\n\n")
+		}
+		var outputs map[string]any
+		json.Unmarshal(v.Outputs, &outputs)
+		delete(outputs, "log_tail")
+		if len(outputs) > 0 {
+			b, _ := json.MarshalIndent(outputs, "", "  ")
+			fmt.Fprintf(sb, "```json\n%s\n```\n\n", headStr(string(b), branchResultBudget))
+		}
+	}
 }
 
 // writeConverging tells a read-only verification step (QA, review) that runs
@@ -384,6 +437,13 @@ func oneLine(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+func headStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func tailStr(s string, n int) string {
