@@ -164,6 +164,19 @@ func writeTask(b *strings.Builder, m *Map, t *Task, heading bool) {
 	if t.Story != "" {
 		fmt.Fprintf(b, "\nStory: %s\n", strings.TrimSpace(t.Story))
 	}
+	if t.Hypothesis != "" {
+		fmt.Fprintf(b, "\nValue hypothesis: %s\n", strings.TrimSpace(t.Hypothesis))
+	}
+	if t.Value != "" || t.Confidence != "" {
+		var parts []string
+		if t.Value != "" {
+			parts = append(parts, "value="+t.Value)
+		}
+		if t.Confidence != "" {
+			parts = append(parts, "confidence="+t.Confidence)
+		}
+		fmt.Fprintf(b, "Bet profile: %s\n", strings.Join(parts, ", "))
+	}
 	if t.Description != "" {
 		fmt.Fprintf(b, "\n%s\n", strings.TrimSpace(t.Description))
 	}
@@ -171,6 +184,12 @@ func writeTask(b *strings.Builder, m *Map, t *Task, heading bool) {
 		b.WriteString("\nAcceptance criteria:\n")
 		for _, a := range t.Acceptance {
 			fmt.Fprintf(b, "- %s\n", a)
+		}
+	}
+	if len(t.OpenQuestions) > 0 {
+		b.WriteString("\nOpen product questions (surface to a human gate instead of guessing if they affect user-visible behavior):\n")
+		for _, q := range t.OpenQuestions {
+			fmt.Fprintf(b, "- %s\n", q)
 		}
 	}
 	for _, id := range t.Metrics {

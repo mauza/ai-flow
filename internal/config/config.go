@@ -95,6 +95,9 @@ type Server struct {
 	DataDir   string `json:"dataDir,omitempty"`
 	// Optional shared token for the UI/API. Empty = no auth (local kind).
 	AuthTokenEnv string `json:"authTokenEnv,omitempty"`
+	// MCPAllowSteer enables write/steering tools on the control-plane /mcp endpoint.
+	// Read-only inspection tools are always available on /mcp.
+	MCPAllowSteer bool `json:"mcpAllowSteer,omitempty"`
 }
 
 type Runs struct {
@@ -649,6 +652,9 @@ func (c *Config) applyDefaults() {
 	def(&e.Server.PublicURL, "http://localhost:8080")
 	def(&e.Server.PodURL, "http://ai-flow-pods.ai-flow.svc:8081")
 	def(&e.Server.DataDir, "data")
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("AI_FLOW_MCP_ALLOW_STEER"))); v == "1" || v == "true" || v == "yes" {
+		e.Server.MCPAllowSteer = true
+	}
 	def(&e.Runs.Namespace, "ai-flow-runs")
 	def(&e.Runs.ServiceAccount, "ai-flow-runner")
 	def(&e.Runs.TokenAudience, "ai-flow")

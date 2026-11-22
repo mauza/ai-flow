@@ -14,6 +14,13 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 )
 
+// Action is an ntfy action button (e.g. open the run or pull request).
+type Action struct {
+	Action string `json:"action"` // view | http
+	Label  string `json:"label"`
+	URL    string `json:"url"`
+}
+
 // Message is one push notification. Click opens the run in the UI.
 type Message struct {
 	Title    string
@@ -21,6 +28,7 @@ type Message struct {
 	Click    string
 	Priority int      // 1 (min) … 5 (max); 0 = server default
 	Tags     []string // ntfy renders known tags as emoji
+	Actions  []Action
 }
 
 // Sender delivers a message.
@@ -43,10 +51,14 @@ type Ntfy struct {
 }
 
 func (n *Ntfy) Send(ctx context.Context, m Message) error {
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"topic": n.Topic, "title": m.Title, "message": m.Body, "click": m.Click,
 		"priority": m.Priority, "tags": m.Tags,
-	})
+	}
+	if len(m.Actions) > 0 {
+		payload["actions"] = m.Actions
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

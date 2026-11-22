@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Clock, Coins, Cpu, FileDiff, GitCommit, Hand, History, Lightbulb, ListOrdered, Play, RotateCcw, ScrollText, Square, X } from "lucide-react";
+import { Clock, Coins, Compass, Cpu, FileDiff, GitCommit, Hand, History, Lightbulb, ListOrdered, Pause, Play, RotateCcw, ScrollText, Square, X } from "lucide-react";
 import { api, type Graph, type Run, type Visit } from "../api";
 import { useEvents, useNow, useResource } from "../hooks";
 import { clock, duration, timeAgo, tokens, usd } from "../format";
@@ -8,6 +8,7 @@ import FlowGraph, { type RunOverlay } from "../graph/FlowGraph";
 import { edgeId } from "../graph/layout";
 import Transcript from "../run/Transcript";
 import Retro from "../run/Retro";
+import { decisionHighlights } from "./Inbox";
 import { BranchChip, PRLink, Pill, SourceChip, Spinner, StatusIcon, useToast } from "../ui";
 
 export default function RunPage() {
@@ -16,6 +17,9 @@ export default function RunPage() {
   const [progress, setProgress] = useState<Record<number, string>>({});
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [tab, setTab] = useState<"steps" | "events" | "review">("steps");
+  const [steerOpen, setSteerOpen] = useState(false);
+  const [steerText, setSteerText] = useState("");
+  const [steerBusy, setSteerBusy] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
   const now = useNow(1000);
@@ -114,6 +118,34 @@ export default function RunPage() {
             Run again
           </button>
         )}
+        {(run.status === "running" || run.status === "queued") && (
+          <>
+            <button
+              className={`btn sm${run.pause_requested ? " primary" : ""}`}
+              disabled={steerBusy}
+              title={run.pause_requested ? "Clear pause request" : "Pause cleanly after the current step finishes"}
+              onClick={async () => {
+                setSteerBusy(true);
+                try {
+                  await api.steerRun(run.id, { pause: !run.pause_requested });
+                  toast("ok", run.pause_requested ? "Pause cleared" : "Will pause after the current step");
+                  view.reload();
+                } catch (e) {
+                  toast("error", (e as Error).message);
+                } finally {
+                  setSteerBusy(false);
+                }
+              }}
+            >
+              <Pause />
+              {run.pause_requested ? "Pausing…" : "Pause after step"}
+            </button>
+            <button className="btn sm" onClick={() => setSteerOpen((v) => !v)} title="Send a steering note for subsequent steps">
+              <Compass />
+              Steer
+            </button>
+          </>
+        )}
         {active && (
           <button
             className="btn danger sm"
@@ -132,7 +164,50 @@ export default function RunPage() {
         )}
       </div>
 
-      {waiting && <GateBanner runId={run.id} visit={waiting} graph={data.graph} />}
+      {(steerOpen || run.pause_requested || (run.steer_note && active)) && (
+        <div className="steer-bar">
+          {run.pause_requested && <span className="chip">Will pause after current step</span>}
+          {run.steer_note && <span className="small muted">Active steering note: <b>{run.steer_note}</b></span>}
+          {steerOpen && (
+            <form
+              className="row wrap grow"
+              style={{ gap: 8, width: "100%" }}
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setSteerBusy(true);
+                try {
+                  await api.steerRun(run.id, { note: steerText });
+                  toast("ok", steerText.trim() ? "Steering note queued for next step" : "Steering note cleared");
+                  setSteerText("");
+                  setSteerOpen(false);
+                  view.reload();
+                } catch (err) {
+                  toast("error", (err as Error).message);
+                } finally {
+                  setSteerBusy(false);
+                }
+              }}
+            >
+              <input
+                className="input grow"
+                aria-label="Steering note for next step"
+                placeholder="Direction for the next steps (injected without canceling the active step)…"
+                value={steerText}
+                onChange={(e) => setSteerText(e.target.value)}
+                autoFocus
+              />
+              <button className="btn primary sm" type="submit" disabled={steerBusy}>
+                Send direction
+              </button>
+              <button className="btn sm" type="button" onClick={() => setSteerOpen(false)}>
+                Close
+              </button>
+            </form>
+          )}
+        </div>
+      )}
+
+      {waiting && <GateBanner run={run} visit={waiting} visits={visits} graph={data.graph} />}
       {(run.status === "failed" || run.status === "canceled") && <StoppedBanner run={run} visits={visits} graph={data.graph} />}
 
       <div className="split">
@@ -405,22 +480,80 @@ function StoppedBanner({ run, visits, graph }: { run: Run; visits: Visit[]; grap
   );
 }
 
-function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; graph?: Graph }) {
+function GateBanner({ run, visit, visits, graph }: { run: Run; visit: Visit; visits: Visit[]; graph?: Graph }) {
   const toast = useToast();
   const [busy, setBusy] = useState<string>();
   const [note, setNote] = useState("");
+  const [extend, setExtend] = useState(false);
+  const isPause = visit.node === "$pause";
   const node = graph?.nodes.find((n) => n.id === visit.node);
-  const outcomes = (node?.outcomes ?? []).filter((o) => o !== "timeout");
+  const outcomes = isPause ? ["continue", "stop"] : (node?.outcomes ?? []).filter((o) => o !== "timeout");
+  const prev = [...visits].reverse().find((v) => v.seq < visit.seq && v.status === "succeeded");
+  const highlights = decisionHighlights(prev?.outputs);
+  const loops = !isPause && graph
+    ? graph.edges
+        .filter((e) => e.from === visit.node && e.kind === "next" && !e.to.startsWith("$"))
+        .map((e) => {
+          const target = graph.nodes.find((n) => n.id === e.to);
+          if (!target?.max_visits) return null;
+          const used = visits.filter((v) => v.node === e.to && v.seq > (run.resume_seq ?? 0)).length;
+          return used > 0 ? { outcome: e.outcome, target: e.to, used, max: target.max_visits + (run.extra_visits ?? 0) } : null;
+        })
+        .filter((x): x is { outcome: string; target: string; used: number; max: number } => !!x)
+    : [];
+  const nearLimit = loops.some((l) => l.used >= l.max);
+
   return (
     <div className="gate-banner">
       <Hand size={18} color="var(--gate)" />
       <div className="q">
         <b>
-          <span className="mono">{visit.node}</span> needs your decision
+          {isPause ? (
+            <>Paused for your direction</>
+          ) : (
+            <>
+              <span className="mono">{visit.node}</span> needs your decision
+            </>
+          )}
         </b>
         <span className="small" style={{ whiteSpace: "pre-wrap" }}>
           {visit.prompt || node?.prompt}
         </span>
+        {prev && highlights.length > 0 && (
+          <div className="decision-context" style={{ marginTop: 8 }}>
+            <div className="small muted">
+              From <span className="mono">{prev.node}</span>
+              {prev.outcome ? ` → ${prev.outcome}` : ""}
+            </div>
+            {highlights.map((h) => (
+              <div key={h.label} className="decision-block">
+                <div className="label">{h.label}</div>
+                {h.items.length === 1 ? (
+                  <div className="small">{h.items[0]}</div>
+                ) : (
+                  <ul className="decision-list">
+                    {h.items.map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {loops.length > 0 && (
+          <div className="row wrap small muted" style={{ gap: 10, marginTop: 8 }}>
+            {loops.map((l) => (
+              <span key={l.outcome} className="chip mono">
+                {l.outcome} → {l.target}: {l.used}/{l.max} visits
+              </span>
+            ))}
+            <label className="row small" style={{ gap: 6, cursor: "pointer", color: nearLimit ? "var(--warn)" : undefined }}>
+              <input type="checkbox" checked={extend} onChange={(e) => setExtend(e.target.checked)} />
+              Grant +1 loop round
+            </label>
+          </div>
+        )}
         {visit.deadline ? <div className="small muted">Times out {timeAgo(visit.deadline).replace(" ago", "") === "just now" ? "now" : new Date(visit.deadline).toLocaleString()}</div> : null}
         <textarea
           className="input"
@@ -441,7 +574,7 @@ function GateBanner({ runId, visit, graph }: { runId: string; visit: Visit; grap
             onClick={async () => {
               setBusy(o);
               try {
-                await api.decide(runId, visit.seq, o, note);
+                await api.decide(run.id, visit.seq, o, note, extend);
                 toast("ok", `Decided: ${o}`);
               } catch (e) {
                 toast("error", (e as Error).message);

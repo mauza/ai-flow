@@ -116,6 +116,13 @@ acceptance:
   - the grid works on a phone
 metrics: [weekly-players]   # metrics this task should move
 status: todo                # todo | in_progress | done | blocked
+hypothesis: Showing all games up front increases trial plays.
+value: high                 # high | medium | low
+confidence: medium          # high | medium | low
+open_questions:
+  - Should unplayed games be highlighted first?
+outcome: validated          # validated | inconclusive | invalidated (after shipping)
+outcome_note: Trial plays increased 24% the week after shipping.
 ```
 
 Ids are lowercase slugs and become file names. A map with dangling references
@@ -129,11 +136,16 @@ above the map.
   to move or reorder it, or change its activity and release in its panel.
 - **Edit map** edits `map.yaml` as YAML. The `+` buttons add phases,
   activities, releases and tasks.
-- **Assistant** answers questions about the map and can propose changes. Each
-  proposal is checked against the map (and retried once if invalid), shown as
-  a diff, and only written when you press **Apply**. It is still not committed.
+- **Assistant** answers questions about the map (seeing live product & delivery
+  metrics and recent runs) and can propose changes. Each proposal is checked
+  against the map (and retried once if invalid), shown as a diff, and only
+  written when you press **Apply**. It is still not committed.
 - **Metrics** shows product metrics (current value and the last 7 days) and
   delivery metrics, against their targets.
+- **Project summary & shareable digest**: each project page shows delivery
+  investment alongside product metrics, risky bets, open questions, and recent
+  retro takeaways, and exports a standalone Markdown or HTML digest
+  (`GET /api/projects/<project>/digest?format=md|html`).
 
 ## Sending work to a flow
 

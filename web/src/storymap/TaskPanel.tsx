@@ -32,22 +32,37 @@ export default function TaskPanel({
 }) {
   const [t, setT] = useState(task);
   const [acceptance, setAcceptance] = useState((task.acceptance ?? []).join("\n"));
+  const [questions, setQuestions] = useState((task.open_questions ?? []).join("\n"));
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     setT(task);
     setAcceptance((task.acceptance ?? []).join("\n"));
+    setQuestions((task.open_questions ?? []).join("\n"));
   }, [task]);
 
   const set = <K extends keyof UserTask>(k: K, v: UserTask[K]) => setT((x) => ({ ...x, [k]: v }));
-  const value = (): UserTask => ({
-    ...t,
-    title: t.title.trim(),
-    acceptance: acceptance
+  const lines = (s: string) =>
+    s
       .split("\n")
-      .map((s) => s.replace(/^\s*[-*]\s*/, "").trim())
-      .filter(Boolean),
-  });
-  const changed = isNew || JSON.stringify(value()) !== JSON.stringify({ ...task, acceptance: task.acceptance ?? [] });
+      .map((x) => x.replace(/^\s*[-*]\s*/, "").trim())
+      .filter(Boolean);
+  const value = (): UserTask => {
+    const oq = lines(questions);
+    return {
+      ...t,
+      title: t.title.trim(),
+      acceptance: lines(acceptance),
+      open_questions: oq.length ? oq : undefined,
+    };
+  };
+  const changed =
+    isNew ||
+    JSON.stringify(value()) !==
+      JSON.stringify({
+        ...task,
+        acceptance: task.acceptance ?? [],
+        open_questions: task.open_questions?.length ? task.open_questions : undefined,
+      });
   const mine = works.filter((w) => w.scope.tasks.includes(task.id));
   const succeeded = mine[0]?.run?.status === "succeeded";
 
@@ -135,6 +150,76 @@ export default function TaskPanel({
           <label htmlFor="t-desc">Notes</label>
           <textarea id="t-desc" className="input" rows={3} value={t.description ?? ""} onChange={(e) => set("description", e.target.value || undefined)} />
         </div>
+
+        <details className="discovery-box" open={Boolean(t.hypothesis || t.open_questions?.length || t.value || t.confidence || t.outcome || t.outcome_note)}>
+          <summary className="label" style={{ cursor: "pointer", marginBottom: 10 }}>
+            Product discovery &amp; outcome
+          </summary>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="t-value">Expected value</label>
+              <select id="t-value" className="input" value={t.value ?? ""} onChange={(e) => set("value", e.target.value || undefined)}>
+                <option value="">Unset</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="t-confidence">Confidence</label>
+              <select id="t-confidence" className="input" value={t.confidence ?? ""} onChange={(e) => set("confidence", e.target.value || undefined)}>
+                <option value="">Unset</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+              </select>
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="t-hypothesis">Value hypothesis</label>
+            <textarea
+              id="t-hypothesis"
+              className="input"
+              rows={2}
+              value={t.hypothesis ?? ""}
+              onChange={(e) => set("hypothesis", e.target.value || undefined)}
+              placeholder="We believe building this for the user will cause…"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="t-questions">Open product questions</label>
+            <textarea
+              id="t-questions"
+              className="input"
+              rows={2}
+              value={questions}
+              onChange={(e) => setQuestions(e.target.value)}
+              placeholder="One per line — surfaced in Inbox and to flows"
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="t-outcome">Post-ship outcome</label>
+              <select id="t-outcome" className="input" value={t.outcome ?? ""} onChange={(e) => set("outcome", e.target.value || undefined)}>
+                <option value="">Not evaluated</option>
+                <option value="validated">validated</option>
+                <option value="inconclusive">inconclusive</option>
+                <option value="invalidated">invalidated</option>
+              </select>
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="t-outcome-note">What we learned</label>
+            <textarea
+              id="t-outcome-note"
+              className="input"
+              rows={2}
+              value={t.outcome_note ?? ""}
+              onChange={(e) => set("outcome_note", e.target.value || undefined)}
+              placeholder="Did the metric move? What did users do?"
+            />
+          </div>
+        </details>
         {map.metrics.length > 0 && (
           <fieldset className="field metric-picks">
             <legend className="label">Moves metrics</legend>

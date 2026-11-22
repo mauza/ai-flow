@@ -481,6 +481,7 @@ effort and never affects the run.
 
 ## 10. UI
 
+- **Inbox** — unified queue of waiting gates (with structured previous-step findings, loop counters, and inline decisions), failed runs (with quick resume), shipped story-map tasks awaiting outcome verification, open product questions, and planning issues.
 - **Board** — tasks by stage (planning, ready, running, done, failed), new task,
   task drawer (description, runs, activity, re-plan, run).
 - **Flow editor** — graph (ELK layered layout, orthogonal edges, loops, terminal
@@ -492,9 +493,11 @@ effort and never affects the run.
   all runs with their visits, events and transcripts, and unlinks tasks; it is
   refused with 409 while any run of the flow is queued, running or waiting.
 - **Run view** — the same graph colored live over SSE (running, done, waiting,
-  failed, not reached; taken edges in green; visit counts), gate decisions,
-  step timeline with progress, and step detail (result, outputs, rendered prompt,
-  transcript with tool calls).
+  failed, not reached; taken edges in green; visit counts), rich gate decisions
+  (with previous-step findings and optional +1 loop round), mid-flight steering
+  (pause cleanly after the current step or queue a steering note), step timeline
+  with progress, and step detail (result, outputs, rendered prompt, transcript
+  with tool calls).
 - **Catalog** — the node library and a reference of models, grants, skills,
   runtimes and projects.
 - **Settings** — edit every catalog entry and project as YAML; Connections shows
@@ -505,6 +508,13 @@ effort and never affects the run.
   grid with a task panel, sending work to flows, metrics and an assistant.
 - **Run review** — on the run view, an LLM review of the run's record with
   suggestions for the flow, presets, prompts, models, config or primitives.
+- **MCP server** — the control plane serves an MCP endpoint at `/mcp`
+  (Streamable HTTP, behind the same auth) and `ai-flow mcp -url <url>` bridges
+  it over stdio for local LLM clients. Read-only orchestration, attention, and
+  product-health tools are always available; steering tools (`decide_gate`,
+  `steer_run`, `resume_run`, `create_task`, `send_story_to_flow`, `start_retro`)
+  require explicit opt-in (`server.mcpAllowSteer: true` / `AI_FLOW_MCP_ALLOW_STEER=1`
+  or `-allow-steer`).
 
 ## 11. Environments
 

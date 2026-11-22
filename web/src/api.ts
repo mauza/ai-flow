@@ -96,8 +96,13 @@ export interface Run {
   created_at: number;
   started_at?: number;
   finished_at?: number;
+  resume_seq?: number;
   resumes?: number;
   resume_note?: string;
+  pause_requested?: boolean;
+  steer_note?: string;
+  steer_seq?: number;
+  extra_visits?: number;
 }
 
 export interface Visit {
@@ -212,6 +217,7 @@ export interface Overview {
   node_types: string[];
   linear: boolean;
   local: boolean;
+  mcp?: { endpoint: string; allow_steer: boolean };
   operations: {
     as_of: number;
     active: number;
@@ -332,6 +338,7 @@ export interface Release {
   goal?: string;
   status?: string;
   date?: string;
+  open_questions?: string[];
 }
 export interface Metric {
   id: string;
@@ -365,6 +372,12 @@ export interface UserTask {
   acceptance?: string[];
   metrics?: string[];
   status?: string;
+  hypothesis?: string;
+  open_questions?: string[];
+  value?: string;
+  confidence?: string;
+  outcome?: string;
+  outcome_note?: string;
 }
 export interface MapWork {
   scope: { map: string; kind: string; id: string; release?: string; tasks: string[] };
@@ -395,6 +408,158 @@ export interface MapMessage {
   changes?: FileChange[];
   issues?: string[];
   at: number;
+}
+
+// ---- human attention & project digests ----
+
+export interface GateLoopInfo {
+  outcome: string;
+  target: string;
+  used: number;
+  max_visits: number;
+}
+
+export interface GatePrevStep {
+  node: string;
+  outcome?: string;
+  summary?: string;
+  outputs?: Record<string, unknown>;
+}
+
+export interface AttentionGate {
+  run_id: string;
+  project?: string;
+  flow_name: string;
+  flow_version: number;
+  task_id?: string;
+  task_title?: string;
+  seq: number;
+  node: string;
+  is_pause?: boolean;
+  next_node?: string;
+  prompt: string;
+  outcomes: string[];
+  deadline?: number;
+  started_at: number;
+  pr_url?: string;
+  branch?: string;
+  cost_usd: number;
+  diff?: { files_changed?: number; lines_added?: number; lines_removed?: number };
+  extra_visits?: number;
+  prev?: GatePrevStep;
+  loops?: GateLoopInfo[];
+}
+
+export interface AttentionFailedRun {
+  run_id: string;
+  project?: string;
+  flow_name: string;
+  flow_version: number;
+  task_id?: string;
+  task_title?: string;
+  last_node?: string;
+  error?: string;
+  cost_usd: number;
+  finished_at?: number;
+}
+
+export interface AttentionPlanIssue {
+  task_id: string;
+  project: string;
+  title: string;
+  status: string;
+  flow_name?: string;
+  error?: string;
+}
+
+export interface AttentionShipped {
+  project: string;
+  map_id: string;
+  map_title: string;
+  user_task_id: string;
+  title: string;
+  release?: string;
+  run_id: string;
+  pr_url?: string;
+  metrics?: string[];
+  finished_at?: number;
+}
+
+export interface AttentionQuestion {
+  project: string;
+  map_id: string;
+  map_title: string;
+  kind: "task" | "release";
+  id: string;
+  title: string;
+  release?: string;
+  questions: string[];
+}
+
+export interface AttentionReport {
+  counts: {
+    total: number;
+    gates: number;
+    failed_runs: number;
+    plan_issues: number;
+    shipped_unmarked: number;
+    open_questions: number;
+  };
+  gates: AttentionGate[];
+  failed_runs: AttentionFailedRun[];
+  plan_issues: AttentionPlanIssue[];
+  shipped_unmarked: AttentionShipped[];
+  open_questions: AttentionQuestion[];
+}
+
+export interface NamedMetric {
+  id: string;
+  title: string;
+  kind: string;
+  unit?: string;
+  target?: number;
+  direction?: string;
+  value?: number;
+  series?: [number, number][];
+  detail?: string;
+  error?: string;
+  on_target?: boolean;
+}
+
+export interface MapHealthSummary {
+  id: string;
+  title: string;
+  description?: string;
+  tasks_total: number;
+  tasks_done: number;
+  releases: { id: string; title: string; goal?: string; status?: string; total: number; done: number; open_questions?: string[] }[];
+  metrics: NamedMetric[];
+  open_questions: string[];
+  risky_bets: { id: string; title: string; release?: string; value?: string; confidence?: string; hypothesis?: string; open_questions?: string[] }[];
+  outcomes: { id: string; title: string; outcome: string; outcome_note?: string }[];
+}
+
+export interface ProjectSummary {
+  project: string;
+  description?: string;
+  repo?: string;
+  branch?: string;
+  generated_at: number;
+  delivery: {
+    total_runs: number;
+    active_runs: number;
+    waiting_runs: number;
+    succeeded_runs: number;
+    failed_runs: number;
+    success_rate_pct?: number;
+    total_cost_usd: number;
+    total_tokens: number;
+    median_cycle_hours?: number;
+  };
+  attention?: AttentionReport;
+  maps: MapHealthSummary[];
+  recent_runs: { run_id: string; flow_name: string; task_title?: string; status: string; pr_url?: string; cost_usd: number; created_at: number; finished_at?: number; error?: string }[];
+  retros: { run_id: string; flow_name: string; summary: string; suggestions?: { kind: string; target?: string; change: string; why: string; priority?: string }[] }[];
 }
 
 // ---- run retrospectives ----
@@ -445,6 +610,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   overview: () => request<Overview>("GET", "/api/overview"),
+  attention: (project = "") => request<AttentionReport>("GET", project ? `/api/attention?project=${encodeURIComponent(project)}` : "/api/attention"),
   tasks: () => request<Task[]>("GET", "/api/tasks"),
   task: (id: string) => request<{ task: Task; runs: Run[]; events: FlowEvent[] }>("GET", `/api/tasks/${id}`),
   createTask: (t: { title: string; body: string; project: string; plan: boolean }) => request<Task>("POST", "/api/tasks", t),
@@ -475,7 +641,15 @@ export const api = {
       ...(flow_version ? { flow_version } : {}),
       ...(refresh ? { refresh } : {}),
     }),
-  decide: (id: string, seq: number, outcome: string, note = "") => request<void>("POST", `/api/runs/${id}/gates/${seq}`, { outcome, note }),
+  decide: (id: string, seq: number, outcome: string, note = "", extendVisits = false) =>
+    request<void>("POST", `/api/runs/${id}/gates/${seq}`, extendVisits ? { outcome, note, extend_visits: true } : { outcome, note }),
+  steerRun: (id: string, body: { pause?: boolean; note?: string }) => request<Run>("POST", `/api/runs/${id}/steer`, body),
+  projectSummary: (p: string) => request<ProjectSummary>("GET", `/api/projects/${p}/summary`),
+  projectDigest: async (p: string, format: "md" | "html" = "md"): Promise<string> => {
+    const res = await fetch(`/api/projects/${p}/digest?format=${format}`);
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.text();
+  },
   config: () => request<ConfigView>("GET", "/api/config"),
   editConfig: (edits: ConfigEdit[], force = false) => request<{ warnings: string[] }>("POST", "/api/config", { edits, force }),
   repos: () => request<RepoRow[]>("GET", "/api/repos"),

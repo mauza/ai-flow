@@ -114,12 +114,17 @@ unless task/project guidance calls for it.
 
 ## What a human revision means
 
-The current gate API records the selected outcome and who chose it; it does not
-attach arbitrary reviewer prose. `revise` therefore requests another pass against
-the **existing** task criteria, as stated in the example's work prompt. It does
-not secretly provide new instructions or reset any limit. If a reviewer has new
-requirements or needs more attempts, revise the task/flow through the normal
-workflow and start a new run; saved run snapshots retain their original flow.
+A gate decision records the selected outcome, who chose it, and an optional
+`note` (`outputs.note` on the gate visit), which reaches the next step in its
+context and templates. By default, `revise` still counts against `max_visits`;
+passing `extend_visits: true` (or checking **Grant +1 loop round** in the UI)
+raises the run's visit bound by 1 round (up to +10) so human-directed revisions
+do not hit an artificial exhaustion wall.
+
+While a run is active, you can also steer it mid-flight (`POST /api/runs/{id}/steer`,
+the run view's **Steer** / **Pause after step** controls, or MCP `steer_run`) to
+inject a direction note for subsequent steps or pause cleanly between steps at a
+synthetic `$pause` gate without canceling the active step.
 
 ## Review budget (project `review`)
 

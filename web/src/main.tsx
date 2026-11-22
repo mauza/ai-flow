@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import "./styles.css";
 import Shell from "./Shell";
 import Board from "./pages/Board";
+import Inbox from "./pages/Inbox";
 import Flows from "./pages/Flows";
 import Runs from "./pages/Runs";
 import Catalog from "./pages/Catalog";
@@ -35,6 +36,7 @@ const router = createBrowserRouter([
     element: <Shell />,
     children: [
       { index: true, element: <Board /> },
+      { path: "inbox", element: <Inbox /> },
       { path: "flows", element: <Flows /> },
       { path: "flows/:name", element: <Loading><FlowPage /></Loading> },
       { path: "runs", element: <Runs /> },

@@ -2790,3 +2790,115 @@ details.change .diff {
     gap: 0;
   }
 }
+
+/* ---------- inbox, steering & project overview ---------- */
+
+.nav-link .count.attn-hot {
+  background: var(--gate-bg);
+  color: var(--gate);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 650;
+}
+
+.inbox-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.inbox-section .section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.inbox-section .section-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.decision-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-color: color-mix(in srgb, var(--gate) 38%, var(--border));
+}
+
+.decision-prompt {
+  white-space: pre-wrap;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.decision-context {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.decision-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.decision-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.steer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.kpi-val {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 4px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.discovery-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: var(--bg);
+}
+
+.chip.outcome-validated {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+}
+
+.chip.outcome-inconclusive {
+  color: var(--warn);
+}
+
+.chip.outcome-invalidated {
+  color: var(--danger);
+}

@@ -450,7 +450,42 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 	if err != nil {
 		return err
 	}
+	// Mid-flight pause: if a human asked to pause after the current step, stop
+	// cleanly before launching the next non-terminal main-path node.
+	if ln == nil && !flow.Terminal(target) && r.PauseRequested {
+		return e.enterPause(ctx, r, v, target)
+	}
 	return e.enterWhy(ctx, r, res, target, 0, "", ln)
+}
+
+func (e *Engine) enterPause(ctx context.Context, r *store.Run, prev *store.Visit, nextNode string) error {
+	v, err := e.store.AddVisit(ctx, r.ID, flow.NodePause, flow.TypeGate)
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf("Paused before %s (after %s → %s). Review progress and continue with optional direction, or stop.", nextNode, prev.Node, prev.Outcome)
+	outputs, err := json.Marshal(map[string]string{"next_node": nextNode})
+	if err != nil {
+		return err
+	}
+	if err := e.store.Transition(ctx, r.ID, v.Seq, map[string]any{
+		"status":     store.VisitWaiting,
+		"started_at": store.Now(),
+		"prompt":     prompt,
+		"outputs":    string(outputs),
+	}, map[string]any{
+		"status":          store.RunWaiting,
+		"current_node":    flow.NodePause,
+		"pause_requested": 0,
+	}); err != nil {
+		return err
+	}
+	r.Status, r.CurrentNode, r.PauseRequested = store.RunWaiting, flow.NodePause, false
+	e.event(ctx, r, flow.NodePause, "waiting", fmt.Sprintf("Paused before %s for human direction", nextNode))
+	e.publishRun(r)
+	e.publishVisit(r.ID, v.Seq)
+	e.alert(ctx, config.NotifyGate, r, "paused before "+nextNode, prompt, 4, "raised_hand")
+	return nil
 }
 
 func (e *Engine) enter(ctx context.Context, r *store.Run, res *resolve.Resolved, target string, depth int) error {
@@ -529,8 +564,9 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		if err != nil {
 			return err
 		}
-		if count >= n.MaxVisits {
-			why := fmt.Sprintf("%s already ran %d times (max_visits)", target, n.MaxVisits)
+		limit := n.MaxVisits + r.ExtraVisits
+		if count >= limit {
+			why := fmt.Sprintf("%s already ran %d times (max_visits)", target, limit)
 			e.event(ctx, r, target, "exhausted", why+" → "+n.OnExhausted)
 			return e.enterWhy(ctx, r, res, n.OnExhausted, depth+1, why, ln)
 		}
@@ -631,7 +667,7 @@ func (e *Engine) laneArrived(ctx context.Context, r *store.Run, res *resolve.Res
 			return false, nil
 		}
 		count, err := e.visitCount(ctx, r, target)
-		if err != nil || count < next.MaxVisits {
+		if err != nil || count < next.MaxVisits+r.ExtraVisits {
 			return false, err
 		}
 		target = next.OnExhausted
@@ -847,9 +883,20 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 
 // ---- API entry points ----
 
+// MaxExtraVisits caps how many extra loop rounds a human can grant via gates
+// so loops remain bounded even under repeated revisions.
+const MaxExtraVisits = 10
+
 // Decide records a human's gate decision and optional note. The note becomes the
 // gate's outputs.note, so the next step sees it and later ones can reference it.
 func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who, note string) error {
+	return e.DecideWithOptions(ctx, runID, seq, outcome, who, note, false)
+}
+
+// DecideWithOptions records a gate decision. When extendVisits is true, the
+// run's bounded nodes receive +1 loop visit (up to MaxExtraVisits) so a human
+// requesting another revision does not immediately hit max_visits.
+func (e *Engine) DecideWithOptions(ctx context.Context, runID string, seq int, outcome, who, note string, extendVisits bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.store.GetRun(ctx, runID)
@@ -873,6 +920,9 @@ func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who
 	if last.Seq != seq {
 		return fmt.Errorf("visit %d is no longer current", seq)
 	}
+	if v.Node == flow.NodePause {
+		return e.decidePause(ctx, r, v, outcome, who, note)
+	}
 	res, err := e.Resolved(ctx, r)
 	if err != nil {
 		return err
@@ -881,10 +931,66 @@ func (e *Engine) Decide(ctx context.Context, runID string, seq int, outcome, who
 	if n == nil || !slices.Contains(n.Outcomes, outcome) {
 		return fmt.Errorf("%q is not an outcome of %s", outcome, v.Node)
 	}
-	return e.decide(ctx, r, v, outcome, who, note)
+	return e.decideOpts(ctx, r, v, outcome, who, note, extendVisits)
+}
+
+func (e *Engine) decidePause(ctx context.Context, r *store.Run, v *store.Visit, outcome, who, note string) error {
+	if outcome != flow.OutcomeContinue && outcome != flow.OutcomeStop {
+		return fmt.Errorf("%q is not an outcome of %s (use continue or stop)", outcome, flow.NodePause)
+	}
+	var outMap map[string]string
+	json.Unmarshal(v.Outputs, &outMap)
+	if outMap == nil {
+		outMap = map[string]string{}
+	}
+	nextNode := outMap["next_node"]
+	note = strings.TrimSpace(note)
+	summary := fmt.Sprintf("Decided %q", outcome)
+	if who != "" {
+		summary += " by " + who
+	}
+	if note != "" {
+		summary += ": " + note
+		outMap["note"] = note
+	}
+	rawOut, err := json.Marshal(outMap)
+	if err != nil {
+		return err
+	}
+	runFields := map[string]any{"status": store.RunRunning}
+	if note != "" {
+		runFields["steer_note"] = note
+		runFields["steer_seq"] = v.Seq
+		r.SteerNote, r.SteerSeq = note, v.Seq
+	}
+	if err := e.store.Transition(ctx, r.ID, v.Seq, map[string]any{
+		"status": store.VisitSucceeded, "outcome": outcome, "decided_by": who, "summary": summary, "outputs": string(rawOut), "finished_at": store.Now(),
+	}, runFields); err != nil {
+		return err
+	}
+	r.Status = store.RunRunning
+	v.Status, v.Outcome = store.VisitSucceeded, outcome
+	e.publishVisit(r.ID, v.Seq)
+	if outcome == flow.OutcomeStop {
+		msg := "stopped at pause gate"
+		if note != "" {
+			msg += ": " + note
+		}
+		return e.finish(ctx, r, store.RunCanceled, msg)
+	}
+	res, err := e.Resolved(ctx, r)
+	if err != nil {
+		return err
+	}
+	e.event(ctx, r, flow.NodePause, "outcome", fmt.Sprintf("%s → %s (entering %s)", flow.NodePause, outcome, nextNode))
+	return e.enterWhy(ctx, r, res, nextNode, 0, "", nil)
 }
 
 func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outcome, who, note string) error {
+	return e.decideOpts(ctx, r, v, outcome, who, note, false)
+}
+
+func (e *Engine) decideOpts(ctx context.Context, r *store.Run, v *store.Visit, outcome, who, note string, extendVisits bool) error {
 	summary := fmt.Sprintf("Decided %q", outcome)
 	if who == "timeout" {
 		summary = "Nobody decided before the timeout"
@@ -900,14 +1006,82 @@ func (e *Engine) decide(ctx context.Context, r *store.Run, v *store.Visit, outco
 		}
 		outputs = string(b)
 	}
+	runFields := map[string]any{"status": store.RunRunning}
+	extended := false
+	if extendVisits && r.ExtraVisits < MaxExtraVisits {
+		r.ExtraVisits++
+		runFields["extra_visits"] = r.ExtraVisits
+		extended = true
+	}
 	if err := e.store.Transition(ctx, r.ID, v.Seq, map[string]any{
 		"status": store.VisitSucceeded, "outcome": outcome, "decided_by": who, "summary": summary, "outputs": outputs, "finished_at": store.Now(),
-	}, map[string]any{"status": store.RunRunning}); err != nil {
+	}, runFields); err != nil {
 		return err
 	}
 	r.Status = store.RunRunning
 	v.Status, v.Outcome = store.VisitSucceeded, outcome
+	if extended {
+		e.event(ctx, r, v.Node, "extended", fmt.Sprintf("Human granted +1 loop round (extra_visits=%d)", r.ExtraVisits))
+	}
 	return e.advance(ctx, r, v)
+}
+
+// Steer updates mid-flight human steering controls on an active run: request a
+// pause after the current step, and/or record a steering note that subsequent
+// steps receive in their context without canceling the active step.
+func (e *Engine) Steer(ctx context.Context, runID string, pause *bool, note *string, who string) (*store.Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if store.RunDone(r.Status) {
+		return nil, fmt.Errorf("run is %s", r.Status)
+	}
+	fields := map[string]any{}
+	var notes []string
+	if pause != nil {
+		if *pause {
+			fields["pause_requested"] = 1
+			notes = append(notes, "pause requested after current step")
+		} else {
+			fields["pause_requested"] = 0
+			notes = append(notes, "pause request cleared")
+		}
+	}
+	if note != nil {
+		trimmed := strings.TrimSpace(*note)
+		seq := 0
+		if last, err := e.store.LastVisit(ctx, runID); err == nil {
+			seq = last.Seq
+		}
+		fields["steer_note"] = trimmed
+		fields["steer_seq"] = seq
+		if trimmed != "" {
+			notes = append(notes, "note: "+trimmed)
+		} else {
+			notes = append(notes, "steering note cleared")
+		}
+	}
+	if len(fields) == 0 {
+		return r, nil
+	}
+	if err := e.store.UpdateRun(ctx, runID, fields); err != nil {
+		return nil, err
+	}
+	msg := strings.Join(notes, "; ")
+	if who != "" {
+		msg = who + ": " + msg
+	}
+	e.event(ctx, r, r.CurrentNode, "steer", msg)
+	fresh, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	e.publishRun(fresh)
+	e.Wake()
+	return fresh, nil
 }
 
 // DeleteFlow removes a flow with its versions, chat and finished runs. It
@@ -1136,6 +1310,14 @@ func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, bo
 	}
 	if base := strings.TrimSuffix(e.cfg.Current().Env.Server.PublicURL, "/"); base != "" {
 		m.Click = base + "/runs/" + r.ID
+		label := "Open run"
+		if event == config.NotifyGate || event == config.NotifyStuck {
+			label = "Review & decide"
+		}
+		m.Actions = append(m.Actions, notify.Action{Action: "view", Label: label, URL: m.Click})
+		if r.PRURL != "" {
+			m.Actions = append(m.Actions, notify.Action{Action: "view", Label: "Open PR", URL: r.PRURL})
+		}
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

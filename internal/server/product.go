@@ -43,6 +43,37 @@ func (s *Server) productRoutes(api func(string, http.HandlerFunc)) {
 	// The project map: what exploration steps learned (see engine/projectmap.go).
 	api("GET /api/projects/{p}/project-map", s.getProjectMap)
 	api("DELETE /api/projects/{p}/project-map", s.resetProjectMap)
+
+	// Project health & shareable status digest.
+	api("GET /api/projects/{p}/summary", s.projectSummary)
+	api("GET /api/projects/{p}/digest", s.projectDigest)
+}
+
+func (s *Server) projectSummary(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.app.ProjectSummary(r.Context(), r.PathValue("p"))
+	if err != nil {
+		writeErr(w, 404, err.Error())
+		return
+	}
+	writeJSON(w, 200, sum)
+}
+
+func (s *Server) projectDigest(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.app.ProjectSummary(r.Context(), r.PathValue("p"))
+	if err != nil {
+		writeErr(w, 404, err.Error())
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Disposition", `inline; filename="`+sum.Project+`-digest.html"`)
+		w.Write([]byte(app.RenderDigestHTML(sum)))
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="`+sum.Project+`-digest.md"`)
+	w.Write([]byte(app.RenderDigestMarkdown(sum)))
 }
 
 func (s *Server) getProjectMap(w http.ResponseWriter, r *http.Request) {

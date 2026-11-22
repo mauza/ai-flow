@@ -104,6 +104,33 @@ func TestChecks(t *testing.T) {
 	if err := l.Map.CheckTask(&task); err == nil || !strings.Contains(err.Error(), "status must be one of") {
 		t.Fatalf("got %v", err)
 	}
+	task = storymap.Task{ID: "ok", Title: "x", Activity: "browse", Value: "huge", Confidence: "sure", Outcome: "great"}
+	if err := l.Map.CheckTask(&task); err == nil || !strings.Contains(err.Error(), "value must be one of") || !strings.Contains(err.Error(), "confidence must be one of") || !strings.Contains(err.Error(), "outcome must be one of") {
+		t.Fatalf("discovery validation got %v", err)
+	}
+}
+
+func TestBriefCarriesDiscoveryFields(t *testing.T) {
+	l, _ := storymap.Load(work, "arcade")
+	sc := &storymap.Scope{Map: l.ID, Kind: "task", ID: "pause", Tasks: []string{"pause"}}
+	brief := l.Brief(sc, []storymap.Task{{
+		ID: "pause", Title: "Pause a game", Activity: "play-game", Release: "mvp",
+		Story:         "As a player I want to pause so that I can step away.",
+		Hypothesis:    "Pausing keeps players from abandoning longer sessions.",
+		Value:         "high",
+		Confidence:    "low",
+		OpenQuestions: []string{"Should pausing blur the board to prevent cheating?"},
+	}})
+	for _, want := range []string{
+		"Value hypothesis: Pausing keeps players from abandoning longer sessions.",
+		"Bet profile: value=high, confidence=low",
+		"Open product questions",
+		"Should pausing blur the board to prevent cheating?",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief missing %q:\n%s", want, brief)
+		}
+	}
 }
 
 func TestMarshalKeepsFieldOrder(t *testing.T) {

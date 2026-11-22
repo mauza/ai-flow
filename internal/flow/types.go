@@ -19,9 +19,15 @@ const (
 	Success = "$success"
 	Fail    = "$fail"
 
+	// NodePause is a synthetic gate node inserted by the engine when a human
+	// requests a pause between steps of a running flow.
+	NodePause = "$pause"
+
 	// Outcomes added implicitly by the runtime.
-	OutcomeTimeout = "timeout"
-	OutcomeLimit   = "limit"
+	OutcomeTimeout  = "timeout"
+	OutcomeLimit    = "limit"
+	OutcomeContinue = "continue"
+	OutcomeStop     = "stop"
 )
 
 // Node types.

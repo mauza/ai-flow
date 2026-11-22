@@ -66,10 +66,16 @@ Linear / UI / story map ──▶ planner ──▶ flow YAML (versioned) ──
   first start the server copies the catalog and projects into its database, and
   **Settings** edits them live from then on; entries changed in the files still
   apply at the next start, and the environment stays in files.
+- **Human-in-the-loop & MCP**: an **Inbox** surfaces every waiting gate (with
+  structured findings and optional +1 loop round), failed run, unverified
+  shipment, and open product question; active runs can be paused cleanly between
+  steps or steered mid-flight; and `/mcp` (plus `ai-flow mcp -url <url>` over
+  stdio) lets local LLMs inspect orchestration and, with opt-in, steer runs.
 - **Product work**: link a GitHub repository, write product docs and user story
-  maps in its `product/` directory, and send user tasks, activities or phases
-  to flows. Edits stay in a scratch checkout until you commit
-  ([docs/PRODUCT.md](docs/PRODUCT.md)).
+  maps in its `product/` directory (with hypotheses, open questions, value/confidence
+  and post-ship outcomes), inspect project health & shareable Markdown/HTML digests,
+  and send user tasks, activities or phases to flows. Edits stay in a scratch
+  checkout until you commit ([docs/PRODUCT.md](docs/PRODUCT.md)).
 - **Run review**: an LLM reads a run's record and suggests changes to the flow,
   the catalog or ai-flow's primitives.
 

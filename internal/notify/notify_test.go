@@ -24,7 +24,10 @@ func TestNtfyPublishesJSONWithToken(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("NTFY_TEST_TOKEN", "tk_secret")
 	n := New(config.Notify{Ntfy: &config.Ntfy{URL: srv.URL + "/", Topic: "alerts", TokenEnv: "NTFY_TEST_TOKEN"}})
-	err := n.Send(context.Background(), Message{Title: "MAU-22: approve needs a decision", Body: "Ship it?", Click: "http://ai-flow:8080/runs/r-1", Priority: 4, Tags: []string{"raised_hand"}})
+	err := n.Send(context.Background(), Message{
+		Title: "MAU-22: approve needs a decision", Body: "Ship it?", Click: "http://ai-flow:8080/runs/r-1", Priority: 4, Tags: []string{"raised_hand"},
+		Actions: []Action{{Action: "view", Label: "Review & decide", URL: "http://ai-flow:8080/runs/r-1"}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +36,10 @@ func TestNtfyPublishesJSONWithToken(t *testing.T) {
 	}
 	if got["topic"] != "alerts" || got["title"] != "MAU-22: approve needs a decision" || got["message"] != "Ship it?" || got["click"] != "http://ai-flow:8080/runs/r-1" || got["priority"] != 4.0 {
 		t.Errorf("body %v", got)
+	}
+	actions, _ := got["actions"].([]any)
+	if len(actions) != 1 {
+		t.Errorf("actions %v", got["actions"])
 	}
 }
 

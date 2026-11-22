@@ -1,6 +1,6 @@
 # Node catalog
 
-`deploy/config/catalog.yaml` provides 38 reusable primitives. They use six of the
+`deploy/config/catalog.yaml` provides 40 reusable primitives. They use six of the
 node types: `llm`, `agent`, `check`, `gate`, `switch`, and `action`. `parallel` and
 `join` are structure rather than presets: wrap independent read-only presets (checks,
 reviews, investigations) in a parallel node to run them at once; see
@@ -11,10 +11,10 @@ Pick the few steps needed for a task; a catalog is a menu, not a mandatory pipel
 
 | Category | Presets | Use for |
 | --- | --- | --- |
-| Discovery | `triage`, `repo-map`, `investigate-bug`, `dependency-audit` | Clarify the task, locate code/commands, reproduce failures, inventory dependencies. |
+| Discovery | `product-check`, `triage`, `repo-map`, `investigate-bug`, `dependency-audit` | Validate user value and surface product questions, clarify the task, locate code/commands, reproduce failures, inventory dependencies. |
 | Planning | `acceptance-criteria`, `implementation-plan`, `test-plan`, `compare-approaches` | Turn supplied evidence into bounded decisions and testable work. |
 | Implementation | `implement`, `write-failing-test`, `fix-tests`, `address-review`, `refactor`, `update-docs` | Focused repository edits with evidence. Requires the project repo's write grant. |
-| Review | `code-review`, `security-review`, `test-review` | Judge the supplied diff and context; route actionable findings back to edits. |
+| Review | `code-review`, `security-review`, `test-review`, `user-value-review` | Judge the supplied diff and context for correctness, security, tests, and user-story value; route actionable findings back to edits or a human gate. |
 | Verification | `go-test`, `python-unittest`, `npm-test`, `npm-build`, `json-check`, `custom-check` | Execute deterministic commands in a compatible runtime. |
 | Control | `human-decision`, `has-changes`, `large-change` | Optional human decisions or deterministic routing on the cumulative branch diff. |
 | Delivery | `summarize-change`, `release-notes`, `open-pull-request`, `comment-task` | Prepare evidence-based text, then publish through existing actions when appropriate. |

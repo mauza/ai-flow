@@ -7,10 +7,10 @@ import Markdown from "../product/Markdown";
 import DiffView, { diffRows } from "../DiffView";
 
 const SUGGESTIONS = [
+  "Are we building the right thing for our users? Surface risky assumptions and open questions",
+  "Based on live metrics and recent runs, what is most valuable to work on next?",
   "What is missing from the MVP release?",
-  "Write acceptance criteria for tasks that have none",
-  "Split the biggest user task into smaller ones",
-  "Which tasks should move a metric but don't say so?",
+  "Write acceptance criteria and hypotheses for tasks that have none",
 ];
 
 /** Ask an LLM about the map; it can propose file changes you apply locally. */

@@ -53,18 +53,18 @@ func (a *App) ClearMapChat(ctx context.Context, project, mapID string) error {
 	return a.Store.WriteKV(ctx, nil, []string{kvMapChat(project, mapID)})
 }
 
-const mapChatSystem = `You help a product owner work on a user story map that lives as YAML files in their repository. You answer questions about the map and, when asked to change it, propose edits to its files. Proposed edits are shown to the user, who applies or ignores them; nothing is committed until they choose to.
+const mapChatSystem = `You help a product owner work on a user story map that lives as YAML files in their repository, and reason about whether the team is building the right thing for users. You answer questions about the map, delivery progress, metrics, and priorities, and when asked to change the map, propose edits to its files. Proposed edits are shown to the user, who applies or ignores them; nothing is committed until they choose to.
 
 Story map files (paths are relative to the repository root):
 - %[1]s/map.yaml:
     title, description
     personas: [{id, name, description}]
     journey: phases left to right: [{id, title, description, activities: [{id, title, description, persona}]}]
-    releases: slices top to bottom: [{id, title, goal, status: planned|in_progress|released, date}]
+    releases: slices top to bottom: [{id, title, goal, status: planned|in_progress|released, date, open_questions: [string]}]
     metrics: [{id, title, description, kind: product|delivery, query (product: PromQL), measure (delivery: %[2]s), release, target, direction: up|down, unit}]
 - %[1]s/tasks/<task-id>.yaml, one user task per file:
-    title, activity (an activity id), release (a release id; omit it for unscheduled ideas, which the map shows in its own row), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked
-Ids are lowercase slugs (a-z, 0-9, -). Use story-mapping vocabulary: the journey's phases hold activities (the backbone); user tasks hang under activities and are sliced into releases. Keep tasks small enough to ship one at a time, and give each testable acceptance criteria.
+    title, activity (an activity id), release (a release id; omit it for unscheduled ideas, which the map shows in its own row), order (position within its activity and release), persona, story ("As a <persona> I want <goal> so that <benefit>"), description, acceptance: [criteria], metrics: [metric ids it should move], status: todo|in_progress|done|blocked, hypothesis (why this matters to users), open_questions: [unresolved product/UX questions], value: high|medium|low, confidence: high|medium|low, outcome: validated|inconclusive|invalidated, outcome_note (post-ship learning)
+Ids are lowercase slugs (a-z, 0-9, -). Use story-mapping vocabulary: the journey's phases hold activities (the backbone); user tasks hang under activities and are sliced into releases. Keep tasks small enough to ship one at a time, give each testable acceptance criteria, surface risky assumptions as open_questions, and ground prioritization advice in the live metrics and run history when provided.
 
 Reply with one JSON object and nothing else:
 {"reply": "<markdown answer for the user>", "changes": [{"path": "<file path>", "content": "<the complete new file content, or null to delete the file>"}]}
@@ -73,7 +73,8 @@ Use an empty changes list when no edit is needed. Only change files under produc
 // AskMap sends a message to the map assistant and stores both turns.
 func (a *App) AskMap(ctx context.Context, project, mapID, message string) (*MapMessage, error) {
 	work := a.Workspaces.WorkDir(project)
-	if _, err := storymap.Load(work, mapID); err != nil {
+	loaded, err := storymap.Load(work, mapID)
+	if err != nil {
 		return nil, err
 	}
 	history, err := a.MapChat(ctx, project, mapID)
@@ -85,10 +86,14 @@ func (a *App) AskMap(ctx context.Context, project, mapID, message string) (*MapM
 	if model == "" {
 		return nil, fmt.Errorf("no planner model is configured")
 	}
+	snapshot := "Current files:\n\n" + mapFiles(work, mapID)
+	if live := a.mapLiveContext(ctx, project, loaded); live != "" {
+		snapshot += "\n" + live
+	}
 	msgs := []llm.Message{
 		{Role: "system", Content: fmt.Sprintf(mapChatSystem, storymap.Dir(mapID), strings.Join(storymap.Measures, ", "))},
-		{Role: "user", Content: "Current files:\n\n" + mapFiles(work, mapID)},
-		{Role: "assistant", Content: `{"reply": "I have read the map.", "changes": []}`},
+		{Role: "user", Content: snapshot},
+		{Role: "assistant", Content: `{"reply": "I have read the map, metrics, and recent delivery state.", "changes": []}`},
 	}
 	for _, m := range history[max(0, len(history)-12):] {
 		content := m.Content
@@ -252,6 +257,78 @@ func mapFiles(work, mapID string) string {
 	files, _ := filepath.Glob(filepath.Join(work, filepath.FromSlash(storymap.Dir(mapID)), "tasks", "*.yaml"))
 	for _, f := range files {
 		add(path.Join(storymap.Dir(mapID), "tasks", filepath.Base(f)), 8000)
+	}
+	return b.String()
+}
+
+// mapLiveContext summarizes live delivery progress, costs, and metrics so the
+// map assistant can help decide what is valuable to build next.
+func (a *App) mapLiveContext(ctx context.Context, project string, l *storymap.Loaded) string {
+	works, err := a.MapWorks(ctx, project, l.ID)
+	if err != nil {
+		return ""
+	}
+	mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	mvals := a.MapMetrics(mctx, project, l, works)
+	var b strings.Builder
+	if len(mvals) > 0 {
+		b.WriteString("## Live metrics\n")
+		for _, m := range l.Map.Metrics {
+			var mv *MetricValue
+			for i := range mvals {
+				if mvals[i].ID == m.ID {
+					mv = &mvals[i]
+					break
+				}
+			}
+			fmt.Fprintf(&b, "- %s (%s): ", m.Title, m.Kind)
+			if mv == nil {
+				b.WriteString("no data")
+			} else if mv.Error != "" {
+				fmt.Fprintf(&b, "error: %s", mv.Error)
+			} else if mv.Value != nil {
+				fmt.Fprintf(&b, "%g", *mv.Value)
+				if m.Unit != "" {
+					fmt.Fprintf(&b, " %s", m.Unit)
+				}
+			} else {
+				b.WriteString("no data")
+			}
+			if m.Target != nil {
+				fmt.Fprintf(&b, " (target %g", *m.Target)
+				if m.Unit != "" {
+					fmt.Fprintf(&b, " %s", m.Unit)
+				}
+				b.WriteString(")")
+			}
+			if mv != nil && mv.Detail != "" {
+				fmt.Fprintf(&b, " — %s", mv.Detail)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(works) > 0 {
+		b.WriteString("## Recent delivery work sent from this map\n")
+		limit := min(len(works), 20)
+		for _, w := range works[:limit] {
+			status := w.Task.Status
+			extra := ""
+			if w.Run != nil {
+				status = "run " + w.Run.Status
+				extra = fmt.Sprintf(" ($%.2f", w.Run.CostUSD)
+				if w.Run.PRURL != "" {
+					extra += ", PR " + w.Run.PRURL
+				}
+				if w.Run.Error != "" {
+					extra += ", error: " + clip(w.Run.Error, 160)
+				}
+				extra += ")"
+			}
+			fmt.Fprintf(&b, "- [%s] %s (%s %s, tasks: %s)%s\n", status, w.Task.Title, w.Scope.Kind, w.Scope.ID, strings.Join(w.Scope.Tasks, ", "), extra)
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

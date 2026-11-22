@@ -371,21 +371,27 @@ type Run struct {
 	CreatedAt   int64           `json:"created_at"`
 	StartedAt   int64           `json:"started_at,omitempty"`
 	FinishedAt  int64           `json:"finished_at,omitempty"`
-	Snapshot    json.RawMessage `json:"-"`                     // versioned, non-secret execution settings
-	ResumeSeq   int             `json:"resume_seq,omitempty"`  // last visit before the latest resume
-	Resumes     int             `json:"resumes,omitempty"`     // how many times a human resumed the run
-	ResumeNote  string          `json:"resume_note,omitempty"` // the latest resume's note
+	Snapshot       json.RawMessage `json:"-"`                         // versioned, non-secret execution settings
+	ResumeSeq      int             `json:"resume_seq,omitempty"`      // last visit before the latest resume
+	Resumes        int             `json:"resumes,omitempty"`         // how many times a human resumed the run
+	ResumeNote     string          `json:"resume_note,omitempty"`     // the latest resume's note
+	PauseRequested bool            `json:"pause_requested,omitempty"` // human asked to pause after the current step
+	SteerNote      string          `json:"steer_note,omitempty"`      // latest mid-flight human steering note
+	SteerSeq       int             `json:"steer_seq,omitempty"`       // last visit seq when steer_note was recorded
+	ExtraVisits    int             `json:"extra_visits,omitempty"`    // extra loop rounds granted by a human at a gate
 }
 
-const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at, snapshot, resume_seq, resumes, resume_note`
+const runCols = `id, flow_name, flow_version, task_id, project, status, current_node, branch, base, pr_url, error, diff, cost_usd, tokens, created_at, started_at, finished_at, snapshot, resume_seq, resumes, resume_note, pause_requested, steer_note, steer_seq, extra_visits`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	var r Run
 	var diff, snapshot string
-	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &snapshot, &r.ResumeSeq, &r.Resumes, &r.ResumeNote)
+	var pauseInt int
+	err := row.Scan(&r.ID, &r.FlowName, &r.FlowVersion, &r.TaskID, &r.Project, &r.Status, &r.CurrentNode, &r.Branch, &r.Base, &r.PRURL, &r.Error, &diff, &r.CostUSD, &r.Tokens, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &snapshot, &r.ResumeSeq, &r.Resumes, &r.ResumeNote, &pauseInt, &r.SteerNote, &r.SteerSeq, &r.ExtraVisits)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
+	r.PauseRequested = pauseInt != 0
 	r.Diff = json.RawMessage(diff)
 	r.Snapshot = json.RawMessage(snapshot)
 	return &r, err
@@ -396,8 +402,12 @@ func (s *Store) CreateRun(ctx context.Context, r *Run) error {
 	if len(r.Diff) == 0 {
 		r.Diff = json.RawMessage("{}")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt, string(r.Snapshot), r.ResumeSeq, r.Resumes, r.ResumeNote)
+	pauseInt := 0
+	if r.PauseRequested {
+		pauseInt = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO runs (`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.FlowName, r.FlowVersion, r.TaskID, r.Project, r.Status, r.CurrentNode, r.Branch, r.Base, r.PRURL, r.Error, string(r.Diff), r.CostUSD, r.Tokens, r.CreatedAt, r.StartedAt, r.FinishedAt, string(r.Snapshot), r.ResumeSeq, r.Resumes, r.ResumeNote, pauseInt, r.SteerNote, r.SteerSeq, r.ExtraVisits)
 	return err
 }
 
@@ -409,6 +419,7 @@ type RunFilter struct {
 	Statuses []string
 	FlowName string
 	TaskID   string
+	Project  string
 	Limit    int
 }
 
@@ -428,6 +439,10 @@ func (s *Store) ListRuns(ctx context.Context, f RunFilter) ([]*Run, error) {
 	if f.TaskID != "" {
 		where = append(where, "task_id = ?")
 		args = append(args, f.TaskID)
+	}
+	if f.Project != "" {
+		where = append(where, "project = ?")
+		args = append(args, f.Project)
 	}
 	q := `SELECT ` + runCols + ` FROM runs`
 	if len(where) > 0 {

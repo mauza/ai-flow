@@ -277,3 +277,38 @@ spec:
 		t.Fatal("a forced edit must apply")
 	}
 }
+
+func TestProjectSummaryDigestAndAttentionEndpoints(t *testing.T) {
+	e := productServer(t)
+	e.app.Engine = engine.New(e.app.Cfg, e.app.Store, nil, e.app.Hub, nil)
+	e.call(t, "POST", "/api/repos/link", map[string]string{"full_name": "o/app"}, 201)
+	e.call(t, "POST", "/api/projects/app/maps", map[string]string{"id": "core", "title": "Core"}, 201)
+	e.call(t, "POST", "/api/projects/app/maps/core/tasks", map[string]any{"tasks": []map[string]any{
+		{
+			"id": "sign-up", "title": "Sign up", "activity": "first-use", "release": "mvp",
+			"hypothesis": "Accounts retain returning users", "value": "high", "confidence": "low",
+			"open_questions": []string{"Should we support magic links?"},
+		},
+	}}, 204)
+
+	var att app.AttentionReport
+	json.Unmarshal(e.call(t, "GET", "/api/attention?project=app", nil, 200), &att)
+	if att.Counts.OpenQuestions != 1 || att.OpenQuestions[0].ID != "sign-up" {
+		t.Fatalf("attention: %+v", att)
+	}
+
+	var sum app.ProjectSummary
+	json.Unmarshal(e.call(t, "GET", "/api/projects/app/summary", nil, 200), &sum)
+	if len(sum.Maps) != 1 || len(sum.Maps[0].RiskyBets) != 1 || sum.Maps[0].RiskyBets[0].ID != "sign-up" {
+		t.Fatalf("summary: %+v", sum)
+	}
+
+	md := string(e.call(t, "GET", "/api/projects/app/digest?format=md", nil, 200))
+	if !strings.Contains(md, "# app — Project Status & Value Digest") || !strings.Contains(md, "Should we support magic links?") {
+		t.Fatalf("md digest:\n%s", md)
+	}
+	htmlDoc := string(e.call(t, "GET", "/api/projects/app/digest?format=html", nil, 200))
+	if !strings.Contains(htmlDoc, "<!doctype html>") || !strings.Contains(htmlDoc, "High-Uncertainty Bets") {
+		t.Fatalf("html digest:\n%s", htmlDoc)
+	}
+}

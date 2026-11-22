@@ -61,11 +61,12 @@ type Activity struct {
 
 // Release is a horizontal slice of the map, top to bottom.
 type Release struct {
-	ID     string `yaml:"id" json:"id"`
-	Title  string `yaml:"title" json:"title"`
-	Goal   string `yaml:"goal,omitempty" json:"goal,omitempty"`
-	Status string `yaml:"status,omitempty" json:"status,omitempty"` // planned | in_progress | released
-	Date   string `yaml:"date,omitempty" json:"date,omitempty"`
+	ID            string   `yaml:"id" json:"id"`
+	Title         string   `yaml:"title" json:"title"`
+	Goal          string   `yaml:"goal,omitempty" json:"goal,omitempty"`
+	Status        string   `yaml:"status,omitempty" json:"status,omitempty"` // planned | in_progress | released
+	Date          string   `yaml:"date,omitempty" json:"date,omitempty"`
+	OpenQuestions []string `yaml:"open_questions,omitempty" json:"open_questions,omitempty"`
 }
 
 // Metric is tracked while the map's work ships. Product metrics are PromQL
@@ -90,19 +91,31 @@ var Measures = []string{"tasks_done", "done_ratio", "cycle_time_hours", "run_cos
 // Statuses a user task can have in the repository (set on purpose and committed).
 var Statuses = []string{"todo", "in_progress", "done", "blocked"}
 
+// Levels used for value and confidence discovery tags.
+var Levels = []string{"high", "medium", "low"}
+
+// Outcomes record what we learned after shipping a user task.
+var Outcomes = []string{"validated", "inconclusive", "invalidated"}
+
 // Task is a user task: a card on the map.
 type Task struct {
-	ID          string   `yaml:"-" json:"id"`
-	Title       string   `yaml:"title" json:"title"`
-	Activity    string   `yaml:"activity" json:"activity"`
-	Release     string   `yaml:"release,omitempty" json:"release,omitempty"`
-	Order       int      `yaml:"order,omitempty" json:"order,omitempty"`
-	Persona     string   `yaml:"persona,omitempty" json:"persona,omitempty"`
-	Story       string   `yaml:"story,omitempty" json:"story,omitempty"` // As a … I want … so that …
-	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	Acceptance  []string `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
-	Metrics     []string `yaml:"metrics,omitempty" json:"metrics,omitempty"`
-	Status      string   `yaml:"status,omitempty" json:"status,omitempty"`
+	ID            string   `yaml:"-" json:"id"`
+	Title         string   `yaml:"title" json:"title"`
+	Activity      string   `yaml:"activity" json:"activity"`
+	Release       string   `yaml:"release,omitempty" json:"release,omitempty"`
+	Order         int      `yaml:"order,omitempty" json:"order,omitempty"`
+	Persona       string   `yaml:"persona,omitempty" json:"persona,omitempty"`
+	Story         string   `yaml:"story,omitempty" json:"story,omitempty"` // As a … I want … so that …
+	Description   string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Acceptance    []string `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
+	Metrics       []string `yaml:"metrics,omitempty" json:"metrics,omitempty"`
+	Status        string   `yaml:"status,omitempty" json:"status,omitempty"`
+	Hypothesis    string   `yaml:"hypothesis,omitempty" json:"hypothesis,omitempty"`
+	OpenQuestions []string `yaml:"open_questions,omitempty" json:"open_questions,omitempty"`
+	Value         string   `yaml:"value,omitempty" json:"value,omitempty"`           // high | medium | low
+	Confidence    string   `yaml:"confidence,omitempty" json:"confidence,omitempty"` // high | medium | low
+	Outcome       string   `yaml:"outcome,omitempty" json:"outcome,omitempty"`       // validated | inconclusive | invalidated
+	OutcomeNote   string   `yaml:"outcome_note,omitempty" json:"outcome_note,omitempty"`
 }
 
 // Loaded is a map with its tasks, read from a workspace.
@@ -343,6 +356,15 @@ func (m *Map) checkTask(t *Task) []string {
 	}
 	if t.Status != "" && !slices.Contains(Statuses, t.Status) {
 		out = append(out, fmt.Sprintf("%s: status must be one of %s", where, strings.Join(Statuses, ", ")))
+	}
+	if t.Value != "" && !slices.Contains(Levels, t.Value) {
+		out = append(out, fmt.Sprintf("%s: value must be one of %s", where, strings.Join(Levels, ", ")))
+	}
+	if t.Confidence != "" && !slices.Contains(Levels, t.Confidence) {
+		out = append(out, fmt.Sprintf("%s: confidence must be one of %s", where, strings.Join(Levels, ", ")))
+	}
+	if t.Outcome != "" && !slices.Contains(Outcomes, t.Outcome) {
+		out = append(out, fmt.Sprintf("%s: outcome must be one of %s", where, strings.Join(Outcomes, ", ")))
 	}
 	return out
 }

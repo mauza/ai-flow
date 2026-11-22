@@ -35,6 +35,7 @@ import (
 	"github.com/mauza/ai-flow/internal/launcher"
 	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/mcpdemo"
+	"github.com/mauza/ai-flow/internal/mcpserver"
 	"github.com/mauza/ai-flow/internal/mcpx"
 	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/objstore"
@@ -78,6 +79,8 @@ func main() {
 		if srv, err = runner.FlowToolsServer(); err == nil {
 			err = srv.Run(ctx, &mcp.StdioTransport{})
 		}
+	case "mcp":
+		err = mcpCmd(ctx, os.Args[2:])
 	case "mcp-demo":
 		listen := ":8090"
 		if len(os.Args) > 2 {
@@ -98,7 +101,28 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ai-flow server|node|flow-tools|validate|plan|mcp-demo|version [flags]")
+	fmt.Fprintln(os.Stderr, "usage: ai-flow server|node|flow-tools|mcp|validate|plan|mcp-demo|version [flags]")
+}
+
+func mcpCmd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	baseURL := fs.String("url", envOr("AI_FLOW_URL", "http://localhost:8080"), "ai-flow control-plane URL")
+	token := fs.String("token", os.Getenv("AI_FLOW_TOKEN"), "optional bearer token (or set AI_FLOW_TOKEN)")
+	allowSteer := fs.Bool("allow-steer", false, "enable steering/write tools (decide_gate, steer_run, resume_run, create_task, send_story_to_flow, start_retro)")
+	actor := fs.String("actor", "mcp-cli", "actor name recorded on decisions and steering actions")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	b := mcpserver.NewHTTPBackend(*baseURL, *token)
+	srv := mcpserver.NewServer(b, mcpserver.Options{AllowSteer: *allowSteer, Actor: *actor})
+	return srv.Run(ctx, &mcp.StdioTransport{})
+}
+
+func envOr(k, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func logLevel() slog.Level {

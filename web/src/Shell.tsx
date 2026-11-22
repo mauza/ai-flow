@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Boxes, KanbanSquare, Library, Map as MapIcon, Play, Settings2, Workflow } from "lucide-react";
+import { Bell, Boxes, KanbanSquare, Library, Map as MapIcon, Play, Settings2, Workflow } from "lucide-react";
 import { api } from "./api";
 import { useLive, useResource } from "./hooks";
 
@@ -7,8 +7,11 @@ export default function Shell() {
   const live = useLive();
   const overview = useResource(() => api.overview(), []);
   const runs = useResource(() => api.runs(), [], (e) => e.type === "run");
+  const attention = useResource(() => api.attention().catch(() => null), [], (e) => e.type === "run" || e.type === "task" || e.type === "visit");
   const active = runs.data?.filter((r) => r.status === "running" || r.status === "waiting" || r.status === "queued").length ?? 0;
   const waiting = runs.data?.filter((r) => r.status === "waiting").length ?? 0;
+  const attnTotal = attention.data?.counts?.total ?? 0;
+  const attnGates = attention.data?.counts?.gates ?? waiting;
 
   return (
     <div className="shell">
@@ -20,6 +23,15 @@ export default function Shell() {
             <small>flows as state machines</small>
           </div>
         </div>
+        <NavLink to="/inbox" className="nav-link" aria-label="Inbox">
+          <Bell />
+          <span className="lbl">Inbox</span>
+          {attnTotal > 0 && (
+            <span className={`count${attnGates > 0 ? " attn-hot" : ""}`} title={attnGates ? `${attnGates} decision(s) waiting` : `${attnTotal} item(s) need attention`}>
+              {attnTotal}
+            </span>
+          )}
+        </NavLink>
         <NavLink to="/" end className="nav-link" aria-label="Board">
           <KanbanSquare />
           <span className="lbl">Board</span>

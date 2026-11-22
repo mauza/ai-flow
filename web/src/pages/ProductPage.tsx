@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BookOpen, ExternalLink, FilePlus2, Map as MapIcon, Pencil, Plus, Trash2 } from "lucide-react";
-import { api, type ProductView } from "../api";
+import { Activity, BookOpen, Copy, Download, ExternalLink, FilePlus2, HelpCircle, Map as MapIcon, Pencil, Plus, Share2, Trash2 } from "lucide-react";
+import { api, type ProductView, type ProjectSummary } from "../api";
 import { useResource } from "../hooks";
-import { Empty, Modal, Spinner, useToast } from "../ui";
+import { timeAgo, usd } from "../format";
+import { Empty, Modal, PRLink, Pill, Spinner, useToast } from "../ui";
 import Markdown from "../product/Markdown";
 import WorkspaceBar from "../product/WorkspaceBar";
 
@@ -39,8 +40,11 @@ export function slug(s: string): string {
 export default function ProductPage() {
   const { p = "" } = useParams();
   const view = useResource(() => api.product(p), [p], (e) => e.type === "config");
+  const summary = useResource(() => api.projectSummary(p).catch(() => null), [p], (e) => e.type === "run" || e.type === "task");
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "docs" ? "docs" : "maps";
+  const [sharing, setSharing] = useState(false);
+  const rawTab = params.get("tab");
+  const tab = rawTab === "docs" ? "docs" : rawTab === "overview" ? "overview" : "maps";
 
   if (!view.data)
     return (
@@ -49,6 +53,7 @@ export default function ProductPage() {
       </div>
     );
   const d = view.data;
+  const attn = summary.data?.attention?.counts?.total ?? 0;
   return (
     <div className="page product-page">
       <div className="page-head">
@@ -61,20 +66,320 @@ export default function ProductPage() {
           <ExternalLink />
         </a>
         {d.project.description && <span className="sub">{d.project.description}</span>}
+        <span className="spacer" />
+        <button className="btn sm" onClick={() => setSharing(true)}>
+          <Share2 />
+          Share digest
+        </button>
       </div>
-      <WorkspaceBar project={p} status={d.workspace} onChange={view.reload} defaultMessage={`Update ${d.project.name} product docs`} />
+      <WorkspaceBar project={p} status={d.workspace} onChange={() => (view.reload(), summary.reload())} defaultMessage={`Update ${d.project.name} product docs`} />
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "maps"} className={`tab${tab === "maps" ? " active" : ""}`} onClick={() => setParams({})}>
           <MapIcon size={14} />
           Story maps <span className="badge">{d.maps.length}</span>
+        </button>
+        <button role="tab" aria-selected={tab === "overview"} className={`tab${tab === "overview" ? " active" : ""}`} onClick={() => setParams({ tab: "overview" })}>
+          <Activity size={14} />
+          Health &amp; value {attn > 0 && <span className="badge">{attn}</span>}
         </button>
         <button role="tab" aria-selected={tab === "docs"} className={`tab${tab === "docs" ? " active" : ""}`} onClick={() => setParams({ tab: "docs" })}>
           <BookOpen size={14} />
           Docs <span className="badge">{d.docs.length}</span>
         </button>
       </div>
-      {tab === "maps" ? <Maps project={p} view={d} /> : <Docs project={p} view={d} onChange={view.reload} />}
+      {tab === "maps" ? (
+        <Maps project={p} view={d} />
+      ) : tab === "overview" ? (
+        <ProjectOverview project={p} summary={summary.data} loading={summary.loading} />
+      ) : (
+        <Docs project={p} view={d} onChange={view.reload} />
+      )}
+      {sharing && <ShareDigestModal project={p} onClose={() => setSharing(false)} />}
     </div>
+  );
+}
+
+function ProjectOverview({ project, summary, loading }: { project: string; summary?: ProjectSummary | null; loading: boolean }) {
+  if (!summary) {
+    return loading ? <Spinner /> : <div className="muted small">Project summary unavailable.</div>;
+  }
+  const { delivery, attention, maps, recent_runs, retros } = summary;
+  return (
+    <div className="product-body stack" style={{ gap: 18 }}>
+      <div className="kpi-grid">
+        <div className="card card-pad">
+          <div className="label">Runs</div>
+          <div className="kpi-val">{delivery.total_runs}</div>
+          <div className="small muted">
+            {delivery.succeeded_runs} ok · {delivery.failed_runs} failed · {delivery.waiting_runs} waiting
+          </div>
+        </div>
+        <div className="card card-pad">
+          <div className="label">Success rate</div>
+          <div className="kpi-val">{delivery.success_rate_pct !== undefined ? `${delivery.success_rate_pct}%` : "—"}</div>
+          <div className="small muted">Median cycle: {delivery.median_cycle_hours !== undefined ? `${delivery.median_cycle_hours}h` : "—"}</div>
+        </div>
+        <div className="card card-pad">
+          <div className="label">Delivery spend</div>
+          <div className="kpi-val">{usd(delivery.total_cost_usd)}</div>
+          <div className="small muted">{delivery.total_tokens.toLocaleString()} tokens</div>
+        </div>
+        <div className="card card-pad">
+          <div className="label">Needs human input</div>
+          <div className="kpi-val" style={{ color: attention?.counts.total ? "var(--gate)" : "var(--success)" }}>
+            {attention?.counts.total ?? 0}
+          </div>
+          <div className="small muted">
+            {attention?.counts.gates ?? 0} gates · {attention?.counts.open_questions ?? 0} questions
+          </div>
+        </div>
+      </div>
+
+      {attention && attention.counts.total > 0 && (
+        <div className="card card-pad row wrap">
+          <span className="small">
+            <b>{attention.counts.total} item(s)</b> need your attention on this project ({attention.counts.gates} decision(s), {attention.counts.failed_runs} failed run(s),{" "}
+            {attention.counts.shipped_unmarked} unverified shipment(s), {attention.counts.open_questions} open question(s)).
+          </span>
+          <span className="spacer" />
+          <Link className="btn primary sm" to="/inbox">
+            Open Inbox
+          </Link>
+        </div>
+      )}
+
+      {maps.map((m) => (
+        <section key={m.id} className="card card-pad stack" style={{ gap: 12 }}>
+          <div className="row wrap">
+            <h3 style={{ margin: 0 }}>{m.title}</h3>
+            <span className="chip">
+              {m.tasks_done}/{m.tasks_total} done
+            </span>
+            <span className="spacer" />
+            <Link className="btn sm" to={`/products/${project}/maps/${m.id}`}>
+              Open story map
+            </Link>
+          </div>
+          {m.metrics.length > 0 && (
+            <div className="kpi-grid">
+              {m.metrics.map((mt) => (
+                <div key={mt.id} className="metric card">
+                  <div className="row small">
+                    <span className="grow clamp">{mt.title}</span>
+                    <span className="chip">{mt.kind}</span>
+                  </div>
+                  <div className={`metric-value${mt.on_target === true ? " good" : mt.on_target === false ? " bad" : ""}`}>
+                    {mt.error ? "err" : mt.value !== undefined ? `${mt.value}${mt.unit === "%" ? "%" : mt.unit ? ` ${mt.unit}` : ""}` : "—"}
+                  </div>
+                  {mt.detail && <div className="small faint clamp">{mt.detail}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {m.releases.length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Release</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Goal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {m.releases.map((r) => (
+                    <tr key={r.id}>
+                      <td>
+                        <b>{r.title}</b>
+                      </td>
+                      <td>
+                        <span className="chip">{(r.status || "planned").replace(/_/g, " ")}</span>
+                      </td>
+                      <td className="mono small">
+                        {r.done}/{r.total}
+                      </td>
+                      <td className="small muted">{r.goal || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {m.risky_bets.length > 0 && (
+            <div>
+              <div className="label" style={{ marginBottom: 6 }}>
+                High-uncertainty bets (validate before over-investing)
+              </div>
+              <div className="stack" style={{ gap: 6 }}>
+                {m.risky_bets.map((b) => (
+                  <div key={b.id} className="small">
+                    <b>{b.title}</b> <span className="chip">value: {b.value || "—"}</span> <span className="chip">confidence: {b.confidence || "—"}</span>
+                    {b.hypothesis && <div className="muted">{b.hypothesis}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {m.open_questions.length > 0 && (
+            <div>
+              <div className="label row" style={{ gap: 5, marginBottom: 6 }}>
+                <HelpCircle size={12} /> Open product questions
+              </div>
+              <ul className="decision-list">
+                {m.open_questions.map((q) => (
+                  <li key={q}>{q}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {m.outcomes.length > 0 && (
+            <div>
+              <div className="label" style={{ marginBottom: 6 }}>
+                Post-ship outcomes
+              </div>
+              <div className="stack" style={{ gap: 4 }}>
+                {m.outcomes.map((o) => (
+                  <div key={o.id} className="small row wrap" style={{ gap: 6 }}>
+                    <span className={`chip outcome-${o.outcome}`}>{o.outcome}</span>
+                    <b>{o.title}</b>
+                    {o.outcome_note && <span className="muted">{o.outcome_note}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      ))}
+
+      {recent_runs.length > 0 && (
+        <section className="card card-pad stack" style={{ gap: 10 }}>
+          <div className="label">Recent runs</div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Task / flow</th>
+                  <th>Cost</th>
+                  <th>PR</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent_runs.map((r) => (
+                  <tr key={r.run_id}>
+                    <td>
+                      <Pill status={r.status} />
+                    </td>
+                    <td>
+                      <Link to={`/runs/${r.run_id}`}>{r.task_title || r.flow_name}</Link>
+                    </td>
+                    <td className="num small">{usd(r.cost_usd)}</td>
+                    <td>
+                      <PRLink url={r.pr_url} />
+                    </td>
+                    <td className="small muted">{timeAgo(r.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {retros.length > 0 && (
+        <section className="card card-pad stack" style={{ gap: 8 }}>
+          <div className="label">Recent retro takeaways</div>
+          {retros.map((rt) => (
+            <div key={rt.run_id} className="retro-item">
+              <div className="row wrap">
+                <Link className="mono small" to={`/runs/${rt.run_id}`}>
+                  {rt.flow_name} ({rt.run_id})
+                </Link>
+              </div>
+              <div className="small">{rt.summary}</div>
+              {rt.suggestions && rt.suggestions.length > 0 && (
+                <ul>
+                  {rt.suggestions.map((sg, i) => (
+                    <li key={i} className="small muted">
+                      <b>[{sg.kind}]</b> {sg.change}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ShareDigestModal({ project, onClose }: { project: string; onClose: () => void }) {
+  const [md, setMd] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const toast = useToast();
+
+  useEffect(() => {
+    api.projectDigest(project, "md").then(setMd, (e) => setError((e as Error).message));
+  }, [project]);
+
+  const copy = async () => {
+    if (!md) return;
+    try {
+      await navigator.clipboard.writeText(md);
+      toast("ok", "Copied Markdown digest");
+    } catch {
+      toast("error", "Clipboard write blocked");
+    }
+  };
+
+  const download = async (format: "md" | "html") => {
+    try {
+      const text = format === "md" && md ? md : await api.projectDigest(project, format);
+      const blob = new Blob([text], { type: format === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${project}-digest.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("ok", `Downloaded ${project}-digest.${format}`);
+    } catch (e) {
+      toast("error", (e as Error).message);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Share ${project} digest`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Close
+          </button>
+          <button className="btn" disabled={!md} onClick={() => download("md")}>
+            <Download />
+            Download .md
+          </button>
+          <button className="btn" disabled={!md} onClick={() => download("html")}>
+            <Download />
+            Download .html
+          </button>
+          <button className="btn primary" disabled={!md} onClick={copy}>
+            <Copy />
+            Copy Markdown
+          </button>
+        </>
+      }
+    >
+      <p className="small muted" style={{ marginTop: 0 }}>
+        Self-contained status &amp; value digest you can paste into Slack, Linear, or GitHub, or export as a standalone HTML file.
+      </p>
+      {error ? <div className="error-box">{error}</div> : md === null ? <Spinner /> : <pre className="code" style={{ maxHeight: 360, overflow: "auto" }}>{md}</pre>}
+    </Modal>
   );
 }
 

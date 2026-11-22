@@ -48,7 +48,7 @@ func (e *Engine) checkedTemplateContext(ctx context.Context, r *store.Run, res *
 			diff[k] = 0.0
 		}
 	}
-	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL, "resumes": r.Resumes, "resume_note": r.ResumeNote}
+	runCtx := map[string]any{"id": r.ID, "branch": r.Branch, "base": r.Base, "diff": diff, "pr_url": r.PRURL, "resumes": r.Resumes, "resume_note": r.ResumeNote, "steer_note": r.SteerNote, "extra_visits": r.ExtraVisits}
 	nodes := map[string]any{}
 	visits, err := e.store.Visits(ctx, r.ID)
 	if err != nil {
@@ -162,6 +162,10 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	}
 	if r.Resumes > 0 && seq > r.ResumeSeq {
 		writeResume(&sb, r, visits)
+	}
+	if r.SteerNote != "" && seq > r.SteerSeq {
+		fmt.Fprintf(&sb, "## Human steering\n\nA human left this direction while the run was in progress. Follow it:\n\n> %s\n\n",
+			strings.ReplaceAll(strings.TrimSpace(r.SteerNote), "\n", "\n> "))
 	}
 	if n.Type == flow.TypeAgent || n.Type == flow.TypeLLM {
 		pm := e.ProjectMap(ctx, r.Project)

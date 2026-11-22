@@ -20,6 +20,7 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/hub"
+	"github.com/mauza/ai-flow/internal/mcpserver"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
@@ -61,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(h)) }
 
 	api("GET /api/overview", s.overview)
+	api("GET /api/attention", s.attention)
 	api("GET /api/tasks", s.listTasks)
 	api("POST /api/tasks", s.createTask)
 	api("GET /api/tasks/{id}", s.getTask)
@@ -79,8 +81,10 @@ func (s *Server) Handler() http.Handler {
 
 	api("GET /api/runs", s.listRuns)
 	api("GET /api/runs/{id}", s.getRun)
+	api("GET /api/runs/{id}/explain", s.explainRun)
 	api("POST /api/runs/{id}/cancel", s.cancelRun)
 	api("POST /api/runs/{id}/resume", s.resumeRun)
+	api("POST /api/runs/{id}/steer", s.steerRun)
 	api("POST /api/runs/{id}/gates/{seq}", s.decideGate)
 	api("GET /api/runs/{id}/visits/{seq}/transcript", s.transcript)
 	api("GET /api/runs/{id}/retro", s.getRetro)
@@ -89,6 +93,17 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/events", s.events)
 	s.configRoutes(api)
 	s.productRoutes(api)
+	mcpBackend := &mcpserver.LocalBackend{
+		App:        s.app,
+		Obj:        s.obj,
+		OverviewFn: s.overviewData,
+		AnalyzeFn:  s.analyze,
+	}
+	mcpHandler := mcpserver.Handler(mcpBackend, mcpserver.Options{
+		AllowSteer: s.app.Cfg.Current().Env.Server.MCPAllowSteer,
+		Actor:      "mcp",
+	})
+	mux.Handle("/mcp", s.auth(mcpHandler.ServeHTTP))
 	for pattern, h := range s.extras {
 		mux.Handle(pattern, h)
 	}
@@ -115,10 +130,18 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 // ---- overview & catalog ----
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	operations, err := s.operations(r.Context())
+	data, err := s.overviewData(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "operational summary unavailable")
 		return
+	}
+	writeJSON(w, 200, data)
+}
+
+func (s *Server) overviewData(ctx context.Context) (any, error) {
+	operations, err := s.operations(ctx)
+	if err != nil {
+		return nil, err
 	}
 	cfg := s.app.Cfg.Current()
 	cat := cfg.Catalog
@@ -165,14 +188,24 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	for _, name := range sortedKeys(cat.Runtimes) {
 		runtimes = append(runtimes, map[string]any{"name": name, "image": cat.Runtimes[name].Image, "description": cat.Runtimes[name].Description})
 	}
-	writeJSON(w, 200, map[string]any{
+	return map[string]any{
 		"projects": projects, "models": models, "runtimes": runtimes, "grants": grants, "skills": skills, "presets": presets,
 		"planner": map[string]any{"model": cat.Planner.Model, "guidance": cat.Planner.Guidance},
 		"actions": cat.Actions, "node_types": flow.NodeTypes,
 		"linear": cfg.Env.Linear.Enabled, "local": cfg.Env.Runs.Local,
+		"mcp":         map[string]any{"endpoint": "/mcp", "allow_steer": cfg.Env.Server.MCPAllowSteer},
 		"operations":  operations,
 		"projectless": planner.ProjectEligibility(cfg, nil),
-	})
+	}, nil
+}
+
+func (s *Server) attention(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.app.Attention(r.Context(), r.URL.Query().Get("project"))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
 }
 
 // ---- tasks ----
@@ -404,12 +437,53 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	runs, err := s.app.Store.ListRuns(r.Context(), store.RunFilter{FlowName: q.Get("flow"), TaskID: q.Get("task"), Limit: 200})
+	limit := 200
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 && n <= 500 {
+		limit = n
+	}
+	f := store.RunFilter{FlowName: q.Get("flow"), TaskID: q.Get("task"), Project: q.Get("project"), Limit: limit}
+	if st := q.Get("status"); st != "" {
+		f.Statuses = strings.Split(st, ",")
+	}
+	runs, err := s.app.Store.ListRuns(r.Context(), f)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, nonNil(runs))
+}
+
+func (s *Server) explainRun(w http.ResponseWriter, r *http.Request) {
+	exp, err := s.app.ExplainRun(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, 200, exp)
+}
+
+func (s *Server) steerRun(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Pause *bool   `json:"pause"`
+		Note  *string `json:"note"`
+		By    string  `json:"by"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.By == "" {
+		in.By = "ui"
+	}
+	run, err := s.app.Engine.Steer(r.Context(), r.PathValue("id"), in.Pause, in.Note, in.By)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, run)
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
@@ -502,9 +576,10 @@ func (s *Server) deleteFlow(w http.ResponseWriter, r *http.Request) {
 func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	seq, _ := strconv.Atoi(r.PathValue("seq"))
 	var in struct {
-		Outcome string `json:"outcome"`
-		By      string `json:"by"`
-		Note    string `json:"note"` // optional: reaches the next step as the gate's outputs.note
+		Outcome      string `json:"outcome"`
+		By           string `json:"by"`
+		Note         string `json:"note"` // optional: reaches the next step as the gate's outputs.note
+		ExtendVisits bool   `json:"extend_visits"`
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -512,7 +587,7 @@ func (s *Server) decideGate(w http.ResponseWriter, r *http.Request) {
 	if in.By == "" {
 		in.By = "ui"
 	}
-	if err := s.app.Engine.Decide(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By, in.Note); err != nil {
+	if err := s.app.Engine.DecideWithOptions(r.Context(), r.PathValue("id"), seq, in.Outcome, in.By, in.Note, in.ExtendVisits); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}

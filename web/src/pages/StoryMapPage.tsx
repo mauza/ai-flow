@@ -303,6 +303,12 @@ function MapGrid({
                         <span className="task-title">{t.title}</span>
                         <span className="task-meta">
                           {t.status && t.status !== "todo" && <span className={`chip status-${t.status}`}>{t.status.replace(/_/g, " ")}</span>}
+                          {t.open_questions && t.open_questions.length > 0 && t.status !== "done" && (
+                            <span className="chip" style={{ color: "var(--warn)" }} title={t.open_questions.join("\n")}>
+                              ? {t.open_questions.length}
+                            </span>
+                          )}
+                          {t.outcome && <span className={`chip outcome-${t.outcome}`}>{t.outcome}</span>}
                           {s && <Pill status={s.status} label={s.label} />}
                           {dirty.has(`product/user-story-maps/${view.map.id}/tasks/${t.id}.yaml`) && <span className="dot-changed" title="Uncommitted edits" />}
                         </span>

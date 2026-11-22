@@ -21,7 +21,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 5 {
+	if version > 6 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -58,6 +58,17 @@ func migrate(db *sql.DB) error {
 	if version < 5 {
 		// Prompt tokens the upstream served from its cache (a subset of tokens_in).
 		if _, err := tx.Exec(`ALTER TABLE visits ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 5;`); err != nil {
+			return err
+		}
+	}
+	if version < 6 {
+		// Mid-flight human steering (pause after current step, steering note)
+		// and human-granted extra loop rounds at gates.
+		if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE runs ADD COLUMN steer_note TEXT NOT NULL DEFAULT '';
+		ALTER TABLE runs ADD COLUMN steer_seq INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE runs ADD COLUMN extra_visits INTEGER NOT NULL DEFAULT 0;
+		PRAGMA user_version = 6;`); err != nil {
 			return err
 		}
 	}

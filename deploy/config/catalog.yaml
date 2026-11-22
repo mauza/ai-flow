@@ -129,6 +129,23 @@ defaults:
 
 presets:
   # Discovery: gather evidence before choosing a solution.
+  product-check:
+    category: discovery
+    when_to_use: A user-facing task has open product questions, low confidence, or unclear user value; check alignment before spending implementation effort.
+    requires: [Task description and product context (user story, persona, or product/README.md)]
+    type: llm
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Check whether the task clearly serves its target user and surface product questions that need a human decision before building.
+    prompt: |
+      Evaluate whether we are building the right thing for the user before implementation starts.
+      Read the task, user story, persona, value hypothesis, open questions, and product context.
+      Identify hidden assumptions, UX/scope tradeoffs, or unanswered product questions that could cause us to build the wrong thing.
+      Return aligned when user value and direction are clear enough to build; return needs_direction with concrete questions and a recommendation when a human should weigh in first.
+    outputs: { value_summary: string, assumptions: [string], questions: [string], recommendation: string }
+    outcomes: [aligned, needs_direction]
+
   triage:
     category: discovery
     when_to_use: The task may be ambiguous before repository work starts.
@@ -433,6 +450,23 @@ presets:
       Do not claim test execution from reading code.
     outputs: { comments: [string], missing_cases: [string] }
     outcomes: [approve, changes, needs_context]
+
+  user-value-review:
+    category: review
+    when_to_use: A user-facing change is built and should be checked against the user story, persona, and product value before shipping or asking a human to approve.
+    requires: [Branch diff, user story / acceptance criteria, and any QA or check evidence]
+    type: llm
+    min_size: medium
+    max_visits: 3
+    on_exhausted: $fail
+    description: Judge whether the built change delivers the intended user outcome and summarize tradeoffs for a human.
+    prompt: |
+      Review the branch diff and verification evidence from the user's perspective, not code style.
+      Compare what was actually built against the user story, persona, acceptance criteria, and release goal.
+      Summarize the concrete user-visible impact in plain language, list any unmet user-facing gaps, and flag product/UX tradeoffs a human should decide.
+      Return delivers_value when the user story is met cleanly, gaps when concrete user-facing criteria are missing, or needs_human when a product judgment call is required.
+    outputs: { user_impact: string, gaps: [string], questions: [string] }
+    outcomes: [delivers_value, gaps, needs_human]
 
   # Verification: real commands, no implicit package installation or network.
   go-test:
@@ -813,7 +847,10 @@ planner:
     with failures routed to fix-tests and review findings to address-review. Set max_visits 3 on implement
     when looping; the original four presets retain caller-configured visit limits. Preserve bounds on all loops.
     Choose only steps useful for the task; skip review for trivial docs-only changes. Human gates are optional
-    according to task/project guidance, not required by category or diff size.
+    according to task/project guidance, not required by category or diff size. When a task has open product
+    questions, low confidence, or significant UX tradeoffs, prefer exception-driven human gates (e.g.
+    product-check → needs_direction → human-decision, or user-value-review → needs_human → human-decision)
+    so clear work runs autonomously while real product calls surface to a human.
     Read requires hints before selecting a preset. Configure custom-check.run with a real project command;
     match runtimes and install any needed dependencies within the same check pod using permitted access.
     Never treat missing tests, missing tools, or an unconfigured check as a passing verification.
