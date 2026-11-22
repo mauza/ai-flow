@@ -219,3 +219,25 @@ func (e *Engine) Resolved(ctx context.Context, r *store.Run) (*resolve.Resolved,
 	}
 	return res, nil
 }
+
+// PinnedResolved returns the resolved flow pinned in r's snapshot without
+// checking current live config drift. This lets retrospectives, graders, and
+// prompt-version tracking inspect historical runs even after presets or
+// settings have been edited.
+func (e *Engine) PinnedResolved(ctx context.Context, r *store.Run) (*resolve.Resolved, error) {
+	if len(r.Snapshot) > 0 {
+		var snap executionSnapshot
+		if err := json.Unmarshal(r.Snapshot, &snap); err == nil && snap.Resolved != nil && len(snap.Resolved.Nodes) > 0 {
+			return snap.Resolved, nil
+		}
+	}
+	fv, err := e.store.GetFlow(ctx, r.FlowName, r.FlowVersion)
+	if err != nil {
+		return nil, err
+	}
+	f, err := flow.Parse([]byte(fv.YAML))
+	if err != nil {
+		return nil, err
+	}
+	return resolve.Resolve(f, e.cfg.Current()), nil
+}

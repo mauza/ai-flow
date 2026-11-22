@@ -76,8 +76,13 @@ Linear / UI / story map ──▶ planner ──▶ flow YAML (versioned) ──
   and post-ship outcomes), inspect project health & shareable Markdown/HTML digests,
   and send user tasks, activities or phases to flows. Edits stay in a scratch
   checkout until you commit ([docs/PRODUCT.md](docs/PRODUCT.md)).
-- **Run review**: an LLM reads a run's record and suggests changes to the flow,
-  the catalog or ai-flow's primitives.
+- **Run review & improvement loop**: finished runs record deterministic facts and
+  pinned prompt versions, get graded automatically against fixed rubrics
+  (`efficiency`, `instruction_adherence`, `unmentioned_workarounds`) with
+  `agent` vs `environment` blame and human disagreement, and cluster repeated
+  agent failures into targeted prompt edit proposals you approve or reject in
+  **Improve** or **Inbox** (with score trends by prompt version). Manual deep
+  run reviews remain available per run.
 
 Read [docs/SPEC.md](docs/SPEC.md) for the design, the security model and what
 changed from the original draft.

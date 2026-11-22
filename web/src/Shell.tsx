@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Bell, Boxes, KanbanSquare, Library, Map as MapIcon, Play, Settings2, Workflow } from "lucide-react";
+import { Bell, Boxes, KanbanSquare, Library, Map as MapIcon, Play, Settings2, TrendingUp, Workflow } from "lucide-react";
 import { api } from "./api";
 import { useLive, useResource } from "./hooks";
 
@@ -7,11 +7,12 @@ export default function Shell() {
   const live = useLive();
   const overview = useResource(() => api.overview(), []);
   const runs = useResource(() => api.runs(), [], (e) => e.type === "run");
-  const attention = useResource(() => api.attention().catch(() => null), [], (e) => e.type === "run" || e.type === "task" || e.type === "visit");
+  const attention = useResource(() => api.attention().catch(() => null), [], (e) => e.type === "run" || e.type === "task" || e.type === "visit" || e.type === "improvement");
   const active = runs.data?.filter((r) => r.status === "running" || r.status === "waiting" || r.status === "queued").length ?? 0;
   const waiting = runs.data?.filter((r) => r.status === "waiting").length ?? 0;
   const attnTotal = attention.data?.counts?.total ?? 0;
   const attnGates = attention.data?.counts?.gates ?? waiting;
+  const pendingProps = attention.data?.counts?.proposals ?? 0;
 
   return (
     <div className="shell">
@@ -50,6 +51,15 @@ export default function Shell() {
           {active > 0 && (
             <span className="count" title={waiting ? `${waiting} waiting for you` : undefined}>
               {waiting > 0 ? `${active} · ${waiting}✋` : active}
+            </span>
+          )}
+        </NavLink>
+        <NavLink to="/improve" className="nav-link" aria-label="Improve">
+          <TrendingUp />
+          <span className="lbl">Improve</span>
+          {pendingProps > 0 && (
+            <span className="count" title={`${pendingProps} prompt proposal(s) waiting for review`}>
+              {pendingProps}
             </span>
           )}
         </NavLink>

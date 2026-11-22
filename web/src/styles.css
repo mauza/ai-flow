@@ -1879,16 +1879,31 @@ textarea.input {
     gap: 4px;
   }
   .brand {
-    padding: 0 8px 0 2px;
+    padding: 0 6px 0 2px;
+    gap: 6px;
+    flex-shrink: 0;
   }
   .brand small,
   .sidebar-foot,
   .nav-link .count {
     display: none;
   }
+  .nav-link {
+    padding: 7px 8px;
+    flex-shrink: 0;
+  }
   .nav-link span.lbl {
     display: none;
   }
+}
+
+@media (max-width: 480px) {
+  .brand > div {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
   .page {
     padding: 16px 16px 32px;
   }
@@ -2901,4 +2916,116 @@ details.change .diff {
 
 .chip.outcome-invalidated {
   color: var(--danger);
+}
+
+/* ---------- improvement loop ---------- */
+
+.h2-sm {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+}
+
+.swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+
+.trend-chart {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+  display: block;
+}
+
+.improve-rubrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.rubric-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rubric-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--raised-2);
+  overflow: hidden;
+}
+
+.rubric-bar-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.chip.blame-agent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chip.blame-env {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.blame-text-agent {
+  color: var(--accent);
+}
+
+.blame-text-env {
+  color: var(--warn);
+}
+
+.proposal-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.proposal-diff-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.improve-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.improve-table th,
+.improve-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.improve-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 650;
 }

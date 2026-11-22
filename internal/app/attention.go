@@ -17,23 +17,39 @@ import (
 )
 
 // AttentionReport gathers every item currently needing human judgment or action
-// across active runs, failed runs, planning errors, and product story maps.
+// across active runs, failed runs, planning errors, improvement proposals, and
+// product story maps.
 type AttentionReport struct {
-	Counts          AttentionCounts      `json:"counts"`
-	Gates           []AttentionGate      `json:"gates"`
-	FailedRuns      []AttentionFailedRun `json:"failed_runs"`
-	PlanIssues      []AttentionPlanIssue `json:"plan_issues"`
-	ShippedUnmarked []AttentionShipped   `json:"shipped_unmarked"`
-	OpenQuestions   []AttentionQuestion  `json:"open_questions"`
+	Counts          AttentionCounts       `json:"counts"`
+	Gates           []AttentionGate       `json:"gates"`
+	FailedRuns      []AttentionFailedRun  `json:"failed_runs"`
+	Proposals       []AttentionProposal   `json:"proposals"`
+	PlanIssues      []AttentionPlanIssue  `json:"plan_issues"`
+	ShippedUnmarked []AttentionShipped    `json:"shipped_unmarked"`
+	OpenQuestions   []AttentionQuestion   `json:"open_questions"`
 }
 
 type AttentionCounts struct {
 	Total           int `json:"total"`
 	Gates           int `json:"gates"`
 	FailedRuns      int `json:"failed_runs"`
+	Proposals       int `json:"proposals"`
 	PlanIssues      int `json:"plan_issues"`
 	ShippedUnmarked int `json:"shipped_unmarked"`
 	OpenQuestions   int `json:"open_questions"`
+}
+
+type AttentionProposal struct {
+	ID           string   `json:"id"`
+	TargetKind   string   `json:"target_kind"`
+	Target       string   `json:"target"`
+	Theme        string   `json:"theme,omitempty"`
+	Title        string   `json:"title"`
+	Reason       string   `json:"reason"`
+	BeforeText   string   `json:"before_text"`
+	AfterText    string   `json:"after_text"`
+	EvidenceRuns []string `json:"evidence_runs"`
+	CreatedAt    int64    `json:"created_at"`
 }
 
 type GateLoopInfo struct {
@@ -127,6 +143,7 @@ func (a *App) Attention(ctx context.Context, project string) (*AttentionReport, 
 	rep := &AttentionReport{
 		Gates:           []AttentionGate{},
 		FailedRuns:      []AttentionFailedRun{},
+		Proposals:       []AttentionProposal{},
 		PlanIssues:      []AttentionPlanIssue{},
 		ShippedUnmarked: []AttentionShipped{},
 		OpenQuestions:   []AttentionQuestion{},
@@ -264,14 +281,29 @@ func (a *App) Attention(ctx context.Context, project string) (*AttentionReport, 
 		}
 	}
 
+	// Pending improvement proposals (global or targeting this project).
+	if props, err := a.Store.ListProposals(ctx, store.ProposalFilter{Status: store.ProposalPending, Limit: 25}); err == nil {
+		for _, p := range props {
+			if project != "" && (p.TargetKind == TargetProjectAgent || p.TargetKind == TargetProjectPlanner) && p.Target != project {
+				continue
+			}
+			rep.Proposals = append(rep.Proposals, AttentionProposal{
+				ID: p.ID, TargetKind: p.TargetKind, Target: p.Target, Theme: p.Theme,
+				Title: p.Title, Reason: p.Reason, BeforeText: p.BeforeText, AfterText: p.AfterText,
+				EvidenceRuns: p.EvidenceRuns, CreatedAt: p.CreatedAt,
+			})
+		}
+	}
+
 	rep.Counts = AttentionCounts{
 		Gates:           len(rep.Gates),
 		FailedRuns:      len(rep.FailedRuns),
+		Proposals:       len(rep.Proposals),
 		PlanIssues:      len(rep.PlanIssues),
 		ShippedUnmarked: len(rep.ShippedUnmarked),
 		OpenQuestions:   len(rep.OpenQuestions),
 	}
-	rep.Counts.Total = rep.Counts.Gates + rep.Counts.FailedRuns + rep.Counts.PlanIssues + rep.Counts.ShippedUnmarked + rep.Counts.OpenQuestions
+	rep.Counts.Total = rep.Counts.Gates + rep.Counts.FailedRuns + rep.Counts.Proposals + rep.Counts.PlanIssues + rep.Counts.ShippedUnmarked + rep.Counts.OpenQuestions
 	return rep, nil
 }
 

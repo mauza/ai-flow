@@ -43,7 +43,7 @@ const (
 var CatalogSections = []string{"models", "presets", "runtimes", "harnesses", "grants", "skills"}
 
 // CatalogSettings are the catalog's single-value settings.
-var CatalogSettings = []string{"planner", "defaults"}
+var CatalogSettings = []string{"planner", "defaults", "improvement"}
 
 // StoredConfig says how LoadStoredConfig arrived at the config it returned.
 type StoredConfig struct {
@@ -298,6 +298,13 @@ func (e *RunsAffectedError) Error() string {
 // forced, it refuses (*RunsAffectedError) when the change would fail active
 // runs. The warnings name saved flows that the change breaks.
 func (a *App) EditConfig(ctx context.Context, force bool, edits ...ConfigEdit) (warnings []string, err error) {
+	return a.EditConfigWithMeta(ctx, force, "settings", "", "", edits...)
+}
+
+// EditConfigWithMeta applies config edits like EditConfig and records prompt
+// revision markers whenever a preset prompt, harness instruction, project agent
+// instruction, or planner guidance changes.
+func (a *App) EditConfigWithMeta(ctx context.Context, force bool, author, note, proposalID string, edits ...ConfigEdit) (warnings []string, err error) {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 	cur := a.Cfg.Current()
@@ -402,6 +409,7 @@ func (a *App) EditConfig(ctx context.Context, force bool, edits ...ConfigEdit) (
 	}
 	warnings = a.brokenFlows(ctx, cur, next)
 	a.Cfg.Publish(next)
+	a.recordPromptRevisions(ctx, cur, next, author, note, proposalID)
 	a.Hub.Publish(hub.Event{Type: "config", ID: time.Now().Format(time.RFC3339Nano)})
 	return warnings, nil
 }

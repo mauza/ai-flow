@@ -854,3 +854,12 @@ planner:
     Read requires hints before selecting a preset. Configure custom-check.run with a real project command;
     match runtimes and install any needed dependencies within the same check pod using permitted access.
     Never treat missing tests, missing tools, or an unconfigured check as a passing verification.
+
+improvement:
+  # Grade every finished run against fixed rubrics (efficiency, instruction_adherence,
+  # unmentioned_workarounds) and cluster repeated agent-blamed failures into
+  # human-reviewed prompt edit proposals.
+  auto_grade: true
+  sample_pct: 100
+  min_failures: 3
+  schedule_interval: 24h

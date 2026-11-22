@@ -93,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/events", s.events)
 	s.configRoutes(api)
 	s.productRoutes(api)
+	s.improvementRoutes(api)
 	mcpBackend := &mcpserver.LocalBackend{
 		App:        s.app,
 		Obj:        s.obj,

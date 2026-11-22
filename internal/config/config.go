@@ -236,9 +236,61 @@ type Catalog struct {
 	Skills     map[string]*Skill  `json:"skills,omitempty"`
 	Presets    map[string]*Preset `json:"presets,omitempty"`
 	Actions    []string           `json:"-"`
-	Planner    Planner            `json:"planner"`
+	Planner     Planner            `json:"planner"`
 	// Node defaults applied to every flow (runtime, harness, timeout, retry, llm).
 	Defaults *flow.Node `json:"defaults,omitempty"`
+	// Improvement configures automatic run grading, failure clustering, and
+	// human-approved prompt edit proposals.
+	Improvement Improvement `json:"improvement,omitempty"`
+}
+
+// Improvement configures the closed-loop run grader and prompt improver.
+type Improvement struct {
+	// AutoGrade grades every finished run automatically (default true when a model is configured).
+	AutoGrade *bool `json:"auto_grade,omitempty"`
+	// Model grades finished runs; defaults to planner.model.
+	Model string `json:"model,omitempty"`
+	// ImproverModel drafts prompt edit proposals; defaults to Model (or planner.model).
+	ImproverModel string `json:"improver_model,omitempty"`
+	// SamplePct is the percentage of finished runs to auto-grade (1..100, default 100).
+	SamplePct int `json:"sample_pct,omitempty"`
+	// MinFailures is the minimum unreviewed agent-blamed failures in one cluster
+	// before the improver drafts a prompt edit proposal (default 3).
+	MinFailures int `json:"min_failures,omitempty"`
+	// ScheduleInterval runs the improver periodically (e.g. 24h). Zero disables the schedule.
+	ScheduleInterval flow.Duration `json:"schedule_interval,omitzero"`
+	// Rubrics adds or overrides the built-in starter rubrics (efficiency,
+	// instruction_adherence, unmentioned_workarounds).
+	Rubrics []RubricConfig `json:"rubrics,omitempty"`
+}
+
+// RubricConfig defines one grading rubric for finished runs.
+type RubricConfig struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Criteria    string `json:"criteria"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+}
+
+// AutoGradeEnabled reports whether finished runs should be graded automatically.
+func (im Improvement) AutoGradeEnabled() bool {
+	return im.AutoGrade == nil || *im.AutoGrade
+}
+
+// EffectiveSamplePct returns the configured sampling rate (1..100), defaulting to 100.
+func (im Improvement) EffectiveSamplePct() int {
+	if im.SamplePct <= 0 || im.SamplePct > 100 {
+		return 100
+	}
+	return im.SamplePct
+}
+
+// EffectiveMinFailures returns the failure cluster threshold, defaulting to 3.
+func (im Improvement) EffectiveMinFailures() int {
+	if im.MinFailures <= 0 {
+		return 3
+	}
+	return im.MinFailures
 }
 
 type Model struct {
@@ -822,6 +874,41 @@ func (c *Config) check() error {
 	if c.Catalog.Planner.Model != "" {
 		if _, ok := c.Catalog.Models[c.Catalog.Planner.Model]; !ok {
 			errs = append(errs, fmt.Sprintf("planner.model: unknown model %q", c.Catalog.Planner.Model))
+		}
+	}
+	if im := c.Catalog.Improvement; true {
+		if im.Model != "" {
+			if _, ok := c.Catalog.Models[im.Model]; !ok {
+				errs = append(errs, fmt.Sprintf("improvement.model: unknown model %q", im.Model))
+			}
+		}
+		if im.ImproverModel != "" {
+			if _, ok := c.Catalog.Models[im.ImproverModel]; !ok {
+				errs = append(errs, fmt.Sprintf("improvement.improver_model: unknown model %q", im.ImproverModel))
+			}
+		}
+		if im.SamplePct < 0 || im.SamplePct > 100 {
+			errs = append(errs, "improvement.sample_pct: must be between 0 and 100")
+		}
+		if im.MinFailures < 0 || im.MinFailures > 100 {
+			errs = append(errs, "improvement.min_failures: must be between 0 and 100")
+		}
+		seenRubric := map[string]bool{}
+		for i, rb := range im.Rubrics {
+			name := strings.TrimSpace(rb.Name)
+			if name == "" {
+				errs = append(errs, fmt.Sprintf("improvement.rubrics[%d]: name is required", i))
+				continue
+			}
+			if seenRubric[name] {
+				errs = append(errs, fmt.Sprintf("improvement.rubrics: duplicate rubric %q", name))
+			}
+			seenRubric[name] = true
+			if rb.Enabled == nil || *rb.Enabled {
+				if strings.TrimSpace(rb.Criteria) == "" {
+					errs = append(errs, fmt.Sprintf("improvement.rubrics[%s]: criteria is required", name))
+				}
+			}
 		}
 	}
 	for name, g := range c.Catalog.Grants {

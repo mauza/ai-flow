@@ -8,6 +8,7 @@ import Inbox from "./pages/Inbox";
 import Flows from "./pages/Flows";
 import Runs from "./pages/Runs";
 import Catalog from "./pages/Catalog";
+import Improve from "./pages/Improve";
 import Products from "./pages/Products";
 import Settings from "./pages/Settings";
 import { Spinner, ToastProvider } from "./ui";
@@ -44,6 +45,7 @@ const router = createBrowserRouter([
       { path: "products", element: <Products /> },
       { path: "products/:p", element: <Loading><ProductPage /></Loading> },
       { path: "products/:p/maps/:map", element: <Loading><StoryMapPage /></Loading> },
+      { path: "improve", element: <Improve /> },
       { path: "catalog", element: <Catalog /> },
       { path: "settings", element: <Settings /> },
       { path: "*", element: <div className="page">Not found.</div> },

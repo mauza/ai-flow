@@ -45,6 +45,10 @@ type App struct {
 	planning   sync.Map   // task id → struct{}
 	planningMu sync.Mutex // serialize starting a planner with manual status repair
 	configMu   sync.Mutex // serialize config edits
+	grading    sync.Map   // run id → struct{}
+	gradeSem   chan struct{}
+	gradeOnce  sync.Once
+	improverMu sync.Mutex // serialize improver passes
 }
 
 func (a *App) AddNotifier(n Notifier) { a.notifiers = append(a.notifiers, n) }

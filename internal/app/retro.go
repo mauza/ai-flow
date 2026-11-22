@@ -262,7 +262,7 @@ func writeStepInstructions(b *strings.Builder, a *App, ctx context.Context, run 
 	if a.Engine == nil {
 		return
 	}
-	res, err := a.Engine.Resolved(ctx, run)
+	res, err := a.Engine.PinnedResolved(ctx, run)
 	if err != nil {
 		return
 	}

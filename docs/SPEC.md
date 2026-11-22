@@ -506,8 +506,14 @@ effort and never affects the run.
   product, Markdown docs and user story maps from its `product/` directory, a
   scratch checkout with pull, diff review, discard and commit & push, a map
   grid with a task panel, sending work to flows, metrics and an assistant.
-- **Run review** — on the run view, an LLM review of the run's record with
-  suggestions for the flow, presets, prompts, models, config or primitives.
+- **Run review & improvement loop** — finished runs record deterministic facts
+  and pinned prompt versions, are graded automatically against fixed rubrics
+  (`efficiency`, `instruction_adherence`, `unmentioned_workarounds`) with
+  `agent` vs `environment` blame and human disagreement, and cluster repeated
+  agent failures into human-reviewed prompt edit proposals (**Improve** page and
+  **Inbox**). Applying a proposal updates the catalog/project via `EditConfig`
+  and stamps a prompt revision marker for version-aligned score trends. Manual
+  deep run reviews remain available per run.
 - **MCP server** — the control plane serves an MCP endpoint at `/mcp`
   (Streamable HTTP, behind the same auth) and `ai-flow mcp -url <url>` bridges
   it over stdio for local LLM clients. Read-only orchestration, attention, and

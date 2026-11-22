@@ -21,7 +21,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 6 {
+	if version > 7 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -69,6 +69,106 @@ func migrate(db *sql.DB) error {
 		ALTER TABLE runs ADD COLUMN steer_seq INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE runs ADD COLUMN extra_visits INTEGER NOT NULL DEFAULT 0;
 		PRAGMA user_version = 6;`); err != nil {
+			return err
+		}
+	}
+	if version < 7 {
+		// Closed-loop improvement: deterministic run facts with pinned prompt
+		// versions, automatic rubric grades with agent/environment blame and
+		// human disagreement, prompt edit proposals, and prompt revision markers.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS run_facts (
+			run_id TEXT PRIMARY KEY,
+			project TEXT NOT NULL DEFAULT '',
+			flow_name TEXT NOT NULL DEFAULT '',
+			flow_version INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT '',
+			wall_ms INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			tokens INTEGER NOT NULL DEFAULT 0,
+			visits INTEGER NOT NULL DEFAULT 0,
+			loop_visits INTEGER NOT NULL DEFAULT 0,
+			max_visit INTEGER NOT NULL DEFAULT 0,
+			step_errors INTEGER NOT NULL DEFAULT 0,
+			resumes INTEGER NOT NULL DEFAULT 0,
+			gates INTEGER NOT NULL DEFAULT 0,
+			steers INTEGER NOT NULL DEFAULT 0,
+			extra_visits INTEGER NOT NULL DEFAULT 0,
+			prompt_versions TEXT NOT NULL DEFAULT '{}',
+			created_at INTEGER NOT NULL DEFAULT 0,
+			finished_at INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS run_facts_project_finished ON run_facts(project, finished_at);
+
+		CREATE TABLE IF NOT EXISTS run_grades (
+			id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			project TEXT NOT NULL DEFAULT '',
+			flow_name TEXT NOT NULL DEFAULT '',
+			rubric TEXT NOT NULL,
+			rubric_version TEXT NOT NULL DEFAULT '',
+			pass INTEGER NOT NULL DEFAULT 0,
+			blame TEXT NOT NULL DEFAULT '',
+			theme TEXT NOT NULL DEFAULT '',
+			target_kind TEXT NOT NULL DEFAULT '',
+			target TEXT NOT NULL DEFAULT '',
+			node TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			prompt_versions TEXT NOT NULL DEFAULT '{}',
+			model TEXT NOT NULL DEFAULT '',
+			tokens_in INTEGER NOT NULL DEFAULT 0,
+			tokens_out INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			disagreed INTEGER NOT NULL DEFAULT 0,
+			disagreed_by TEXT NOT NULL DEFAULT '',
+			disagreed_note TEXT NOT NULL DEFAULT '',
+			disagreed_at INTEGER NOT NULL DEFAULT 0,
+			reviewed_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			UNIQUE(run_id, rubric)
+		);
+		CREATE INDEX IF NOT EXISTS run_grades_run ON run_grades(run_id);
+		CREATE INDEX IF NOT EXISTS run_grades_project_created ON run_grades(project, created_at);
+		CREATE INDEX IF NOT EXISTS run_grades_fail_unreviewed ON run_grades(pass, blame, disagreed, reviewed_at);
+
+		CREATE TABLE IF NOT EXISTS improvement_proposals (
+			id TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			target_kind TEXT NOT NULL,
+			target TEXT NOT NULL,
+			theme TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			before_text TEXT NOT NULL DEFAULT '',
+			after_text TEXT NOT NULL DEFAULT '',
+			before_hash TEXT NOT NULL DEFAULT '',
+			after_hash TEXT NOT NULL DEFAULT '',
+			evidence_runs TEXT NOT NULL DEFAULT '[]',
+			evidence_grades TEXT NOT NULL DEFAULT '[]',
+			model TEXT NOT NULL DEFAULT '',
+			tokens_in INTEGER NOT NULL DEFAULT 0,
+			tokens_out INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			decided_by TEXT NOT NULL DEFAULT '',
+			decided_at INTEGER NOT NULL DEFAULT 0,
+			decision_note TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS improvement_proposals_status ON improvement_proposals(status, created_at);
+		CREATE INDEX IF NOT EXISTS improvement_proposals_target ON improvement_proposals(target_kind, target, status);
+
+		CREATE TABLE IF NOT EXISTS prompt_revisions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target_kind TEXT NOT NULL,
+			target TEXT NOT NULL,
+			version_hash TEXT NOT NULL,
+			prev_hash TEXT NOT NULL DEFAULT '',
+			author TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			proposal_id TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS prompt_revisions_target ON prompt_revisions(target_kind, target, created_at);
+		PRAGMA user_version = 7;`); err != nil {
 			return err
 		}
 	}
@@ -263,6 +363,8 @@ func (s *Store) DeleteFlow(ctx context.Context, name string) (*DeletedFlow, erro
 		return nil, &ErrFlowActive{Runs: active}
 	}
 	for _, q := range []string{
+		`DELETE FROM run_grades WHERE run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,
+		`DELETE FROM run_facts WHERE run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,
 		`DELETE FROM visits WHERE run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,
 		`DELETE FROM kv WHERE key LIKE 'notify/stuck/%' AND substr(key, 14, instr(substr(key, 14), '/') - 1) IN (SELECT id FROM runs WHERE flow_name = ?)`,
 		`DELETE FROM events WHERE flow_name = ? OR run_id IN (SELECT id FROM runs WHERE flow_name = ?)`,

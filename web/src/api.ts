@@ -496,17 +496,32 @@ export interface AttentionQuestion {
   questions: string[];
 }
 
+export interface AttentionProposal {
+  id: string;
+  target_kind: string;
+  target: string;
+  theme?: string;
+  title: string;
+  reason: string;
+  before_text: string;
+  after_text: string;
+  evidence_runs: string[];
+  created_at: number;
+}
+
 export interface AttentionReport {
   counts: {
     total: number;
     gates: number;
     failed_runs: number;
+    proposals?: number;
     plan_issues: number;
     shipped_unmarked: number;
     open_questions: number;
   };
   gates: AttentionGate[];
   failed_runs: AttentionFailedRun[];
+  proposals?: AttentionProposal[];
   plan_issues: AttentionPlanIssue[];
   shipped_unmarked: AttentionShipped[];
   open_questions: AttentionQuestion[];
@@ -560,6 +575,215 @@ export interface ProjectSummary {
   maps: MapHealthSummary[];
   recent_runs: { run_id: string; flow_name: string; task_title?: string; status: string; pr_url?: string; cost_usd: number; created_at: number; finished_at?: number; error?: string }[];
   retros: { run_id: string; flow_name: string; summary: string; suggestions?: { kind: string; target?: string; change: string; why: string; priority?: string }[] }[];
+}
+
+// ---- improvement loop ----
+
+export interface RunFacts {
+  run_id: string;
+  project?: string;
+  flow_name: string;
+  flow_version: number;
+  status: string;
+  wall_ms: number;
+  cost_usd: number;
+  tokens: number;
+  visits: number;
+  loop_visits: number;
+  max_visit: number;
+  step_errors: number;
+  resumes: number;
+  gates: number;
+  steers: number;
+  extra_visits: number;
+  prompt_versions?: Record<string, string>;
+  created_at: number;
+  finished_at: number;
+}
+
+export interface RunGrade {
+  id: string;
+  run_id: string;
+  project?: string;
+  flow_name?: string;
+  rubric: string;
+  rubric_version: string;
+  pass: boolean;
+  blame?: "" | "agent" | "environment";
+  theme?: string;
+  target_kind?: string;
+  target?: string;
+  node?: string;
+  reason: string;
+  prompt_versions?: Record<string, string>;
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  disagreed?: boolean;
+  disagreed_by?: string;
+  disagreed_note?: string;
+  disagreed_at?: number;
+  reviewed_at?: number;
+  created_at: number;
+}
+
+export interface RunGradesView {
+  run_id: string;
+  grading: boolean;
+  facts?: RunFacts;
+  grades: RunGrade[];
+}
+
+export interface ImprovementProposal {
+  id: string;
+  status: "pending" | "applied" | "rejected";
+  target_kind: string;
+  target: string;
+  theme?: string;
+  title: string;
+  reason: string;
+  before_text: string;
+  after_text: string;
+  before_hash: string;
+  after_hash: string;
+  evidence_runs: string[];
+  evidence_grades: string[];
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  decided_by?: string;
+  decided_at?: number;
+  decision_note?: string;
+  created_at: number;
+}
+
+export interface PromptRevision {
+  id: number;
+  target_kind: string;
+  target: string;
+  version_hash: string;
+  prev_hash?: string;
+  author?: string;
+  note?: string;
+  proposal_id?: string;
+  created_at: number;
+}
+
+export interface FailureCluster {
+  blame: "agent" | "environment";
+  target_kind: string;
+  target: string;
+  theme: string;
+  editable: boolean;
+  eligible: boolean;
+  count: number;
+  min_required: number;
+  rubrics: string[];
+  run_ids: string[];
+  grade_ids: string[];
+  sample_reason: string;
+  latest_at: number;
+}
+
+export interface RubricStats {
+  name: string;
+  description?: string;
+  version: string;
+  total: number;
+  passed: number;
+  failed: number;
+  pass_rate_pct: number;
+  agent_failures: number;
+  environment_failures: number;
+  disagreed: number;
+  disagreement_rate_pct: number;
+}
+
+export interface TrendPoint {
+  date: string;
+  runs: number;
+  succeeded: number;
+  outcome_rate_pct: number;
+  grades: number;
+  passed: number;
+  pass_rate_pct: number;
+  revisions?: PromptRevision[];
+}
+
+export interface TargetVersionScore {
+  version_hash: string;
+  runs: number;
+  succeeded: number;
+  outcome_rate_pct: number;
+  grades: number;
+  passed: number;
+  pass_rate_pct: number;
+  first_seen: number;
+  last_seen: number;
+  author?: string;
+  note?: string;
+  proposal_id?: string;
+  current?: boolean;
+}
+
+export interface TargetScoreHistory {
+  target_kind: string;
+  target: string;
+  current_hash?: string;
+  versions: TargetVersionScore[];
+}
+
+export interface ImproverRunStatus {
+  started_at: number;
+  finished_at: number;
+  trigger: string;
+  model?: string;
+  clusters_checked: number;
+  proposals_created: number;
+  skipped_clusters: number;
+  proposal_ids?: string[];
+  error?: string;
+}
+
+export interface ImprovementSummary {
+  project?: string;
+  config: {
+    auto_grade: boolean;
+    model?: string;
+    improver_model?: string;
+    sample_pct: number;
+    min_failures: number;
+    schedule_interval?: string;
+    rubrics: { name: string; description: string; criteria: string; version: string }[];
+  };
+  stats: {
+    finished_runs: number;
+    graded_runs: number;
+    ungraded_runs: number;
+    succeeded_runs: number;
+    failed_runs: number;
+    outcome_rate_pct: number;
+    total_grades: number;
+    passed_grades: number;
+    pass_rate_pct: number;
+    agent_failures: number;
+    environment_failures: number;
+    disagreed_grades: number;
+    pending_proposals: number;
+    applied_proposals: number;
+    rejected_proposals: number;
+    grader_cost_usd: number;
+    grader_tokens: number;
+  };
+  last_improver_run?: ImproverRunStatus;
+  rubrics: RubricStats[];
+  trend: TrendPoint[];
+  target_versions: TargetScoreHistory[];
+  agent_clusters: FailureCluster[];
+  environment_clusters: FailureCluster[];
+  revisions: PromptRevision[];
 }
 
 // ---- run retrospectives ----
@@ -679,6 +903,31 @@ export const api = {
     request<{ problems: string[] }>("POST", `/api/projects/${p}/maps/${m}/apply`, { changes }),
   retro: (id: string) => request<{ retro: Retro | null }>("GET", `/api/runs/${id}/retro`),
   startRetro: (id: string, note: string) => request<{ retro: Retro }>("POST", `/api/runs/${id}/retro`, { note }),
+  runGrades: (id: string) => request<RunGradesView>("GET", `/api/runs/${id}/grades`),
+  gradeRun: (id: string, sync = false) => request<{ run_id: string; started?: boolean; grading?: boolean; grades?: RunGrade[] }>("POST", `/api/runs/${id}/grade${sync ? "?sync=1" : ""}`),
+  improvementSummary: (project = "") =>
+    request<ImprovementSummary>("GET", project ? `/api/improvement/summary?project=${encodeURIComponent(project)}` : "/api/improvement/summary"),
+  improvementGrades: (q: { run?: string; project?: string; rubric?: string; blame?: string; pass?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.run) p.set("run", q.run);
+    if (q.project) p.set("project", q.project);
+    if (q.rubric) p.set("rubric", q.rubric);
+    if (q.blame) p.set("blame", q.blame);
+    if (q.pass) p.set("pass", q.pass);
+    if (q.limit) p.set("limit", String(q.limit));
+    return request<RunGrade[]>("GET", `/api/improvement/grades?${p}`);
+  },
+  gradeUngraded: (project = "", limit = 10) => request<{ queued: string[] }>("POST", "/api/improvement/grade-ungraded", { project, limit }),
+  disagreeGrade: (id: string, disagreed: boolean, note = "") =>
+    request<RunGrade>("POST", `/api/improvement/grades/${id}/disagree`, { disagreed, note }),
+  improvementProposals: (status = "") =>
+    request<ImprovementProposal[]>("GET", status ? `/api/improvement/proposals?status=${encodeURIComponent(status)}` : "/api/improvement/proposals"),
+  runImprover: (body: { project?: string; min_failures?: number } = {}) =>
+    request<ImproverRunStatus>("POST", "/api/improvement/run", body),
+  applyProposal: (id: string, body: { note?: string; after_text?: string; force?: boolean } = {}) =>
+    request<{ proposal: ImprovementProposal; warnings: string[] }>("POST", `/api/improvement/proposals/${id}/apply`, body),
+  rejectProposal: (id: string, note = "") =>
+    request<{ proposal: ImprovementProposal }>("POST", `/api/improvement/proposals/${id}/reject`, { note }),
   transcript: async (id: string, seq: number): Promise<string> => {
     const res = await fetch(`/api/runs/${id}/visits/${seq}/transcript`);
     if (!res.ok) throw new ApiError(res.status, await res.text());

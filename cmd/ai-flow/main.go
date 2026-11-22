@@ -222,6 +222,7 @@ func serverCmd(ctx context.Context, args []string) error {
 	llmc := llm.New(cfg)
 	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llmc, gh), Hub: h, LLM: llmc, GitHub: gh,
 		Workspaces: workspace.New(filepath.Join(env.Server.DataDir, "workspaces"), gh, store.Now)}
+	eng.OnRunDone(a.OnRunFinished)
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
 
 	ui, err := server.New(a, obj, web.FS())
@@ -267,6 +268,7 @@ func serverCmd(ctx context.Context, args []string) error {
 		errc <- err
 	}()
 	go eng.Loop(ctx)
+	go a.RunImprovementLoop(ctx)
 	slog.Info("ai-flow started", "version", version, "ui", env.Server.Listen, "pods", env.Server.PodListen, "runs", ternary(env.Runs.Local, "local", env.Runs.Namespace))
 
 	var serveErr error

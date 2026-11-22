@@ -81,9 +81,10 @@ type Engine struct {
 	store    *store.Store
 	launcher Launcher
 	hub      *hub.Hub
-	gh       *github.Client
-	hooks    Hooks
-	notifier notify.Sender
+	gh        *github.Client
+	hooks     Hooks
+	onRunDone []func(ctx context.Context, run *store.Run)
+	notifier  notify.Sender
 
 	wake    chan struct{}
 	mu      sync.Mutex // serializes transitions (loop + synchronous API calls)
@@ -121,6 +122,15 @@ func New(cfg *config.Config, st *store.Store, l Launcher, h *hub.Hub, gh *github
 func (e *Engine) Tick(ctx context.Context) { e.tick(ctx) }
 
 func (e *Engine) SetHooks(h Hooks) { e.hooks = h }
+
+// OnRunDone registers a callback invoked asynchronously whenever any run
+// reaches a terminal status (succeeded, failed, or canceled), whether or not
+// the run is linked to a task.
+func (e *Engine) OnRunDone(fn func(ctx context.Context, run *store.Run)) {
+	if fn != nil {
+		e.onRunDone = append(e.onRunDone, fn)
+	}
+}
 
 // SetArgoRefresher lets wait_for_deploy ask Argo CD to refresh a project's
 // app (deploy.argocd_app) instead of waiting for its git poll.
@@ -867,14 +877,28 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 		e.alert(ctx, config.NotifyFailed, r, "failed", msg, 4, "x")
 	}
 	e.publishRun(r)
+	var fresh *store.Run
+	loadFresh := func() *store.Run {
+		if fresh != nil {
+			return fresh
+		}
+		fresh, _ = e.store.GetRun(ctx, r.ID)
+		if fresh == nil {
+			cp := *r
+			fresh = &cp
+		}
+		return fresh
+	}
 	if t := e.task(ctx, r); t != nil {
 		e.hub.Publish(hub.Event{Type: "task", ID: t.ID})
 		if e.hooks != nil {
-			fresh, _ := e.store.GetRun(ctx, r.ID)
-			if fresh == nil {
-				fresh = r
-			}
-			go e.hooks.RunFinished(context.Background(), t, fresh)
+			go e.hooks.RunFinished(context.Background(), t, loadFresh())
+		}
+	}
+	if len(e.onRunDone) > 0 {
+		doneRun := loadFresh()
+		for _, fn := range e.onRunDone {
+			go fn(context.Background(), doneRun)
 		}
 	}
 	e.Wake() // a slot freed up

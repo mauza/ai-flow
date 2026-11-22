@@ -239,3 +239,98 @@ func (h *HTTPBackend) StartRetro(ctx context.Context, runID, focus string) (*app
 	}
 	return out.Retro, nil
 }
+
+func (h *HTTPBackend) ImprovementSummary(ctx context.Context, project string) (*app.ImprovementSummary, error) {
+	p := "/api/improvement/summary"
+	if project != "" {
+		p += "?project=" + url.QueryEscape(project)
+	}
+	var out app.ImprovementSummary
+	return &out, h.do(ctx, http.MethodGet, p, nil, &out)
+}
+
+func (h *HTTPBackend) ListRunGrades(ctx context.Context, runID, project, rubric, blame string, limit int) ([]*store.RunGrade, error) {
+	q := url.Values{}
+	if runID != "" {
+		q.Set("run", runID)
+	}
+	if project != "" {
+		q.Set("project", project)
+	}
+	if rubric != "" {
+		q.Set("rubric", rubric)
+	}
+	if blame != "" {
+		q.Set("blame", blame)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	p := "/api/improvement/grades"
+	if enc := q.Encode(); enc != "" {
+		p += "?" + enc
+	}
+	var out []*store.RunGrade
+	return out, h.do(ctx, http.MethodGet, p, nil, &out)
+}
+
+func (h *HTTPBackend) ListProposals(ctx context.Context, status string, limit int) ([]*store.ImprovementProposal, error) {
+	q := url.Values{}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	p := "/api/improvement/proposals"
+	if enc := q.Encode(); enc != "" {
+		p += "?" + enc
+	}
+	var out []*store.ImprovementProposal
+	return out, h.do(ctx, http.MethodGet, p, nil, &out)
+}
+
+func (h *HTTPBackend) GradeRun(ctx context.Context, runID string) (map[string]any, error) {
+	var out map[string]any
+	return out, h.do(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(runID)+"/grade", nil, &out)
+}
+
+func (h *HTTPBackend) RunImprover(ctx context.Context, project string, minFailures int) (*app.ImproverRunStatus, error) {
+	body := map[string]any{}
+	if project != "" {
+		body["project"] = project
+	}
+	if minFailures > 0 {
+		body["min_failures"] = minFailures
+	}
+	var out app.ImproverRunStatus
+	return &out, h.do(ctx, http.MethodPost, "/api/improvement/run", body, &out)
+}
+
+func (h *HTTPBackend) DisagreeGrade(ctx context.Context, gradeID string, disagreed bool, by, note string) (*store.RunGrade, error) {
+	var out store.RunGrade
+	return &out, h.do(ctx, http.MethodPost, "/api/improvement/grades/"+url.PathEscape(gradeID)+"/disagree", map[string]any{
+		"disagreed": disagreed, "by": by, "note": note,
+	}, &out)
+}
+
+func (h *HTTPBackend) ApplyProposal(ctx context.Context, proposalID, by, note, afterText string, force bool) (*store.ImprovementProposal, []string, error) {
+	var out struct {
+		Proposal *store.ImprovementProposal `json:"proposal"`
+		Warnings []string                   `json:"warnings"`
+	}
+	err := h.do(ctx, http.MethodPost, "/api/improvement/proposals/"+url.PathEscape(proposalID)+"/apply", map[string]any{
+		"by": by, "note": note, "after_text": afterText, "force": force,
+	}, &out)
+	return out.Proposal, out.Warnings, err
+}
+
+func (h *HTTPBackend) RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error) {
+	var out struct {
+		Proposal *store.ImprovementProposal `json:"proposal"`
+	}
+	err := h.do(ctx, http.MethodPost, "/api/improvement/proposals/"+url.PathEscape(proposalID)+"/reject", map[string]any{
+		"by": by, "note": note,
+	}, &out)
+	return out.Proposal, err
+}

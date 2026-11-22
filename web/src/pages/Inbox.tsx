@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Coins, FileDiff, Hand, HelpCircle, Play, RefreshCw, Sparkles, XCircle } from "lucide-react";
-import { api, type AttentionFailedRun, type AttentionGate } from "../api";
+import { AlertTriangle, Check, CheckCircle2, Coins, FileDiff, Hand, HelpCircle, Play, RefreshCw, Sparkles, Wrench, X, XCircle } from "lucide-react";
+import { api, ApiError, type AttentionFailedRun, type AttentionGate, type AttentionProposal } from "../api";
+import DiffView, { diffRows } from "../DiffView";
 import { useNow, useResource } from "../hooks";
 import { timeAgo, usd } from "../format";
 import { Empty, PRLink, Pill, Spinner, useToast } from "../ui";
@@ -38,7 +39,7 @@ export function decisionHighlights(outputs?: Record<string, unknown>): { label: 
 export default function Inbox() {
   const [project, setProject] = useState("");
   const overview = useResource(() => api.overview(), []);
-  const view = useResource(() => api.attention(project), [project], (e) => e.type === "run" || e.type === "task" || e.type === "visit");
+  const view = useResource(() => api.attention(project), [project], (e) => e.type === "run" || e.type === "task" || e.type === "visit" || e.type === "improvement");
   const now = useNow(15000);
   const d = view.data;
   const projects = overview.data?.projects ?? [];
@@ -103,6 +104,25 @@ export default function Inbox() {
               <div className="stack" style={{ gap: 10 }}>
                 {d.failed_runs.map((f) => (
                   <FailedCard key={f.run_id} item={f} now={now} onResumed={view.reload} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {d.proposals && d.proposals.length > 0 && (
+            <section aria-label="Prompt improvement proposals" className="inbox-section">
+              <div className="section-head">
+                <Wrench size={16} color="var(--accent)" />
+                <h2>Prompt improvement proposals</h2>
+                <span className="badge">{d.proposals.length}</span>
+                <span className="spacer" />
+                <Link className="btn ghost sm" to="/improve">
+                  Open Improve
+                </Link>
+              </div>
+              <div className="stack" style={{ gap: 10 }}>
+                {d.proposals.map((p) => (
+                  <InboxProposalCard key={p.id} proposal={p} now={now} onDecided={view.reload} />
                 ))}
               </div>
             </section>
@@ -381,5 +401,82 @@ function FailedCard({ item, now, onResumed }: { item: AttentionFailedRun; now: n
         </div>
       )}
     </div>
+  );
+}
+
+function InboxProposalCard({ proposal, now, onDecided }: { proposal: AttentionProposal; now: number; onDecided: () => void }) {
+  const toast = useToast();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState<"apply" | "reject">();
+  const rows = diffRows(proposal.before_text, proposal.after_text);
+
+  const apply = async () => {
+    setBusy("apply");
+    try {
+      try {
+        await api.applyProposal(proposal.id, { note });
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          if (!window.confirm(`${e.message}.\n\nForce apply anyway?`)) return;
+          await api.applyProposal(proposal.id, { note, force: true });
+        } else {
+          throw e;
+        }
+      }
+      toast("ok", `Applied edit to ${proposal.target_kind}:${proposal.target}`);
+      onDecided();
+    } catch (e) {
+      toast("error", (e as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const reject = async () => {
+    setBusy("reject");
+    try {
+      await api.rejectProposal(proposal.id, note);
+      toast("ok", "Proposal rejected");
+      onDecided();
+    } catch (e) {
+      toast("error", (e as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  return (
+    <article className="card proposal-card">
+      <div className="row wrap" style={{ gap: 8 }}>
+        <span className="chip mono">
+          {proposal.target_kind}:{proposal.target}
+        </span>
+        {proposal.theme && <span className="chip blame-agent">{proposal.theme}</span>}
+        <b>{proposal.title}</b>
+        <span className="spacer" />
+        <span className="small faint">{timeAgo(proposal.created_at, now)}</span>
+      </div>
+      <div className="small muted">{proposal.reason}</div>
+      <div className="proposal-diff-box">
+        <DiffView rows={rows} />
+      </div>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <input
+          className="input grow"
+          aria-label={`Proposal note for ${proposal.id}`}
+          placeholder="Optional note…"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <button className="btn primary sm" disabled={!!busy} onClick={apply}>
+          {busy === "apply" ? <Spinner /> : <Check />}
+          Apply
+        </button>
+        <button className="btn sm" disabled={!!busy} onClick={reject}>
+          {busy === "reject" ? <Spinner /> : <X />}
+          Reject
+        </button>
+      </div>
+    </article>
   );
 }

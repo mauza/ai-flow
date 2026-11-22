@@ -159,7 +159,7 @@ export default function Settings() {
         <div className="settings-body">
           <p className="muted small">{meta.blurb}</p>
           <div className="grid-cards">
-            {["planner", "defaults"].map((name) => (
+            {["planner", "defaults", "improvement"].map((name) => (
               <div key={name} className="card card-pad setting-card">
                 <div className="row">
                   <h3 className="mono">{name}</h3>

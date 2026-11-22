@@ -114,15 +114,19 @@ func TestControlPlaneMCPReadOnlyByDefault(t *testing.T) {
 	ts, _, runID := setupServer(t, false)
 	sess := connectHTTP(t, ts.URL+"/mcp")
 	names := toolNames(t, sess)
-	for _, want := range []string{"get_overview", "get_attention", "explain_run", "get_product_summary", "get_project_digest"} {
+	for _, want := range []string{"get_overview", "get_attention", "explain_run", "get_product_summary", "get_project_digest", "get_improvement_summary", "list_run_grades", "list_improvement_proposals"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("missing read tool %q in %v", want, names)
 		}
 	}
-	for _, forbidden := range []string{"decide_gate", "steer_run", "resume_run", "create_task"} {
+	for _, forbidden := range []string{"decide_gate", "steer_run", "resume_run", "create_task", "grade_run", "run_improver", "decide_proposal"} {
 		if slices.Contains(names, forbidden) {
 			t.Errorf("steer tool %q must not be exposed in read-only mode", forbidden)
 		}
+	}
+	imp := callText(t, sess, "get_improvement_summary", nil)
+	if !strings.Contains(imp, "efficiency") || !strings.Contains(imp, "instruction_adherence") {
+		t.Errorf("get_improvement_summary missing starter rubrics:\n%s", imp)
 	}
 
 	att := callText(t, sess, "get_attention", nil)

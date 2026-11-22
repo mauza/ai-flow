@@ -44,6 +44,9 @@ type Backend interface {
 	ProjectSummary(ctx context.Context, project string) (*app.ProjectSummary, error)
 	ProjectDigest(ctx context.Context, project string) (string, error)
 	GetRetro(ctx context.Context, runID string) (*app.Retro, error)
+	ImprovementSummary(ctx context.Context, project string) (*app.ImprovementSummary, error)
+	ListRunGrades(ctx context.Context, runID, project, rubric, blame string, limit int) ([]*store.RunGrade, error)
+	ListProposals(ctx context.Context, status string, limit int) ([]*store.ImprovementProposal, error)
 
 	// Steering actions (only wired when Options.AllowSteer is true).
 	DecideGate(ctx context.Context, runID string, seq int, outcome, note, by string, extendVisits bool) error
@@ -52,6 +55,11 @@ type Backend interface {
 	CreateTask(ctx context.Context, project, title, body string, plan bool) (*store.Task, error)
 	SendStoryToFlow(ctx context.Context, project, mapID, kind, id, release string, plan bool) (*store.Task, error)
 	StartRetro(ctx context.Context, runID, focus string) (*app.Retro, error)
+	GradeRun(ctx context.Context, runID string) (map[string]any, error)
+	RunImprover(ctx context.Context, project string, minFailures int) (*app.ImproverRunStatus, error)
+	DisagreeGrade(ctx context.Context, gradeID string, disagreed bool, by, note string) (*store.RunGrade, error)
+	ApplyProposal(ctx context.Context, proposalID, by, note, afterText string, force bool) (*store.ImprovementProposal, []string, error)
+	RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error)
 }
 
 // NewServer creates an MCP server backed by b.
@@ -263,6 +271,64 @@ func registerReadTools(s *mcp.Server, b Backend) {
 		res, err := jsonText(v)
 		return res, nil, err
 	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_improvement_summary",
+		Description: "Get the improvement loop summary: outcome and rubric pass rates, agent vs environment failure clusters, prompt version score trends, grader spend, and pending proposal counts.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in attentionIn) (*mcp.CallToolResult, any, error) {
+		v, err := b.ImprovementSummary(ctx, in.Project)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type listGradesIn struct {
+		RunID   string `json:"run_id,omitempty" jsonschema:"optional run id filter"`
+		Project string `json:"project,omitempty" jsonschema:"optional project filter"`
+		Rubric  string `json:"rubric,omitempty" jsonschema:"optional rubric filter (e.g. efficiency, instruction_adherence, unmentioned_workarounds)"`
+		Blame   string `json:"blame,omitempty" jsonschema:"optional blame filter: agent or environment"`
+		Limit   int    `json:"limit,omitempty" jsonschema:"max grades to return (default 50, max 200)"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_run_grades",
+		Description: "List stored automatic rubric grades for finished runs, including pass/fail, agent vs environment blame, failure theme, prompt versions, and human disagreement.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listGradesIn) (*mcp.CallToolResult, any, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		v, err := b.ListRunGrades(ctx, in.RunID, in.Project, in.Rubric, in.Blame, limit)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type listProposalsIn struct {
+		Status string `json:"status,omitempty" jsonschema:"optional status filter: pending, applied, or rejected"`
+		Limit  int    `json:"limit,omitempty" jsonschema:"max proposals to return (default 50)"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_improvement_proposals",
+		Description: "List prompt/instruction edit proposals drafted by the improver, with before/after text, cited failing runs, and decision status.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listProposalsIn) (*mcp.CallToolResult, any, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		v, err := b.ListProposals(ctx, in.Status, limit)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
 }
 
 func registerSteerTools(s *mcp.Server, b Backend, actor string) {
@@ -386,6 +452,94 @@ func registerSteerTools(s *mcp.Server, b Backend, actor string) {
 		}
 		res, err := jsonText(r)
 		return res, nil, err
+	})
+
+	type gradeRunIn struct {
+		RunID string `json:"run_id" jsonschema:"the finished run id to grade against active rubrics"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "grade_run",
+		Description: "Trigger automatic rubric grading for a run (records run facts, prompt versions, and rubric verdicts with agent vs environment blame).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in gradeRunIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.RunID) == "" {
+			return errResult("run_id is required"), nil, nil
+		}
+		v, err := b.GradeRun(ctx, in.RunID)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type runImproverIn struct {
+		Project     string `json:"project,omitempty" jsonschema:"optional project filter"`
+		MinFailures int    `json:"min_failures,omitempty" jsonschema:"optional override for minimum agent-blamed failures per cluster"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "run_improver",
+		Description: "Inspect unreviewed agent-blamed failure clusters and draft pending prompt edit proposals for human review.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runImproverIn) (*mcp.CallToolResult, any, error) {
+		v, err := b.RunImprover(ctx, in.Project, in.MinFailures)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type disagreeGradeIn struct {
+		GradeID   string `json:"grade_id" jsonschema:"the grade id (e.g. g-...)"`
+		Disagreed bool   `json:"disagreed" jsonschema:"true to mark disagreement (excludes from improver), false to clear"`
+		Note      string `json:"note,omitempty" jsonschema:"optional reason for disagreeing with the grade"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "disagree_grade",
+		Description: "Record or clear human disagreement on a rubric grade so bad grades do not drive prompt edits.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in disagreeGradeIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.GradeID) == "" {
+			return errResult("grade_id is required"), nil, nil
+		}
+		v, err := b.DisagreeGrade(ctx, in.GradeID, in.Disagreed, actor, in.Note)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type decideProposalIn struct {
+		ProposalID string `json:"proposal_id" jsonschema:"the proposal id (e.g. imp-...)"`
+		Decision   string `json:"decision" jsonschema:"apply or reject"`
+		Note       string `json:"note,omitempty" jsonschema:"optional note (remembered on rejection)"`
+		AfterText  string `json:"after_text,omitempty" jsonschema:"optional edited prompt text when applying"`
+		Force      bool   `json:"force,omitempty" jsonschema:"force apply even if active runs would drift or target changed"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "decide_proposal",
+		Description: "Apply or reject a pending improvement proposal. Rejected proposals are remembered so the improver avoids repeating them.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in decideProposalIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.ProposalID) == "" {
+			return errResult("proposal_id is required"), nil, nil
+		}
+		switch strings.ToLower(strings.TrimSpace(in.Decision)) {
+		case "apply":
+			p, warnings, err := b.ApplyProposal(ctx, in.ProposalID, actor, in.Note, in.AfterText, in.Force)
+			if err != nil {
+				return errResult(err.Error()), nil, nil
+			}
+			res, err := jsonText(map[string]any{"proposal": p, "warnings": warnings})
+			return res, nil, err
+		case "reject":
+			p, err := b.RejectProposal(ctx, in.ProposalID, actor, in.Note)
+			if err != nil {
+				return errResult(err.Error()), nil, nil
+			}
+			res, err := jsonText(map[string]any{"proposal": p})
+			return res, nil, err
+		default:
+			return errResult("decision must be apply or reject"), nil, nil
+		}
 	})
 }
 
@@ -516,4 +670,40 @@ func (l *LocalBackend) SendStoryToFlow(ctx context.Context, project, mapID, kind
 
 func (l *LocalBackend) StartRetro(ctx context.Context, runID, focus string) (*app.Retro, error) {
 	return l.App.StartRetro(ctx, runID, focus)
+}
+
+func (l *LocalBackend) ImprovementSummary(ctx context.Context, project string) (*app.ImprovementSummary, error) {
+	return l.App.ImprovementSummary(ctx, project)
+}
+
+func (l *LocalBackend) ListRunGrades(ctx context.Context, runID, project, rubric, blame string, limit int) ([]*store.RunGrade, error) {
+	return l.App.Store.ListRunGrades(ctx, store.GradeFilter{RunID: runID, Project: project, Rubric: rubric, Blame: blame, Limit: limit})
+}
+
+func (l *LocalBackend) ListProposals(ctx context.Context, status string, limit int) ([]*store.ImprovementProposal, error) {
+	return l.App.Store.ListProposals(ctx, store.ProposalFilter{Status: status, Limit: limit})
+}
+
+func (l *LocalBackend) GradeRun(ctx context.Context, runID string) (map[string]any, error) {
+	if _, err := l.App.Store.GetRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	started := l.App.StartGradeRun(runID)
+	return map[string]any{"run_id": runID, "started": started, "grading": true}, nil
+}
+
+func (l *LocalBackend) RunImprover(ctx context.Context, project string, minFailures int) (*app.ImproverRunStatus, error) {
+	return l.App.RunImprover(ctx, app.ImproverOptions{Project: project, MinFailures: minFailures, Trigger: "mcp"})
+}
+
+func (l *LocalBackend) DisagreeGrade(ctx context.Context, gradeID string, disagreed bool, by, note string) (*store.RunGrade, error) {
+	return l.App.DisagreeGrade(ctx, gradeID, disagreed, by, note)
+}
+
+func (l *LocalBackend) ApplyProposal(ctx context.Context, proposalID, by, note, afterText string, force bool) (*store.ImprovementProposal, []string, error) {
+	return l.App.ApplyProposal(ctx, proposalID, by, note, afterText, force)
+}
+
+func (l *LocalBackend) RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error) {
+	return l.App.RejectProposal(ctx, proposalID, by, note)
 }
