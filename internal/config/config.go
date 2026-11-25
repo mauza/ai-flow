@@ -230,17 +230,17 @@ func (n Notify) Sends(event string) bool {
 // ---- Catalog ----
 
 type Catalog struct {
-	APIVersion string             `json:"apiVersion,omitempty"`
-	Kind       string             `json:"kind,omitempty"`
-	Models     map[string]*Model  `json:"models"`
-	Harnesses  map[string]Harness `json:"harnesses,omitempty"`
-	Runtimes   map[string]Runtime `json:"runtimes"`
-	Grants     map[string]*Grant  `json:"grants,omitempty"`
+	APIVersion string                   `json:"apiVersion,omitempty"`
+	Kind       string                   `json:"kind,omitempty"`
+	Models     map[string]*Model        `json:"models"`
+	Harnesses  map[string]Harness       `json:"harnesses,omitempty"`
+	Runtimes   map[string]Runtime       `json:"runtimes"`
+	Grants     map[string]*Grant        `json:"grants,omitempty"`
 	Skills     map[string]*Skill        `json:"skills,omitempty"`
 	Presets    map[string]*Preset       `json:"presets,omitempty"`
 	Templates  map[string]*FlowTemplate `json:"templates,omitempty"`
 	Actions    []string                 `json:"-"`
-	Planner     Planner            `json:"planner"`
+	Planner    Planner                  `json:"planner"`
 	// Node defaults applied to every flow (runtime, harness, timeout, retry, llm).
 	Defaults *flow.Node `json:"defaults,omitempty"`
 	// Improvement configures automatic run grading, failure clustering, and
@@ -412,15 +412,15 @@ type ProjectMetadata struct {
 }
 
 type ProjectSpec struct {
-	Description string       `json:"description,omitempty"`
-	Linear      *LinearLink  `json:"linear,omitempty"`
-	Repo        string       `json:"repo"` // git grant name
-	Base        string       `json:"base,omitempty"`
-	Start       string       `json:"start,omitempty"` // manual | auto
-	Allow       Allow        `json:"allow"`
-	Budget      *ProjBudget  `json:"budget,omitempty"`
-	Planner     PlannerGuide `json:"planner,omitempty"`
-	Agent       AgentGuide   `json:"agent,omitempty"`
+	Description   string            `json:"description,omitempty"`
+	Linear        *LinearLink       `json:"linear,omitempty"`
+	Repo          string            `json:"repo"` // git grant name
+	Base          string            `json:"base,omitempty"`
+	Start         string            `json:"start,omitempty"` // manual | auto
+	Allow         Allow             `json:"allow"`
+	Budget        *ProjBudget       `json:"budget,omitempty"`
+	Planner       PlannerGuide      `json:"planner,omitempty"`
+	Agent         AgentGuide        `json:"agent,omitempty"`
 	Defaults      *flow.Node        `json:"defaults,omitempty"`
 	Deploy        *Deploy           `json:"deploy,omitempty"`
 	Review        *Review           `json:"review,omitempty"`
@@ -1106,6 +1106,21 @@ func (c *Config) check() error {
 		}
 		if len(tpl.Outcomes) == 0 {
 			errs = append(errs, fmt.Sprintf("template %s: outcomes are required", name))
+		}
+		for id, n := range tpl.Nodes {
+			if n == nil {
+				errs = append(errs, fmt.Sprintf("template %s: node %s is empty", name, id))
+				continue
+			}
+			targets := []string{n.OnExhausted}
+			for _, t := range n.Next {
+				targets = append(targets, t)
+			}
+			for _, t := range targets {
+				if out, ok := strings.CutPrefix(t, "$out."); ok && !slices.Contains(tpl.Outcomes, out) {
+					errs = append(errs, fmt.Sprintf("template %s: node %s routes to %s, which is not one of its outcomes", name, id, t))
+				}
+			}
 		}
 	}
 	if n := c.Env.Notify.Ntfy; n != nil && (n.URL == "" || n.Topic == "") {

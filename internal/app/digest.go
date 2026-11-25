@@ -19,41 +19,41 @@ import (
 // recent runs, open product questions, and retro takeaways for one project so
 // humans can decide what is valuable to build next.
 type ProjectSummary struct {
-	Project     string              `json:"project"`
-	Description string              `json:"description,omitempty"`
-	Repo        string              `json:"repo,omitempty"`
-	Branch      string              `json:"branch,omitempty"`
-	GeneratedAt int64               `json:"generated_at"`
-	Delivery    DeliverySummary     `json:"delivery"`
-	Attention   *AttentionReport    `json:"attention"`
-	Maps        []MapHealthSummary  `json:"maps"`
-	RecentRuns  []RecentRunSummary  `json:"recent_runs"`
-	Retros      []RetroHighlight    `json:"retros"`
+	Project     string             `json:"project"`
+	Description string             `json:"description,omitempty"`
+	Repo        string             `json:"repo,omitempty"`
+	Branch      string             `json:"branch,omitempty"`
+	GeneratedAt int64              `json:"generated_at"`
+	Delivery    DeliverySummary    `json:"delivery"`
+	Attention   *AttentionReport   `json:"attention"`
+	Maps        []MapHealthSummary `json:"maps"`
+	RecentRuns  []RecentRunSummary `json:"recent_runs"`
+	Retros      []RetroHighlight   `json:"retros"`
 }
 
 type DeliverySummary struct {
-	TotalRuns       int      `json:"total_runs"`
-	ActiveRuns      int      `json:"active_runs"`
-	WaitingRuns     int      `json:"waiting_runs"`
-	SucceededRuns   int      `json:"succeeded_runs"`
-	FailedRuns      int      `json:"failed_runs"`
-	SuccessRatePct  *float64 `json:"success_rate_pct,omitempty"`
-	TotalCostUSD    float64  `json:"total_cost_usd"`
-	TotalTokens     int64    `json:"total_tokens"`
-	MedianCycleHrs  *float64 `json:"median_cycle_hours,omitempty"`
+	TotalRuns      int      `json:"total_runs"`
+	ActiveRuns     int      `json:"active_runs"`
+	WaitingRuns    int      `json:"waiting_runs"`
+	SucceededRuns  int      `json:"succeeded_runs"`
+	FailedRuns     int      `json:"failed_runs"`
+	SuccessRatePct *float64 `json:"success_rate_pct,omitempty"`
+	TotalCostUSD   float64  `json:"total_cost_usd"`
+	TotalTokens    int64    `json:"total_tokens"`
+	MedianCycleHrs *float64 `json:"median_cycle_hours,omitempty"`
 }
 
 type MapHealthSummary struct {
-	ID            string            `json:"id"`
-	Title         string            `json:"title"`
-	Description   string            `json:"description,omitempty"`
-	TasksTotal    int               `json:"tasks_total"`
-	TasksDone     int               `json:"tasks_done"`
-	Releases      []ReleaseSummary  `json:"releases"`
-	Metrics       []NamedMetric     `json:"metrics"`
-	OpenQuestions []string          `json:"open_questions"`
-	RiskyBets     []BetSummary      `json:"risky_bets"`     // high value + low confidence, not done
-	Outcomes      []OutcomeSummary  `json:"outcomes"`       // tasks with recorded post-ship outcomes
+	ID            string           `json:"id"`
+	Title         string           `json:"title"`
+	Description   string           `json:"description,omitempty"`
+	TasksTotal    int              `json:"tasks_total"`
+	TasksDone     int              `json:"tasks_done"`
+	Releases      []ReleaseSummary `json:"releases"`
+	Metrics       []NamedMetric    `json:"metrics"`
+	OpenQuestions []string         `json:"open_questions"`
+	RiskyBets     []BetSummary     `json:"risky_bets"` // high value + low confidence, not done
+	Outcomes      []OutcomeSummary `json:"outcomes"`   // tasks with recorded post-ship outcomes
 }
 
 type ReleaseSummary struct {
@@ -239,7 +239,7 @@ func (a *App) ProjectSummary(ctx context.Context, project string) (*ProjectSumma
 					mh := MapHealthSummary{
 						ID: l.ID, Title: l.Map.Title, Description: l.Map.Description,
 						TasksTotal: len(l.Tasks),
-						Releases: []ReleaseSummary{}, Metrics: []NamedMetric{},
+						Releases:   []ReleaseSummary{}, Metrics: []NamedMetric{},
 						OpenQuestions: []string{}, RiskyBets: []BetSummary{}, Outcomes: []OutcomeSummary{},
 					}
 					relCount := map[string][2]int{}

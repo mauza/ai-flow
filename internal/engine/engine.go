@@ -78,10 +78,10 @@ type Hooks interface {
 }
 
 type Engine struct {
-	cfg      *config.Config
-	store    *store.Store
-	launcher Launcher
-	hub      *hub.Hub
+	cfg       *config.Config
+	store     *store.Store
+	launcher  Launcher
+	hub       *hub.Hub
 	gh        *github.Client
 	hooks     Hooks
 	onRunDone []func(ctx context.Context, run *store.Run)

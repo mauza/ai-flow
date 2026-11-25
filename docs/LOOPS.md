@@ -141,6 +141,90 @@ is resolved, without inflating acyclic nodes like `open-pull-request` or `deploy
 `mode: converge` (the default) tells a review that runs again to block
 only on findings still open and acceptance or test failures, so loops end;
 `thorough` makes every pass a full review that may find new problems.
+
+## Recurring work (project `schedules`)
+
+A schedule queues work every so often. It has exactly one target: a saved `flow`,
+a `task` to plan, or the next ready card of a `storymap`.
+
+```yaml
+spec:
+  schedules:
+    - name: nightly-audit
+      every: 24h               # at least 5m
+      auto_start: true         # start the planned run without a human
+      max_active_runs: 1       # default 1
+      max_open_tasks: 3        # default 5
+      max_open_prs: 2          # default 2
+      task:
+        title: Improvement audit
+        body: Use template/continuous-audit.
+    - name: next-card
+      every: 4h
+      auto_start: true
+      storymap: { map: core, max_attempts: 2 }
+```
+
+The limits apply to the whole project:
+
+- `max_active_runs` counts active runs and the tasks that will start their own
+  run, including those still being planned.
+- `max_open_tasks` counts tasks being planned, queued or running. A task that
+  waits for a human to start it does not count.
+- `max_open_prs` counts open pull requests from `ai-flow/` branches. If GitHub
+  can't be read, nothing starts.
+
+A trigger that a limit skips, or that fails, is tried again 10 minutes later. If
+several schedules are due, the one that ran longest ago goes first. Tasks that an
+auto-started run creates with `create_tasks` start under the same schedule, oldest
+first, as slots free up. Planning that a restart interrupted is retried once.
+
+A story map schedule picks `todo` cards by release, then journey order, and skips
+cards with open questions. A failed card is picked again after another interval,
+with the failure in its brief, until `max_attempts`. A canceled card is not.
+
+Pause a schedule on the project's Health & value tab, with
+`POST /api/projects/{project}/schedules/{name}/pause`, or with the MCP tool
+`pause_schedule`. A paused schedule also holds the tasks it queued. A forced
+trigger (`force: true`) ignores the limits and the pause for that one task.
+
+## Improvement ledger
+
+Each project has a ledger of proposed and delivered improvements. Model steps see
+it in their context, and `create_tasks` skips what it already covers.
+
+| Status | Meaning |
+| --- | --- |
+| `proposed` | A task was created for it. |
+| `pr_open` | Its run succeeded and the pull request is still open. |
+| `shipped` | The pull request was merged, or the run needed none. |
+| `rejected` | The pull request was closed without merging, or a human said no. |
+| `reverted`, `wont_fix` | Set through the API or MCP. |
+
+The scheduler checks `pr_open` entries every 10 minutes. `create_tasks`
+identifies an item by its `key` within the project. The same key can be proposed
+again after its task failed or its change was reverted, up to three times. An
+audit should therefore name the defect in the key, not repeat its title. Story map
+cards are recorded too.
+
+## Quality baselines (`ratchet`)
+
+A check can compare numeric outputs with the project's best value so far:
+
+```yaml
+    test:
+      type: check
+      run: make test-report    # writes {"test_count": 412, "lint_warnings": 3} to $AI_FLOW_OUTPUTS
+      outputs: { test_count: integer, lint_warnings: integer }
+      ratchet: { test_count: min, lint_warnings: max }
+      outcomes: [pass, fail, regressed]
+      next: { pass: open_pr, fail: fix, regressed: fix }
+```
+
+`min` values may not fall and `max` values may not rise. A regression changes
+`pass` to `regressed` if the check declares that outcome, otherwise to `fail`. A
+better value becomes the baseline when the run succeeds.
+
 ## Work queue: one finding per visit
 
 When an audit or review returns several separate findings, `fix-next-finding`

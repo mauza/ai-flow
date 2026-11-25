@@ -224,8 +224,8 @@ func TestShimCacheAwareTokenLimit(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "hi"}}},
 				"usage": map[string]any{
-					"prompt_tokens":        in,
-					"completion_tokens":    out,
+					"prompt_tokens":         in,
+					"completion_tokens":     out,
 					"prompt_tokens_details": map[string]any{"cached_tokens": cached},
 				},
 			})

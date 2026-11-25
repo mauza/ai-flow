@@ -58,6 +58,7 @@ eval-demo:
 
 lint: helm-check
 	go vet ./...
+	@test -z "$$(gofmt -l cmd internal | tee /dev/stderr)" || (echo "run gofmt -w on the files above"; exit 1)
 
 # Offline only: render both storage modes and both Garage secret branches.
 # Existing names are dummy references; no secret values or cluster are needed.

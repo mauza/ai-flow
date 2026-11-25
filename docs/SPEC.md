@@ -133,7 +133,7 @@ spec:
 | `check` | pod | `bash -o pipefail -c <run>`; exit code → `exit_codes`. Outputs `exit_code`, `log_tail`, plus any declared `outputs` the command writes as one JSON object to `$AI_FLOW_OUTPUTS` (type-checked; undeclared fields fail the step; no file means none). Rendered `inputs` arrive as `$AI_FLOW_INPUT_<NAME>` (never spliced into the command text). |
 | `gate` | control plane | A human picks an outcome in the UI, with an optional note that becomes `outputs.note` (the next step sees it in its context); optional timeout. |
 | `switch` | control plane | First matching CEL case, else `default`. |
-| `action` | control plane | Built-in: `open_pull_request` (idempotent; PR body includes a step table), `comment_task`, and the waiting actions `merge_pull_request`, `wait_for_checks`, `wait_for_deploy`, `check_health`, `rollback_deploy`, which the engine polls until they finish or time out (`timeout` outcome). [NODE-CATALOG.md](NODE-CATALOG.md) has their outcomes and outputs. |
+| `action` | control plane | Built-in: `open_pull_request` (idempotent; PR body includes a step table), `comment_task`, `query_metrics`, `create_tasks`, and the waiting actions `merge_pull_request`, `wait_for_checks`, `wait_for_deploy`, `check_health`, `rollback_deploy`, which the engine polls until they finish or time out (`timeout` outcome). [NODE-CATALOG.md](NODE-CATALOG.md) has their outcomes and outputs. |
 | `parallel` | control plane | Starts every node in `branches` at once; emits `joined` when all branches have reached its `join`. |
 | `join` | control plane | Runs after every branch of its parallel node arrived; routes like a switch over any branch's results (no cases → `done`). |
 
@@ -175,6 +175,19 @@ branch step's context shows the main path and its own branch, not its siblings;
 the join and everything after it see every branch's results. Any branch error
 fails the run and stops the other branches' Jobs. Branch pods count against
 cluster capacity, not `runs.maxConcurrent`, which limits runs.
+
+With `fail_fast: true`, a branch that reaches the join after a failing check, or
+with an outcome such as `fail`, `defects` or `blocked`, cancels the other branches
+and the run continues at the join. The join's first case should test for that
+failure, because canceled branches have no outcome.
+
+#### 4.1.2 Flow templates
+
+`uses: template/<name>` expands a catalog template into ordinary steps named
+`<node>_<step>`. Route every outcome the template declares in `next`. The call
+passes on only `model`, `runtime`, `harness` and `grants`; validation rejects other
+fields, undeclared outcomes, and names that collide with the flow's own steps.
+Other steps refer to the expanded names (`nodes.sweep_audit.outputs.proposals`).
 
 ### 4.2 Templates and context
 
@@ -252,11 +265,14 @@ Secrets are env vars named by `*Env` fields, never inlined.
 - **Catalog** — models (upstream + model id + planner metadata + default `llm`,
   `thinking_format`, `max_output_tokens`), harnesses (`instructions`,
   `settings`, see §7.2.1), runtimes, grants, skills (inline files or a directory), presets,
-  node defaults, planner (model, stream, guidance, attempts).
+  flow templates (§4.1.2), node defaults, planner (model, stream, guidance, attempts),
+  and `improvement` (grader and improver models, `sample_pct`, `min_failures`, interval).
 - **Project** — repo grant, base branch, `start: manual|auto`, allow-lists for
   grants and models (glob patterns), budgets, planner guidance, agent
   instructions (`agent.instructions`, for every agent step), Linear link:
   team, optional project filter, trigger label + states, state mapping, comments;
+  `observability.queries` (PromQL for the `query_metrics` action), `schedules`
+  (recurring work, see [LOOPS.md](LOOPS.md));
   and `deploy` when merging to a branch ships the project: version endpoints,
   health queries and URL, an optional rollback workflow and Argo CD app.
 
@@ -265,7 +281,9 @@ catalog and projects into its database and serves them from there; the UI's
 Settings page edits them, each change checked against the whole config and
 applied live. On later starts, every entry that changed in the files since the
 previous start (a release bumping a runtime image, a synced preset) replaces
-that entry in the database. The environment always comes from the files.
+that entry in the database. The exception is a field that an applied improvement
+proposal set: it keeps the applied value, and if the files change that field too,
+Settings reports it until both agree. The environment always comes from the files.
 
 The kind setup lives in `deploy/config`; `deploy/local/environment.yaml` layers
 local-process mode on top.
@@ -314,7 +332,7 @@ step in between, and after `merged` the run can only succeed through
 `rollback_deploy` node needs the project's `deploy.rollback` workflow.
 Fields that parse but that nothing enforces (a `model` on a switch, `skills` on
 an llm node, `thinking` on a model without `reasoning: true` or `thinking_format`,
-`spec.budget.wall`, …) produce
+…) produce
 a *declared but not enforced* warning rather than silently looking like they work.
 
 ## 7. Execution

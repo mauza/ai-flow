@@ -20,13 +20,13 @@ import (
 // across active runs, failed runs, planning errors, improvement proposals, and
 // product story maps.
 type AttentionReport struct {
-	Counts          AttentionCounts       `json:"counts"`
-	Gates           []AttentionGate       `json:"gates"`
-	FailedRuns      []AttentionFailedRun  `json:"failed_runs"`
-	Proposals       []AttentionProposal   `json:"proposals"`
-	PlanIssues      []AttentionPlanIssue  `json:"plan_issues"`
-	ShippedUnmarked []AttentionShipped    `json:"shipped_unmarked"`
-	OpenQuestions   []AttentionQuestion   `json:"open_questions"`
+	Counts          AttentionCounts      `json:"counts"`
+	Gates           []AttentionGate      `json:"gates"`
+	FailedRuns      []AttentionFailedRun `json:"failed_runs"`
+	Proposals       []AttentionProposal  `json:"proposals"`
+	PlanIssues      []AttentionPlanIssue `json:"plan_issues"`
+	ShippedUnmarked []AttentionShipped   `json:"shipped_unmarked"`
+	OpenQuestions   []AttentionQuestion  `json:"open_questions"`
 }
 
 type AttentionCounts struct {
@@ -113,16 +113,16 @@ type AttentionPlanIssue struct {
 }
 
 type AttentionShipped struct {
-	Project     string   `json:"project"`
-	MapID       string   `json:"map_id"`
-	MapTitle    string   `json:"map_title"`
-	UserTaskID  string   `json:"user_task_id"`
-	Title       string   `json:"title"`
-	Release     string   `json:"release,omitempty"`
-	RunID       string   `json:"run_id"`
-	PRURL       string   `json:"pr_url,omitempty"`
-	Metrics     []string `json:"metrics,omitempty"`
-	FinishedAt  int64    `json:"finished_at,omitempty"`
+	Project    string   `json:"project"`
+	MapID      string   `json:"map_id"`
+	MapTitle   string   `json:"map_title"`
+	UserTaskID string   `json:"user_task_id"`
+	Title      string   `json:"title"`
+	Release    string   `json:"release,omitempty"`
+	RunID      string   `json:"run_id"`
+	PRURL      string   `json:"pr_url,omitempty"`
+	Metrics    []string `json:"metrics,omitempty"`
+	FinishedAt int64    `json:"finished_at,omitempty"`
 }
 
 type AttentionQuestion struct {
@@ -385,14 +385,14 @@ func (a *App) buildAttentionGate(ctx context.Context, r *store.Run, task *store.
 // is being orchestrated: task intent, flow path taken, loops, active gate, and
 // step outcomes.
 type RunExplanation struct {
-	Run         *store.Run      `json:"run"`
-	TaskTitle   string          `json:"task_title,omitempty"`
-	TaskBody    string          `json:"task_body,omitempty"`
-	FlowSummary string          `json:"flow_summary,omitempty"`
-	ActiveGate  *AttentionGate  `json:"active_gate,omitempty"`
-	Steps       []ExplainedStep `json:"steps"`
-	RecentEvents []string       `json:"recent_events,omitempty"`
-	Retro       *Retro          `json:"retro,omitempty"`
+	Run          *store.Run      `json:"run"`
+	TaskTitle    string          `json:"task_title,omitempty"`
+	TaskBody     string          `json:"task_body,omitempty"`
+	FlowSummary  string          `json:"flow_summary,omitempty"`
+	ActiveGate   *AttentionGate  `json:"active_gate,omitempty"`
+	Steps        []ExplainedStep `json:"steps"`
+	RecentEvents []string        `json:"recent_events,omitempty"`
+	Retro        *Retro          `json:"retro,omitempty"`
 }
 
 type ExplainedStep struct {

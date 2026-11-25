@@ -147,8 +147,10 @@ func (r *Runner) run(ctx context.Context) (res *protocol.Result) {
 			out.Commit = sha
 		} else if b.Type == flow.TypeAgent {
 			if dirty := r.modifiedTrackedFiles(ctx); len(dirty) > 0 {
-				out.Error = "read-only step modified tracked files: " + strings.Join(dirty, ", ")
-				return out
+				// Nothing of a read-only step is pushed, so its result stands
+				// (npm install touching a lockfile is no reason to fail the
+				// run). Say so: a verdict may rest on the discarded change.
+				out.Summary = strings.TrimSpace(out.Summary + "\n\nNote: this read-only step changed tracked files, which were discarded: " + strings.Join(dirty, ", "))
 			}
 		}
 		if d, err := r.diffStat(ctx); err == nil {

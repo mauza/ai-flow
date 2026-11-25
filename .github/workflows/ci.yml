@@ -49,8 +49,9 @@ jobs:
       - name: Build frontend for Go embedding
         run: npm run build
         working-directory: web
-      - name: Go tests, race detector and vet
+      - name: Go format, tests, race detector and vet
         run: |
+          test -z "$(gofmt -l cmd internal | tee /dev/stderr)"
           go test ./...
           go test -race ./...
           go vet ./...

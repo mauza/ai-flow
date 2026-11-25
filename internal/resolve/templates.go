@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -15,7 +16,8 @@ import (
 // template's concrete nodes prefixed by the outer node's ID. Targets using
 // `$out.<outcome>` resolve to the outer node's `next.<outcome>`. Unknown
 // templates are left unexpanded so Validate reports a clear error on `uses`.
-func expandTemplates(f *flow.Flow, cfg *config.Config) *flow.Flow {
+// The issues are problems of the calls, which the expanded flow no longer shows.
+func expandTemplates(f *flow.Flow, cfg *config.Config) (*flow.Flow, []Issue) {
 	hasTpl := false
 	for _, n := range f.Spec.Nodes {
 		if n != nil && strings.HasPrefix(n.Uses, "template/") {
@@ -27,8 +29,9 @@ func expandTemplates(f *flow.Flow, cfg *config.Config) *flow.Flow {
 		}
 	}
 	if !hasTpl {
-		return f
+		return f, nil
 	}
+	var issues []Issue
 	out := *f
 	out.Spec = f.Spec
 	out.Spec.Nodes = make(map[string]*flow.Node, len(f.Spec.Nodes))
@@ -46,6 +49,7 @@ func expandTemplates(f *flow.Flow, cfg *config.Config) *flow.Flow {
 			out.Spec.Nodes[outerID] = cloneNode(raw)
 			continue
 		}
+		issues = append(issues, checkTemplateUse(outerID, raw, tplName, tpl, f.Spec.Nodes)...)
 		// Build deterministic internal -> expanded node ID mapping.
 		idMap := map[string]string{}
 		for _, subID := range slices.Sorted(maps.Keys(tpl.Nodes)) {
@@ -155,7 +159,7 @@ func expandTemplates(f *flow.Flow, cfg *config.Config) *flow.Flow {
 			n.Join = mapped
 		}
 	}
-	return &out
+	return &out, issues
 }
 
 func presetFor(n *flow.Node, cfg *config.Config) *config.Preset {
@@ -178,14 +182,50 @@ func remapTarget(target string, idMap, outerNext map[string]string) string {
 	return target
 }
 
+var nodeRef = regexp.MustCompile(`\bnodes\.([a-z][a-z0-9_]*)`)
+
+// remapNodeRefs rewrites every reference once, so an expanded ID that equals
+// another step's original ID is not rewritten again.
 func remapNodeRefs(s string, idMap map[string]string) string {
-	if s == "" || !strings.Contains(s, "nodes.") {
-		return s
+	return nodeRef.ReplaceAllStringFunc(s, func(ref string) string {
+		if expanded, ok := idMap[strings.TrimPrefix(ref, "nodes.")]; ok {
+			return "nodes." + expanded
+		}
+		return ref
+	})
+}
+
+// checkTemplateUse reports what expansion would otherwise drop silently:
+// outcomes the call leaves unrouted or invents, fields it can't pass on, and
+// expanded steps that would replace a step of the flow.
+func checkTemplateUse(id string, raw *flow.Node, name string, tpl *config.FlowTemplate, nodes map[string]*flow.Node) []Issue {
+	var issues []Issue
+	errf := func(field, format string, a ...any) {
+		issues = append(issues, Issue{Error, id, field, fmt.Sprintf(format, a...)})
 	}
-	for subID, expanded := range idMap {
-		s = strings.ReplaceAll(s, "nodes."+subID+".", "nodes."+expanded+".")
+	for _, o := range tpl.Outcomes {
+		if raw.Next[o] == "" {
+			errf("next", "template/%s can end with %q: route it", name, o)
+		}
 	}
-	return s
+	for _, o := range slices.Sorted(maps.Keys(raw.Next)) {
+		if !slices.Contains(tpl.Outcomes, o) {
+			errf("next."+o, "not an outcome of template/%s (%s)", name, strings.Join(tpl.Outcomes, ", "))
+		}
+	}
+	set := rawFields(raw)
+	set["max_visits"], set["on_exhausted"], set["outcomes"] = raw.MaxVisits > 0, raw.OnExhausted != "", len(raw.Outcomes) > 0
+	for _, field := range slices.Sorted(maps.Keys(set)) {
+		if set[field] && field != "model" && field != "runtime" && field != "harness" {
+			errf(field, "template/%s ignores it: a call passes on only model, runtime, harness and grants", name)
+		}
+	}
+	for _, sub := range slices.Sorted(maps.Keys(tpl.Nodes)) {
+		if expanded := expandedNodeID(id, sub); nodes[expanded] != nil {
+			errf("uses", "template/%s adds a step %q, which this flow already has: rename one", name, expanded)
+		}
+	}
+	return issues
 }
 
 func expandedNodeID(outerID, subID string) string {

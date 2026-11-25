@@ -26,8 +26,8 @@ type BaselineEntry struct {
 	UpdatedAt int64   `json:"updated_at"`
 }
 
-func baselinesKey(project string) string       { return "knowledge/" + project + "/baselines" }
-func pendingBaselinesKey(runID string) string  { return "run/" + runID + "/pending_baselines" }
+func baselinesKey(project string) string      { return "knowledge/" + project + "/baselines" }
+func pendingBaselinesKey(runID string) string { return "run/" + runID + "/pending_baselines" }
 
 // Baselines returns a project's stored metric ratchet baselines.
 func (e *Engine) Baselines(ctx context.Context, project string) map[string]BaselineEntry {

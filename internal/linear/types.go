@@ -28,7 +28,7 @@ type IssueData struct {
 
 // UpdatedFromData captures which fields changed in an update.
 type UpdatedFromData struct {
-	StateID  string `json:"stateId,omitempty"`
+	StateID   string `json:"stateId,omitempty"`
 	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
