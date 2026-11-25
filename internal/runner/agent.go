@@ -501,7 +501,7 @@ func cleanEnv(approved ...string) []string {
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
-		case "PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_PATH", "GOPATH", "GOCACHE", "GOMODCACHE", "PYTHONPATH":
+		case "PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_PATH", "GOPATH", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE", "PYTHONPATH":
 			out = append(out, kv)
 		default:
 			if slices.Contains(approved, k) {

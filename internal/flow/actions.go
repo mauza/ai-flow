@@ -59,6 +59,16 @@ var Actions = map[string]ActionSpec{
 		Waits:   true, Timeout: 30 * time.Minute,
 		Doc: "soaks the deployed app for duration (default 10m): the project's health PromQL queries and URL probe, polled; a check failing on consecutive polls for at least sustain (default 90s, so a rollout blip is not a regression) is degraded. Outcomes: healthy, degraded (outputs.violations), timeout.",
 	},
+	"query_metrics": {
+		Outcomes: []string{"ok", "alert", "unavailable"}, With: []string{"queries"},
+		Outputs: map[string]any{"alerts": []any{"string"}, "summary": "string"},
+		Doc:     "queries Prometheus/VictoriaMetrics once using the project's observability/deploy health queries (or with.queries JSON list of {name,query,max}). Outcomes: ok, alert (outputs.alerts), unavailable.",
+	},
+	"create_tasks": {
+		Outcomes: []string{"created", "none"}, With: []string{"items", "max", "plan", "source"},
+		Outputs: map[string]any{"created": "integer", "skipped": "integer", "task_ids": []any{"string"}},
+		Doc:     "spawns bounded, deduplicated child tasks from with.items (JSON array of strings or {key,title,body,category} objects), skipping duplicates and items already shipped/rejected in the project ledger. Outcomes: created, none.",
+	},
 }
 
 // ActionNames lists the built-in actions in a stable order.

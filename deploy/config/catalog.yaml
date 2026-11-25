@@ -834,6 +834,137 @@ presets:
     outputs: { exit_code: integer, log_tail: string }
     outcomes: [pass, fail]
 
+  resolve-revert:
+    category: operations
+    when_to_use: revert-deploy hit merge conflicts on the base branch.
+    requires: [Repo write grant, Failed revert-deploy as previous step]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Complete a conflicting git revert on base while preserving later commits, then verify tests.
+    prompt: |
+      The automated git revert of ${{ run.merged_sha }} onto origin/${{ run.base }} hit merge conflicts.
+      Do not fetch: origin/${{ run.base }} is already current.
+      Run `git reset --quiet --hard origin/${{ run.base }}`, then revert ${{ run.merged_sha }} (`git revert --no-edit -m 1 ${{ run.merged_sha }}` for a merge commit, or `git revert --no-edit ${{ run.merged_sha }}`).
+      Resolve every conflict so the bad release's changes are undone while preserving all subsequent commits on ${{ run.base }}.
+      Run the affected tests to confirm the reverted branch is healthy, then commit.
+      Return reverted when the revert commit is ready and verified, or stuck naming the conflicting files and why.
+    outputs: { resolved: [string], verification: [string] }
+    outcomes: [reverted, stuck]
+
+  deep-code-review:
+    category: review
+    when_to_use: High-risk or multi-file change needs a read-only agent reviewer to inspect callers, tests, and invariants beyond the diff.
+    requires: [Project repo read access, Branch diff against base]
+    type: agent
+    min_size: medium
+    max_visits: 3
+    on_exhausted: $fail
+    description: Tool-enabled read-only code and invariant review across full files and callers.
+    prompt: |
+      You are a read-only code reviewer with full repository read access. Do not edit tracked files.
+      Inspect `git diff --stat origin/${{ run.base }}...HEAD` and read the changed files plus their callers, tests, and repo instructions (AGENTS.md / CLAUDE.md).
+      Check correctness, domain invariants, edge cases, test quality, and scope.
+      Start each blocking finding with an ID (F1, F2, …) citing file, line, concrete failure scenario, and minimal fix.
+      Return approve when there are no real defects, changes when blocking findings exist, or blocked if required context is unavailable.
+    outputs: { comments: [string], checked_invariants: [string] }
+    outcomes: [approve, changes, blocked]
+
+  query-prod-metrics:
+    category: discovery
+    when_to_use: Continuous improvement or diagnostic flow wants live Prometheus/VictoriaMetrics signals before picking work.
+    requires: [Environment metrics.url, Project observability.queries or deploy.health]
+    type: action
+    max_visits: 2
+    on_exhausted: $fail
+    description: Query Prometheus/VictoriaMetrics for project observability and health metrics.
+    action: query_metrics
+    outputs: { alerts: [string], summary: string }
+    outcomes: [ok, alert, unavailable]
+
+  codebase-audit:
+    category: discovery
+    when_to_use: Recurring audit inspecting telemetry, git history, project map, and ledger to propose 1-3 small improvements.
+    requires: [Project repo read access]
+    type: agent
+    min_size: medium
+    max_visits: 2
+    on_exhausted: $fail
+    description: Read-only audit proposing 1-3 concrete, bounded improvement tasks from code and telemetry.
+    prompt: |
+      You are running a read-only continuous improvement audit. Do not edit tracked files.
+      Start from the Project map, Project improvement ledger, and any metrics or alerts in your context.
+      Check recent commits (`git log -n 15 --oneline`) and inspect high-leverage areas: reliability bugs, missing regression tests for risky paths, security/invariant violations documented in AGENTS.md/CLAUDE.md, flaky/slow checks, or alert drivers.
+      Never propose items already marked shipped, rejected, or wont_fix in the Project improvement ledger.
+      Propose at most 3 small, independent, well-scoped improvements that can each land as one clean PR.
+      Format each proposal in outputs.proposals as `"<concise title> — <concrete problem, target files, and verification command>"`.
+      Also refresh outputs.project_map and outputs.map_commit (`git rev-parse HEAD`) if the architecture or commands changed.
+      Return proposed when at least one high-value improvement is found, clean when nothing worthwhile needs work right now.
+    outputs: { proposals: [string], rationale: string, project_map: string, map_commit: string }
+    outcomes: [proposed, clean]
+
+  spawn-improvement-tasks:
+    category: delivery
+    when_to_use: Audit step returned improvement candidates to enqueue as deduplicated tasks (one PR per item).
+    requires: [Candidate list passed via with.items]
+    type: action
+    max_visits: 1
+    on_exhausted: $fail
+    description: Spawn bounded, deduplicated child tasks from discovery proposals, skipping ledger entries.
+    action: create_tasks
+    with:
+      items: '[]'
+      max: 2
+      plan: true
+      source: flow
+    outputs: { created: integer, skipped: integer, task_ids: [string] }
+    outcomes: [created, none]
+
+templates:
+  pr-and-ci:
+    category: delivery
+    description: Open or update a pull request and wait for GitHub CI checks, distinguishing merge conflicts from test failures.
+    when_to_use: A verified branch is ready to open a PR and pass GitHub CI before merging or finishing.
+    outcomes: [passed, conflict, failed]
+    start: open_pr
+    nodes:
+      open_pr:
+        uses: preset/open-pull-request
+        next: { done: ci }
+      ci:
+        uses: preset/ci-checks
+        next: { passed: $out.passed, failed: classify_ci, none: $out.passed, timeout: $out.failed }
+      classify_ci:
+        type: switch
+        cases:
+          - when: 'nodes.ci.outputs.failed.exists(f, f.startsWith("merge conflict"))'
+            outcome: conflict
+        default: failed
+        next: { conflict: $out.conflict, failed: $out.failed }
+
+  continuous-audit:
+    category: discovery
+    description: Query production metrics, audit the codebase against the improvement ledger, and spawn up to 2 deduplicated tasks.
+    when_to_use: Scheduled or manual continuous improvement sweep for a repository.
+    outcomes: [created, clean]
+    start: metrics
+    nodes:
+      metrics:
+        uses: preset/query-prod-metrics
+        next: { ok: audit, alert: audit, unavailable: audit }
+      audit:
+        uses: preset/codebase-audit
+        next: { proposed: spawn, clean: $out.clean }
+      spawn:
+        uses: preset/spawn-improvement-tasks
+        with:
+          items: '${{ nodes.audit.outputs.proposals ?? "[]" }}'
+          max: 2
+          plan: true
+          source: flow
+        next: { created: $out.created, none: $out.clean }
+
 planner:
   model: gpt-6.1-sol
   stream: true

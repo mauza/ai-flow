@@ -851,3 +851,191 @@ func (e *Engine) lastPrevious(ctx context.Context, r *store.Run, res *resolve.Re
 	}
 	return ""
 }
+
+// queryMetrics evaluates Prometheus/VictoriaMetrics instant queries once for
+// discovery/monitoring flows (without requiring a deploy config).
+func (e *Engine) queryMetrics(ctx context.Context, r *store.Run, res *resolve.Resolved, with map[string]string) (*actionResult, error) {
+	if strings.TrimSpace(e.cfg.Current().Env.Metrics.URL) == "" {
+		return &actionResult{outcome: "unavailable", summary: "metrics.url is not configured", outputs: map[string]any{"alerts": []string{}, "summary": "metrics unavailable"}}, nil
+	}
+	var queries []config.HealthQuery
+	if raw := strings.TrimSpace(with["queries"]); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &queries); err != nil {
+			return nil, rejectf("query_metrics with.queries: %v", err)
+		}
+	} else {
+		p := res.Project
+		if p == nil && r.Project != "" {
+			p = e.cfg.Current().Projects[r.Project]
+		}
+		if p != nil {
+			if p.Spec.Observability != nil {
+				queries = append(queries, p.Spec.Observability.Queries...)
+			}
+			if p.Spec.Deploy != nil {
+				queries = append(queries, p.Spec.Deploy.Health...)
+			}
+		}
+	}
+	if len(queries) == 0 {
+		return &actionResult{outcome: "unavailable", summary: "no observability or deploy health queries configured", outputs: map[string]any{"alerts": []string{}, "summary": "no metrics queries configured"}}, nil
+	}
+	var lines, alerts, errs []string
+	okCount := 0
+	for _, q := range queries {
+		val, err := e.promQuery(ctx, q.Query)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", q.Name, err))
+			continue
+		}
+		okCount++
+		line := fmt.Sprintf("%s=%.4g (max %.4g)", q.Name, val, q.Max)
+		lines = append(lines, line)
+		if val > q.Max {
+			alerts = append(alerts, fmt.Sprintf("%s: %.4g > max %.4g", q.Name, val, q.Max))
+		}
+	}
+	if okCount == 0 {
+		return &actionResult{outcome: "unavailable", summary: "all metrics queries failed: " + strings.Join(errs, "; "),
+			outputs: map[string]any{"alerts": []string{}, "summary": strings.Join(errs, "; ")}}, nil
+	}
+	summaryText := strings.Join(lines, "; ")
+	if len(errs) > 0 {
+		summaryText += "; errors: " + strings.Join(errs, "; ")
+	}
+	if len(alerts) > 0 {
+		return &actionResult{outcome: "alert", summary: fmt.Sprintf("%d metric alert(s): %s", len(alerts), strings.Join(alerts, "; ")),
+			outputs: map[string]any{"alerts": alerts, "summary": summaryText}}, nil
+	}
+	return &actionResult{outcome: "ok", summary: fmt.Sprintf("All %d metric check(s) within threshold", okCount),
+		outputs: map[string]any{"alerts": []string{}, "summary": summaryText}}, nil
+}
+
+type taskSpawnItem struct {
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	Category string `json:"category"`
+}
+
+// createTasks spawns bounded, deduplicated child tasks from with.items,
+// skipping duplicates and entries already shipped/rejected in the project ledger.
+func (e *Engine) createTasks(ctx context.Context, r *store.Run, res *resolve.Resolved, with map[string]string) (*actionResult, error) {
+	if e.taskCreator == nil {
+		return nil, rejectf("task creator is not configured")
+	}
+	raw := strings.TrimSpace(with["items"])
+	if raw == "" || raw == "[]" {
+		return &actionResult{outcome: "none", summary: "No candidate tasks supplied", outputs: map[string]any{"created": 0, "skipped": 0, "task_ids": []string{}}}, nil
+	}
+	items := parseTaskSpawnItems(raw)
+	if len(items) == 0 {
+		return &actionResult{outcome: "none", summary: "No parseable candidate tasks supplied", outputs: map[string]any{"created": 0, "skipped": 0, "task_ids": []string{}}}, nil
+	}
+	limit := 3
+	if m := strings.TrimSpace(with["max"]); m != "" {
+		if n, err := strconv.Atoi(m); err == nil && n > 0 {
+			limit = min(n, 10)
+		}
+	}
+	plan := true
+	if p := strings.ToLower(strings.TrimSpace(with["plan"])); p == "false" || p == "0" || p == "no" {
+		plan = false
+	}
+	source := strings.TrimSpace(with["source"])
+	if source == "" {
+		source = "flow"
+	}
+	ledger := e.Ledger(ctx, r.Project)
+	var taskIDs []string
+	var newLedger []LedgerEntry
+	skipped := 0
+	for _, it := range items {
+		if len(taskIDs) >= limit {
+			skipped++
+			continue
+		}
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			skipped++
+			continue
+		}
+		key := normalizeLedgerKey(it.Key)
+		if key == "" {
+			key = normalizeLedgerKey(title)
+		}
+		if _, suppressed := ledgerSuppressed(ledger, key); suppressed {
+			skipped++
+			continue
+		}
+		body := strings.TrimSpace(it.Body)
+		if body == "" {
+			body = fmt.Sprintf("Spawned from discovery run %s (%s).", r.ID, r.FlowName)
+		}
+		tid, created, err := e.taskCreator(ctx, r.Project, source, key, title, body, plan)
+		if err != nil {
+			return nil, err
+		}
+		if !created {
+			skipped++
+			continue
+		}
+		taskIDs = append(taskIDs, tid)
+		newLedger = append(newLedger, LedgerEntry{
+			Key:      key,
+			Title:    title,
+			Category: it.Category,
+			Status:   LedgerProposed,
+			Summary:  oneLine(body, 200),
+			RunID:    r.ID,
+		})
+	}
+	if len(newLedger) > 0 {
+		_ = e.UpsertLedger(ctx, r.Project, newLedger...)
+	}
+	if taskIDs == nil {
+		taskIDs = []string{}
+	}
+	out := map[string]any{"created": len(taskIDs), "skipped": skipped, "task_ids": taskIDs}
+	if len(taskIDs) == 0 {
+		return &actionResult{outcome: "none", summary: fmt.Sprintf("Skipped all %d candidate(s) (duplicate or already in ledger)", skipped), outputs: out}, nil
+	}
+	return &actionResult{outcome: "created", summary: fmt.Sprintf("Created %d task(s) (%d skipped): %s", len(taskIDs), skipped, strings.Join(taskIDs, ", ")), outputs: out}, nil
+}
+
+func parseTaskSpawnItems(raw string) []taskSpawnItem {
+	var objs []taskSpawnItem
+	if json.Unmarshal([]byte(raw), &objs) == nil && len(objs) > 0 {
+		hasTitle := false
+		for _, o := range objs {
+			if strings.TrimSpace(o.Title) != "" {
+				hasTitle = true
+				break
+			}
+		}
+		if hasTitle {
+			return objs
+		}
+	}
+	var strs []string
+	if json.Unmarshal([]byte(raw), &strs) == nil && len(strs) > 0 {
+		out := make([]taskSpawnItem, 0, len(strs))
+		for _, s := range strs {
+			if s = strings.TrimSpace(s); s != "" {
+				title, body, _ := strings.Cut(s, " — ")
+				out = append(out, taskSpawnItem{Title: strings.TrimSpace(title), Body: strings.TrimSpace(body)})
+			}
+		}
+		return out
+	}
+	var out []taskSpawnItem
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "-*• "))
+		if line == "" {
+			continue
+		}
+		title, body, _ := strings.Cut(line, " — ")
+		out = append(out, taskSpawnItem{Title: strings.TrimSpace(title), Body: strings.TrimSpace(body)})
+	}
+	return out
+}

@@ -492,6 +492,17 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	if len(cat.Presets) > 0 {
 		writePresetMenu(&sb, cat.Presets)
 	}
+	if len(cat.Templates) > 0 {
+		sb.WriteString("\n## Templates (`uses: template/<name>`; expands into a vetted multi-step subgraph, route every outcome in `next`)\n\n")
+		for _, name := range sortedKeys(cat.Templates) {
+			tpl := cat.Templates[name]
+			fmt.Fprintf(&sb, "- `template/%s`: %s", name, tpl.Description)
+			if tpl.WhenToUse != "" {
+				fmt.Fprintf(&sb, " Use when: %s", tpl.WhenToUse)
+			}
+			fmt.Fprintf(&sb, " Outcomes: %s.\n", strings.Join(tpl.Outcomes, ", "))
+		}
+	}
 	sb.WriteString("\n## Actions (`type: action`; route every outcome)\n\n")
 	for _, name := range flow.ActionNames() {
 		spec := flow.Actions[name]
@@ -672,7 +683,9 @@ Escalate only for those reasons: an unresolved unknown earns an investigation, a
 - For "repeat until" goals, prefer a bounded work → verify → condition group over a fixed one-pass chain. Route the condition's false/default outcome back to work and true to the next stage; refresh verification on EVERY pass. Use direct check outcomes for executable criteria. For judgment criteria, declare a bool output such as goal_met on a reviewer and route with CEL: nodes.verify.outcome == "pass" && nodes.assess.outputs.goal_met == true. An LLM's judgment must not override failed checks.
 - There are no shared mutable variables: nodes.<id>.outputs contains the latest successful visit's persisted result. nodes.<id>.history lists every successful visit (visit, outcome, summary, outputs), oldest first; use it for all earlier feedback in a loop or size(nodes.<id>.history) in a switch. Steps in a loop already get every earlier pass in their context. Do not read a producer before it has run; on an initial work visit use template fallbacks for prior feedback. Bind named outputs explicitly when a switch or gate is the previous step.
 - max_visits is a per-node total for the run, not a group iteration variable, and does not reset on a back edge or human decision. Bound every cycle, account for preset limits on all nodes in the repeated group, and explicitly route on_exhausted to $fail or a bounded handoff gate.
-- For human revise/approve loops, route revise back to work and approve onward. A gate alone does NOT automatically bound repetition: set max_visits plus an explicit gate timeout and next.timeout (normally $fail). Catalog/project/flow pod timeout defaults do not apply to gates. A gate timeout is per wait, not a whole-loop deadline; budget.wall is not currently enforced by the engine. The human can add a free-text note with the decision: the next step sees it in its context automatically, and later steps can read ${{ nodes.<gate>.outputs.note ?? "" }}. Route revise straight back to the work node so the note arrives with it. Gates remain optional according to guidance.
+- For human revise/approve loops, route revise back to work and approve onward. A gate alone does NOT automatically bound repetition: set max_visits plus an explicit gate timeout and next.timeout (normally $fail). Catalog/project/flow pod timeout defaults do not apply to gates. A gate timeout is per wait, not a whole-loop deadline; set spec.budget.wall or spec.budget.tokens to bound the whole run. The human can add a free-text note with the decision: the next step sees it in its context automatically, and later steps can read ${{ nodes.<gate>.outputs.note ?? "" }}. Route revise straight back to the work node so the note arrives with it. Gates remain optional according to guidance.
+- On parallel nodes that mix fast checks with slow QA or reviews, set fail_fast: true (with the join checking the fast check's failure outcome first) or run cheap deterministic checks before branching into slower reviews/QA so a fast check failure does not waste minutes on sibling pods.
+- On check nodes that emit numeric quality metrics via $AI_FLOW_OUTPUTS (e.g. test_count, lint_warnings), set ratchet: { <field>: min | max } to enforce monotonic quality ratchets against the project's stored baselines.
 - Nodes automatically receive the task, a summary of earlier steps, and the previous step's outputs; do not repeat them in prompts. Use ${{ nodes.<id>.outputs.<field> }} or ${{ task.title }} only when a step needs a specific value.
 - Prefer presets and the smallest sufficient configured model for each step.
 - Use the configured planner for decomposition and routing. Only select models in the menu; do not assume a local-model preference.
@@ -728,7 +741,7 @@ func writeDeploy(sb *strings.Builder, base string, d *config.Deploy) {
 1. work and its local verification (tests, lint, local-stack-test; qa-test for user-facing changes), in parallel where independent;
 2. open-pull-request, then ci-checks (passed → on; failed → back to the fix step). A PR that conflicts with its base gets no CI, so ci-checks reports it as failed with outputs.failed = ["merge conflict with <base>"]: route failed through a switch (when: 'nodes.<ci>.outputs.failed.exists(f, f.startsWith("merge conflict"))') to update-branch, and other failures to the fix step, so a conflict does not spend the repair budget;
 3. deploy (merge) → wait-for-deploy → monitor-deploy; deploy conflict (other work merged first) → update-branch (repo write grant) → ci-checks, so the run re-verifies and merges again (deploy max_visits 2 or more);
-4. healthy → comment-task or $success; degraded or timeout → deploy-triage → revert-deploy (repo write grant) → open-pull-request → ci-checks → deploy → $fail, so the run reports the rollback.
+4. healthy → comment-task or $success; degraded or timeout → deploy-triage → revert-deploy (repo write grant; route fail to resolve-revert with repo write grant so merge conflicts during revert are resolved cleanly) → open-pull-request → ci-checks → deploy → $fail, so the run reports the rollback.
 
 The validator enforces that every deploy follows a passing ci-checks with no repo-writing step after it, and that after a deploy the run only succeeds through wait-for-deploy then monitor-deploy (healthy). Tasks that should not ship (investigations, drafts) end before deploy.
 `)

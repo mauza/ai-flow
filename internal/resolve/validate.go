@@ -155,7 +155,12 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 		v.errf(id, "", "node ids must be lowercase letters, digits and underscores, starting with a letter")
 	}
 	if raw.Uses != "" {
-		if _, ok := cat.Presets[n.Preset]; !ok {
+		if strings.HasPrefix(raw.Uses, "template/") {
+			name := strings.TrimPrefix(raw.Uses, "template/")
+			if _, ok := cat.Templates[name]; !ok {
+				v.errf(id, "uses", "unknown template %q", raw.Uses)
+			}
+		} else if _, ok := cat.Presets[n.Preset]; !ok {
 			v.errf(id, "uses", "unknown preset %q", raw.Uses)
 		}
 	}
@@ -221,6 +226,17 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 			}
 			if _, err := OutputSchema(typ); err != nil {
 				v.errf(id, "outputs."+name, "%v", err)
+			}
+		}
+		for field, dir := range n.Ratchet {
+			if dir != "min" && dir != "max" {
+				v.errf(id, "ratchet."+field, "must be \"min\" or \"max\" (got %q)", dir)
+			}
+			typ, ok := n.Outputs[field]
+			if !ok {
+				v.errf(id, "ratchet."+field, "must match a declared numeric output on this check")
+			} else if s, ok := typ.(string); !ok || (s != "number" && s != "integer") {
+				v.errf(id, "ratchet."+field, "ratchet requires a number or integer output (got %v)", typ)
 			}
 		}
 		for code, o := range CheckExitCodes(&n.Node) {
@@ -340,6 +356,7 @@ var consumers = map[string][]string{
 	"outputs":    {flow.TypeLLM, flow.TypeAgent, flow.TypeCheck},
 	"run":        {flow.TypeCheck},
 	"exit_codes": {flow.TypeCheck},
+	"ratchet":    {flow.TypeCheck},
 	"cases":      {flow.TypeSwitch, flow.TypeJoin},
 	"default":    {flow.TypeSwitch, flow.TypeJoin},
 	"branches":   {flow.TypeParallel},
@@ -356,7 +373,7 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 		"model": raw.Model != "", "llm": raw.LLM != nil, "harness": raw.Harness != "",
 		"skills": len(raw.Skills) > 0, "runtime": raw.Runtime != "", "retry": raw.Retry != nil,
 		"timeout": raw.Timeout.Duration > 0, "prompt": raw.Prompt != "", "inputs": len(raw.Inputs) > 0,
-		"outputs": len(raw.Outputs) > 0, "run": raw.Run != "", "exit_codes": len(raw.ExitCodes) > 0,
+		"outputs": len(raw.Outputs) > 0, "run": raw.Run != "", "exit_codes": len(raw.ExitCodes) > 0, "ratchet": len(raw.Ratchet) > 0,
 		"cases": len(raw.Cases) > 0, "default": raw.Default != "", "action": raw.Action != "", "with": len(raw.With) > 0,
 		"branches": len(raw.Branches) > 0, "join": raw.Join != "", "fail_fast": raw.FailFast,
 	}

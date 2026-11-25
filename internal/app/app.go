@@ -17,6 +17,7 @@ import (
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/ids"
 	"github.com/mauza/ai-flow/internal/llm"
+	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
@@ -40,6 +41,8 @@ type App struct {
 	// GitHub and Workspaces back repository linking and product workspaces.
 	GitHub     *github.Client
 	Workspaces *workspace.Manager
+	// Obj lets the grader and retrospectives inspect visit transcripts.
+	Obj objstore.Store
 
 	notifiers  []Notifier
 	planning   sync.Map   // task id → struct{}
@@ -153,6 +156,9 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 		n.PlanStarted(ctx, t)
 	}
 
+	if a.Planner == nil {
+		return fmt.Errorf("planner is not configured")
+	}
 	req := planner.Request{FlowName: name, Project: t.Project, Title: t.Title, Body: t.Body, TaskRef: &flow.TaskRef{Source: t.Source, ID: firstNonEmpty(t.Identifier, t.ID)}}
 	res, err := a.Planner.Plan(ctx, req)
 	if err != nil {

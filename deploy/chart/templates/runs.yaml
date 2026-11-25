@@ -17,6 +17,23 @@ metadata:
   namespace: {{ .Values.runs.namespace }}
   labels: {{- include "ai-flow.labels" . | nindent 4 }}
 automountServiceAccountToken: false
+{{- if .Values.runs.cache.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-flow-cache
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ai-flow.labels" . | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.runs.cache.accessMode | default "ReadWriteMany" }}]
+  {{- with .Values.runs.cache.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.runs.cache.size }}
+{{- end }}
 {{- if .Values.runs.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

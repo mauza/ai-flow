@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	s.configRoutes(api)
 	s.productRoutes(api)
 	s.improvementRoutes(api)
+	s.loopRoutes(api)
 	mcpBackend := &mcpserver.LocalBackend{
 		App:        s.app,
 		Obj:        s.obj,
@@ -180,6 +181,14 @@ func (s *Server) overviewData(ctx context.Context) (any, error) {
 			"outputs": p.Outputs, "definition": p.Node,
 		})
 	}
+	var templates []map[string]any
+	for _, name := range sortedKeys(cat.Templates) {
+		t := cat.Templates[name]
+		templates = append(templates, map[string]any{
+			"name": name, "description": t.Description, "category": t.Category,
+			"when_to_use": t.WhenToUse, "outcomes": nonNil(t.Outcomes), "nodes": len(t.Nodes),
+		})
+	}
 	var models []map[string]any
 	for _, name := range sortedKeys(cat.Models) {
 		m := cat.Models[name]
@@ -190,7 +199,7 @@ func (s *Server) overviewData(ctx context.Context) (any, error) {
 		runtimes = append(runtimes, map[string]any{"name": name, "image": cat.Runtimes[name].Image, "description": cat.Runtimes[name].Description})
 	}
 	return map[string]any{
-		"projects": projects, "models": models, "runtimes": runtimes, "grants": grants, "skills": skills, "presets": presets,
+		"projects": projects, "models": models, "runtimes": runtimes, "grants": grants, "skills": skills, "presets": presets, "templates": nonNil(templates),
 		"planner": map[string]any{"model": cat.Planner.Model, "guidance": cat.Planner.Guidance},
 		"actions": cat.Actions, "node_types": flow.NodeTypes,
 		"linear": cfg.Env.Linear.Enabled, "local": cfg.Env.Runs.Local,

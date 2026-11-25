@@ -30,8 +30,9 @@ type Node struct {
 	flow.Node
 }
 
-// Resolve applies presets and defaults. It never fails; problems surface in Validate.
+// Resolve applies templates, presets and defaults. It never fails; problems surface in Validate.
 func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
+	f = expandTemplates(f, cfg)
 	var proj *config.Project
 	if f.Metadata.Project != "" {
 		proj = cfg.Projects[f.Metadata.Project]

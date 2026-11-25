@@ -128,6 +128,9 @@ type Runs struct {
 	// keeps a descheduler from evicting them. ai-flow's own labels win.
 	PodLabels      map[string]string `json:"podLabels,omitempty"`
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+	// CachePVC, when set, names a shared PersistentVolumeClaim in the runs
+	// namespace mounted at /cache (subPath per project) for Go/npm build caches.
+	CachePVC string `json:"cachePVC,omitempty"`
 	// Local mode runs pod-type nodes as child processes instead of Jobs (tests, no cluster).
 	Local bool `json:"local,omitempty"`
 }
@@ -233,9 +236,10 @@ type Catalog struct {
 	Harnesses  map[string]Harness `json:"harnesses,omitempty"`
 	Runtimes   map[string]Runtime `json:"runtimes"`
 	Grants     map[string]*Grant  `json:"grants,omitempty"`
-	Skills     map[string]*Skill  `json:"skills,omitempty"`
-	Presets    map[string]*Preset `json:"presets,omitempty"`
-	Actions    []string           `json:"-"`
+	Skills     map[string]*Skill        `json:"skills,omitempty"`
+	Presets    map[string]*Preset       `json:"presets,omitempty"`
+	Templates  map[string]*FlowTemplate `json:"templates,omitempty"`
+	Actions    []string                 `json:"-"`
 	Planner     Planner            `json:"planner"`
 	// Node defaults applied to every flow (runtime, harness, timeout, retry, llm).
 	Defaults *flow.Node `json:"defaults,omitempty"`
@@ -374,6 +378,18 @@ type Preset struct {
 	PromptFile string   `json:"prompt_file,omitempty"`
 }
 
+// FlowTemplate is a reusable multi-node subgraph referenced as `uses: template/<name>`.
+// Resolve expands it into ordinary nodes prefixed by the caller's node ID, wiring
+// `$out.<outcome>` targets to the caller's `next.<outcome>`.
+type FlowTemplate struct {
+	Description string                `json:"description,omitempty"`
+	Category    string                `json:"category,omitempty"`
+	WhenToUse   string                `json:"when_to_use,omitempty"`
+	Outcomes    []string              `json:"outcomes"`
+	Start       string                `json:"start"`
+	Nodes       map[string]*flow.Node `json:"nodes"`
+}
+
 type Planner struct {
 	Model    string `json:"model"`
 	Guidance string `json:"guidance,omitempty"`
@@ -405,9 +421,50 @@ type ProjectSpec struct {
 	Budget      *ProjBudget  `json:"budget,omitempty"`
 	Planner     PlannerGuide `json:"planner,omitempty"`
 	Agent       AgentGuide   `json:"agent,omitempty"`
-	Defaults    *flow.Node   `json:"defaults,omitempty"`
-	Deploy      *Deploy      `json:"deploy,omitempty"`
-	Review      *Review      `json:"review,omitempty"`
+	Defaults      *flow.Node        `json:"defaults,omitempty"`
+	Deploy        *Deploy           `json:"deploy,omitempty"`
+	Review        *Review           `json:"review,omitempty"`
+	Observability *Observability    `json:"observability,omitempty"`
+	Schedules     []ProjectSchedule `json:"schedules,omitempty"`
+}
+
+// Observability defines read-only PromQL queries for discovery and health sweeps
+// (works even on projects that do not auto-deploy on merge).
+type Observability struct {
+	Queries []HealthQuery `json:"queries,omitempty"`
+}
+
+// ProjectSchedule triggers a recurring flow or task for continuous improvement
+// loops (e.g. nightly codebase/metrics audit) with backlog and concurrency guards.
+type ProjectSchedule struct {
+	Name          string        `json:"name"`
+	Enabled       *bool         `json:"enabled,omitempty"` // default true
+	Every         flow.Duration `json:"every"`
+	Flow          string        `json:"flow,omitempty"`
+	Task          *ScheduleTask `json:"task,omitempty"`
+	MaxActiveRuns int           `json:"max_active_runs,omitempty"` // default 1
+	MaxOpenTasks  int           `json:"max_open_tasks,omitempty"`  // default 5
+}
+
+func (s ProjectSchedule) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+func (s ProjectSchedule) EffectiveMaxActiveRuns() int {
+	if s.MaxActiveRuns <= 0 {
+		return 1
+	}
+	return s.MaxActiveRuns
+}
+
+func (s ProjectSchedule) EffectiveMaxOpenTasks() int {
+	if s.MaxOpenTasks <= 0 {
+		return 5
+	}
+	return s.MaxOpenTasks
+}
+
+type ScheduleTask struct {
+	Title string `json:"title"`
+	Body  string `json:"body,omitempty"`
 }
 
 // Review sets how hard a project's flows work to find and fix problems.
@@ -772,6 +829,9 @@ func (c *Config) applyDefaults() {
 	if cat.Presets == nil {
 		cat.Presets = map[string]*Preset{}
 	}
+	if cat.Templates == nil {
+		cat.Templates = map[string]*FlowTemplate{}
+	}
 	if cat.Planner.MaxAttempts == 0 {
 		cat.Planner.MaxAttempts = 3
 	}
@@ -955,6 +1015,48 @@ func (c *Config) check() error {
 			if d.Rollback != nil && d.Rollback.Workflow == "" {
 				errs = append(errs, fmt.Sprintf("project %s: deploy.rollback needs workflow", name))
 			}
+		}
+		if obs := p.Spec.Observability; obs != nil {
+			for i, q := range obs.Queries {
+				if strings.TrimSpace(q.Name) == "" || strings.TrimSpace(q.Query) == "" {
+					errs = append(errs, fmt.Sprintf("project %s: observability.queries[%d] needs name and query", name, i))
+				}
+			}
+		}
+		seenSched := map[string]bool{}
+		for i, sc := range p.Spec.Schedules {
+			sname := strings.TrimSpace(sc.Name)
+			if sname == "" {
+				errs = append(errs, fmt.Sprintf("project %s: schedules[%d].name is required", name, i))
+				continue
+			}
+			if seenSched[sname] {
+				errs = append(errs, fmt.Sprintf("project %s: duplicate schedule %q", name, sname))
+			}
+			seenSched[sname] = true
+			if sc.Every.Duration < 5*time.Minute {
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q every must be at least 5m", name, sname))
+			}
+			hasFlow := strings.TrimSpace(sc.Flow) != ""
+			hasTask := sc.Task != nil && strings.TrimSpace(sc.Task.Title) != ""
+			if hasFlow == hasTask {
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow or task.title", name, sname))
+			}
+			if sc.MaxActiveRuns < 0 || sc.MaxOpenTasks < 0 {
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q limits must be non-negative", name, sname))
+			}
+		}
+	}
+	for name, tpl := range c.Catalog.Templates {
+		if tpl == nil || strings.TrimSpace(tpl.Start) == "" || len(tpl.Nodes) == 0 {
+			errs = append(errs, fmt.Sprintf("template %s: start and nodes are required", name))
+			continue
+		}
+		if _, ok := tpl.Nodes[tpl.Start]; !ok {
+			errs = append(errs, fmt.Sprintf("template %s: start node %q not found", name, tpl.Start))
+		}
+		if len(tpl.Outcomes) == 0 {
+			errs = append(errs, fmt.Sprintf("template %s: outcomes are required", name))
 		}
 	}
 	if n := c.Env.Notify.Ntfy; n != nil && (n.URL == "" || n.Topic == "") {

@@ -170,6 +170,7 @@ func (e *Engine) ContextMarkdown(ctx context.Context, r *store.Run, res *resolve
 	if n.Type == flow.TypeAgent || n.Type == flow.TypeLLM {
 		pm := e.ProjectMap(ctx, r.Project)
 		writeProjectMap(&sb, pm)
+		writeLedgerContext(&sb, e.Ledger(ctx, r.Project))
 		if _, ok := n.Outputs["project_map"]; ok {
 			sb.WriteString("## Updating the project map\n\nReturn outputs.project_map: the whole updated map as markdown (at most ~15KB), for every later step and run to start from: " +
 				"architecture and data flow, each module and what it owns, entry points, how to run, test and build (exact commands), conventions, " +
@@ -528,6 +529,10 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 		return e.checkHealth(ctx, r, res, v, with)
 	case "rollback_deploy":
 		return e.rollbackDeploy(ctx, r, res, v, with)
+	case "query_metrics":
+		return e.queryMetrics(ctx, r, res, with)
+	case "create_tasks":
+		return e.createTasks(ctx, r, res, with)
 	case "open_pull_request":
 		return e.openPR(ctx, r, res, t, with)
 	case "comment_task":

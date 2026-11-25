@@ -40,6 +40,7 @@ type Launcher interface {
 
 type LaunchSpec struct {
 	RunID    string
+	Project  string
 	Seq      int
 	Node     string
 	Visit    int
@@ -103,7 +104,8 @@ type Engine struct {
 	// HTTP probes deploy targets and queries metrics.
 	HTTP *http.Client
 
-	refresher func(ctx context.Context, namespace, app string) error
+	refresher   func(ctx context.Context, namespace, app string) error
+	taskCreator func(ctx context.Context, project, source, externalID, title, body string, plan bool) (taskID string, created bool, err error)
 
 	polls    map[string]time.Time            // run/seq → last poll of a waiting action
 	health   map[string]map[string]int       // run/seq → check → consecutive violations
@@ -136,6 +138,12 @@ func (e *Engine) OnRunDone(fn func(ctx context.Context, run *store.Run)) {
 // app (deploy.argocd_app) instead of waiting for its git poll.
 func (e *Engine) SetArgoRefresher(f func(ctx context.Context, namespace, app string) error) {
 	e.refresher = f
+}
+
+// SetTaskCreator wires the create_tasks built-in action to spawn deduplicated
+// child tasks in the control plane without importing internal/app.
+func (e *Engine) SetTaskCreator(f func(ctx context.Context, project, source, externalID, title, body string, plan bool) (string, bool, error)) {
+	e.taskCreator = f
 }
 
 // SetNotifier enables push notifications for the configured events.
@@ -455,12 +463,16 @@ func (e *Engine) advance(ctx context.Context, r *store.Run, v *store.Visit) erro
 	if n == nil {
 		return rejectf("node %q not in flow", v.Node)
 	}
+	if err := e.applyRatchet(ctx, r, n, v); err != nil {
+		return err
+	}
 	target, ok := n.Next[v.Outcome]
 	if !ok {
 		return e.finish(ctx, r, store.RunFailed, fmt.Sprintf("%s: outcome %q has no transition", v.Node, v.Outcome))
 	}
 	e.event(ctx, r, v.Node, "outcome", fmt.Sprintf("%s#%d → %s", v.Node, v.Visit, v.Outcome))
 	e.saveProjectMap(ctx, r, v)
+	e.saveLedgerEntries(ctx, r, v)
 	ln, err := e.laneOf(ctx, res, v)
 	if err != nil {
 		return err
@@ -783,7 +795,7 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 	if !ok || image == "" {
 		return e.visitError(ctx, r, v, fmt.Sprintf("unknown runtime %q", n.Runtime))
 	}
-	spec := LaunchSpec{RunID: r.ID, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type, Image: image, Timeout: n.Timeout.Duration}
+	spec := LaunchSpec{RunID: r.ID, Project: r.Project, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type, Image: image, Timeout: n.Timeout.Duration}
 	if n.Retry != nil {
 		spec.Retries = n.Retry.Limit
 	}
@@ -895,6 +907,13 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 	e.forgetRun(r.ID)
 	switch status {
 	case store.RunSucceeded:
+		e.promoteBaselines(ctx, r)
+		if t := e.task(ctx, r); t != nil && r.Project != "" && t.ExternalID != "" && (t.Source == "flow" || t.Source == "schedule") {
+			_ = e.UpsertLedger(ctx, r.Project, LedgerEntry{
+				Key: t.ExternalID, Title: t.Title, Status: LedgerShipped,
+				RunID: r.ID, PRURL: r.PRURL, Summary: "Completed via run " + r.ID,
+			})
+		}
 		e.event(ctx, r, "", "finished", "Run succeeded")
 		e.alert(ctx, config.NotifySucceeded, r, "succeeded", r.PRURL, 3, "white_check_mark")
 	case store.RunCanceled:

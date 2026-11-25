@@ -105,6 +105,24 @@ func (k *Kube) Launch(ctx context.Context, s engine.LaunchSpec) (string, error) 
 		{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: tmpDir(k.cfg.Runs.TmpSize)}},
 	}
+	if k.cfg.Runs.CachePVC != "" {
+		sub := s.Project
+		if sub == "" {
+			sub = "shared"
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "dep-cache",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: k.cfg.Runs.CachePVC,
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "dep-cache", MountPath: "/cache", SubPath: sub})
+		env = append(env,
+			corev1.EnvVar{Name: "GOMODCACHE", Value: "/cache/go/mod"},
+			corev1.EnvVar{Name: "GOCACHE", Value: "/cache/go/build"},
+			corev1.EnvVar{Name: "NPM_CONFIG_CACHE", Value: "/cache/npm"},
+		)
+	}
 	for i, sec := range s.Secrets {
 		if sec.Env != "" {
 			env = append(env, corev1.EnvVar{Name: sec.Env, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{

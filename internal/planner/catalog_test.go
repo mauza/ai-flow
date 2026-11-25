@@ -20,8 +20,8 @@ func TestPresetMenuContracts(t *testing.T) {
 	writePresetMenu(&sb, cfg.Catalog.Presets)
 	menu := sb.String()
 	// A generous byte budget guards against accidentally dumping full prompts
-	// or result schemas for every preset (roughly 6k tokens at this ceiling).
-	if len(menu) > 24000 {
+	// or result schemas for every preset (roughly 7k tokens at this ceiling).
+	if len(menu) > 28000 {
 		t.Fatalf("preset menu grew to %d bytes", len(menu))
 	}
 	t.Logf("preset menu: %d bytes for %d presets", len(menu), len(cfg.Catalog.Presets))

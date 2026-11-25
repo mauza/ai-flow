@@ -58,6 +58,14 @@ runs:
   namespace: ai-flow-runs
   createNamespace: true
   serviceAccount: ai-flow-runner
+  # Optional shared dependency/build cache PVC mounted into node pods at /cache
+  # (GOMODCACHE, GOCACHE, NPM_CONFIG_CACHE). Set runs.cachePVC in environment.yaml
+  # to "ai-flow-cache" to enable mounting it.
+  cache:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
   # Egress for node pods. DNS and the control plane's pod port are always
   # allowed; everything else is denied unless a node holds an egress grant.
   networkPolicy:

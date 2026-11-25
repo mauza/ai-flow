@@ -117,6 +117,9 @@ type Node struct {
 	// check
 	Run       string            `json:"run,omitempty"`
 	ExitCodes map[string]string `json:"exit_codes,omitempty"`
+	// Ratchet compares declared numeric outputs against the project's stored
+	// baseline: "min" requires value >= baseline, "max" requires value <= baseline.
+	Ratchet map[string]string `json:"ratchet,omitempty"`
 
 	// switch
 	Cases   []Case `json:"cases,omitempty"`

@@ -40,7 +40,7 @@ const (
 )
 
 // CatalogSections are the catalog's named collections the UI edits entry by entry.
-var CatalogSections = []string{"models", "presets", "runtimes", "harnesses", "grants", "skills"}
+var CatalogSections = []string{"models", "presets", "templates", "runtimes", "harnesses", "grants", "skills"}
 
 // CatalogSettings are the catalog's single-value settings.
 var CatalogSettings = []string{"planner", "defaults", "improvement"}

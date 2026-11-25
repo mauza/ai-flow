@@ -98,7 +98,7 @@ func executionDependencies(res *resolve.Resolved, cfg *config.Config, version in
 	runs.CPURequest, runs.MemoryRequest, runs.Affinity, runs.TmpSize = "", "", nil, ""
 	if version >= 2 {
 		// Where a pod runs and how big it is don't change what a step does.
-		runs.CPU, runs.Memory, runs.NodeSelector, runs.ImagePullPolicy, runs.JobTTL = "", "", nil, "", flow.Duration{}
+		runs.CPU, runs.Memory, runs.NodeSelector, runs.ImagePullPolicy, runs.JobTTL, runs.CachePVC = "", "", nil, "", flow.Duration{}, ""
 	}
 	deps["runs"] = runs
 	deps["git_author"] = []string{cfg.Env.Git.AuthorName, cfg.Env.Git.AuthorEmail}
