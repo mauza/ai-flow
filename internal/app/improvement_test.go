@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,8 @@ func TestImprovementLoopEndToEnd(t *testing.T) {
 			mu.Unlock()
 			out, _ := json.Marshal(map[string]any{
 				"action":     "propose",
+				"theme":      "missing-line-citations",
+				"run_ids":    regexp.MustCompile(`r-[0-9a-z-]+`).FindAllString(body, -1),
 				"title":      "Require citing concrete file lines in code-review",
 				"reason":     "Multiple runs failed instruction_adherence by omitting file paths.",
 				"after_text": nextText,

@@ -693,6 +693,7 @@ export interface FailureCluster {
   target_kind: string;
   target: string;
   theme: string;
+  themes: string[];
   editable: boolean;
   eligible: boolean;
   count: number;
@@ -716,6 +717,10 @@ export interface RubricStats {
   environment_failures: number;
   disagreed: number;
   disagreement_rate_pct: number;
+  audited: number;
+  confirmed: number;
+  cohens_kappa?: number;
+  calibrated: boolean;
 }
 
 export interface TrendPoint {
@@ -940,6 +945,7 @@ export const api = {
     return request<RunGrade[]>("GET", `/api/improvement/grades?${p}`);
   },
   gradeUngraded: (project = "", limit = 10) => request<{ queued: string[] }>("POST", "/api/improvement/grade-ungraded", { project, limit }),
+  confirmGrade: (id: string) => request<RunGrade>("POST", `/api/improvement/grades/${id}/confirm`, {}),
   disagreeGrade: (id: string, disagreed: boolean, note = "") =>
     request<RunGrade>("POST", `/api/improvement/grades/${id}/disagree`, { disagreed, note }),
   improvementProposals: (status = "") =>

@@ -11,6 +11,7 @@ import {
   ServerCrash,
   Sparkles,
   ThumbsDown,
+  ThumbsUp,
   TrendingUp,
   Wrench,
   X,
@@ -276,6 +277,12 @@ export default function Improve() {
                         {rb.disagreed} disagreed ({rb.disagreement_rate_pct}%)
                       </span>
                     )}
+                    {rb.audited > 0 && (
+                      <span title="Grades you confirmed or disagreed with; kappa is the agreement beyond chance (10 audits and 0.6 count as calibrated)">
+                        {rb.audited} audited{rb.cohens_kappa !== undefined ? `, kappa ${rb.cohens_kappa}` : ""}
+                        {rb.calibrated ? " (calibrated)" : ""}
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -353,7 +360,7 @@ export default function Improve() {
             <div className="card">
               <Empty icon={CheckCircle2} title="No pending proposals">
                 <p>
-                  When at least {d.config.min_failures} unreviewed agent-blamed failures share a target and theme, the improver drafts a targeted prompt edit here
+                  When at least {d.config.min_failures} runs fail for a cause in the same prompt, the improver drafts a targeted prompt edit here
                   for your approval.
                 </p>
               </Empty>
@@ -666,6 +673,11 @@ function ClusterCard({ cluster, onDraft, busy }: { cluster: FailureCluster; onDr
           {cluster.target_kind}:{cluster.target}
         </span>
         <b className="mono">{cluster.theme}</b>
+        {cluster.themes.length > 1 && (
+          <span className="chip" title={cluster.themes.join(", ")}>
+            +{cluster.themes.length - 1} theme{cluster.themes.length === 2 ? "" : "s"}
+          </span>
+        )}
         {cluster.rubrics.map((rb) => (
           <span key={rb} className="chip">
             {rb}
@@ -721,6 +733,19 @@ function GradeRow({ grade, onChanged }: { grade: RunGrade; onChanged: () => void
     }
   };
 
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await api.confirmGrade(grade.id);
+      toast("ok", "Grade confirmed");
+      onChanged();
+    } catch (e) {
+      toast("error", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="card card-pad stack" style={{ gap: 6 }}>
       <div className="row wrap" style={{ gap: 8 }}>
@@ -744,6 +769,12 @@ function GradeRow({ grade, onChanged }: { grade: RunGrade; onChanged: () => void
           </span>
         )}
         <span className="small faint">{timeAgo(grade.created_at)}</span>
+        {!grade.disagreed && (
+          <button className="btn ghost sm" disabled={busy} onClick={confirm}>
+            <ThumbsUp size={12} />
+            Confirm
+          </button>
+        )}
         <button className="btn ghost sm" disabled={busy} onClick={() => (grade.disagreed ? toggle(false) : setOpen((v) => !v))}>
           <ThumbsDown size={12} />
           {grade.disagreed ? "Undo" : "Disagree"}
