@@ -577,6 +577,23 @@ export interface ProjectSummary {
   retros: { run_id: string; flow_name: string; summary: string; suggestions?: { kind: string; target?: string; change: string; why: string; priority?: string }[] }[];
 }
 
+export interface Schedule {
+  project: string;
+  name: string;
+  enabled: boolean;
+  paused: boolean;
+  every: string;
+  flow?: string;
+  task_title?: string;
+  storymap?: { map?: string; release?: string };
+  auto_start?: boolean;
+  max_active_runs: number;
+  max_open_tasks: number;
+  max_open_prs: number;
+  next_due_at?: number;
+  state: { last_run_at?: number; retry_at?: number; last_status?: string; last_reason?: string; last_run_id?: string; last_task_id?: string };
+}
+
 // ---- improvement loop ----
 
 export interface RunFacts {
@@ -835,6 +852,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   overview: () => request<Overview>("GET", "/api/overview"),
   attention: (project = "") => request<AttentionReport>("GET", project ? `/api/attention?project=${encodeURIComponent(project)}` : "/api/attention"),
+  schedules: (project: string) => request<Schedule[]>("GET", `/api/projects/${encodeURIComponent(project)}/schedules`),
+  runSchedule: (project: string, name: string) =>
+    request<Schedule["state"]>("POST", `/api/projects/${encodeURIComponent(project)}/schedules/${encodeURIComponent(name)}/run`, {}),
+  pauseSchedule: (project: string, name: string, paused: boolean) =>
+    request<Schedule[]>("POST", `/api/projects/${encodeURIComponent(project)}/schedules/${encodeURIComponent(name)}/pause`, { paused }),
   tasks: () => request<Task[]>("GET", "/api/tasks"),
   task: (id: string) => request<{ task: Task; runs: Run[]; events: FlowEvent[] }>("GET", `/api/tasks/${id}`),
   createTask: (t: { title: string; body: string; project: string; plan: boolean }) => request<Task>("POST", "/api/tasks", t),

@@ -105,7 +105,8 @@ type Engine struct {
 	HTTP *http.Client
 
 	refresher   func(ctx context.Context, namespace, app string) error
-	taskCreator func(ctx context.Context, project, source, externalID, title, body string, plan bool) (taskID string, created bool, err error)
+	ledgerMu    sync.Mutex
+	taskCreator func(ctx context.Context, t ChildTask) (taskID string, created bool, err error)
 
 	polls    map[string]time.Time            // run/seq → last poll of a waiting action
 	health   map[string]map[string]int       // run/seq → check → consecutive violations
@@ -142,8 +143,16 @@ func (e *Engine) SetArgoRefresher(f func(ctx context.Context, namespace, app str
 
 // SetTaskCreator wires the create_tasks built-in action to spawn deduplicated
 // child tasks in the control plane without importing internal/app.
-func (e *Engine) SetTaskCreator(f func(ctx context.Context, project, source, externalID, title, body string, plan bool) (string, bool, error)) {
+func (e *Engine) SetTaskCreator(f func(ctx context.Context, t ChildTask) (string, bool, error)) {
 	e.taskCreator = f
+}
+
+// ChildTask is a task a create_tasks action asks for. Key identifies the work
+// within Project and Source, so the same proposal is not queued twice.
+type ChildTask struct {
+	Project, Source, Key, Title, Body string
+	Plan                              bool
+	ParentTaskID                      string // the task whose run spawned it
 }
 
 // SetNotifier enables push notifications for the configured events.
@@ -908,12 +917,7 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 	switch status {
 	case store.RunSucceeded:
 		e.promoteBaselines(ctx, r)
-		if t := e.task(ctx, r); t != nil && r.Project != "" && t.ExternalID != "" && (t.Source == "flow" || t.Source == "schedule") {
-			_ = e.UpsertLedger(ctx, r.Project, LedgerEntry{
-				Key: t.ExternalID, Title: t.Title, Status: LedgerShipped,
-				RunID: r.ID, PRURL: r.PRURL, Summary: "Completed via run " + r.ID,
-			})
-		}
+		e.recordDelivered(ctx, r)
 		e.event(ctx, r, "", "finished", "Run succeeded")
 		e.alert(ctx, config.NotifySucceeded, r, "succeeded", r.PRURL, 3, "white_check_mark")
 	case store.RunCanceled:

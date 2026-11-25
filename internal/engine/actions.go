@@ -948,7 +948,6 @@ func (e *Engine) createTasks(ctx context.Context, r *store.Run, res *resolve.Res
 	}
 	ledger := e.Ledger(ctx, r.Project)
 	var taskIDs []string
-	var newLedger []LedgerEntry
 	skipped := 0
 	for _, it := range items {
 		if len(taskIDs) >= limit {
@@ -972,7 +971,7 @@ func (e *Engine) createTasks(ctx context.Context, r *store.Run, res *resolve.Res
 		if body == "" {
 			body = fmt.Sprintf("Spawned from discovery run %s (%s).", r.ID, r.FlowName)
 		}
-		tid, created, err := e.taskCreator(ctx, r.Project, source, key, title, body, plan)
+		tid, created, err := e.taskCreator(ctx, ChildTask{Project: r.Project, Source: source, Key: key, Title: title, Body: body, Plan: plan, ParentTaskID: r.TaskID})
 		if err != nil {
 			return nil, err
 		}
@@ -981,17 +980,12 @@ func (e *Engine) createTasks(ctx context.Context, r *store.Run, res *resolve.Res
 			continue
 		}
 		taskIDs = append(taskIDs, tid)
-		newLedger = append(newLedger, LedgerEntry{
-			Key:      key,
-			Title:    title,
-			Category: it.Category,
-			Status:   LedgerProposed,
-			Summary:  oneLine(body, 200),
-			RunID:    r.ID,
-		})
-	}
-	if len(newLedger) > 0 {
-		_ = e.UpsertLedger(ctx, r.Project, newLedger...)
+		// Now, not after the loop: a later error retries the action, which
+		// then skips this item as a duplicate.
+		if err := e.UpsertLedger(ctx, r.Project, LedgerEntry{Key: key, Title: title, Category: it.Category,
+			Status: LedgerProposed, Summary: oneLine(body, 200), RunID: r.ID}); err != nil {
+			return nil, err
+		}
 	}
 	if taskIDs == nil {
 		taskIDs = []string{}

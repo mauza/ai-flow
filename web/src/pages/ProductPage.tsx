@@ -6,6 +6,7 @@ import { useResource } from "../hooks";
 import { timeAgo, usd } from "../format";
 import { Empty, Modal, PRLink, Pill, Spinner, useToast } from "../ui";
 import Markdown from "../product/Markdown";
+import Schedules from "../product/Schedules";
 import WorkspaceBar from "../product/WorkspaceBar";
 
 const README_TEMPLATE = `# Product name
@@ -147,6 +148,8 @@ function ProjectOverview({ project, summary, loading }: { project: string; summa
           </Link>
         </div>
       )}
+
+      <Schedules project={project} />
 
       {maps.map((m) => (
         <section key={m.id} className="card card-pad stack" style={{ gap: 12 }}>

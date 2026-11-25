@@ -117,6 +117,27 @@ func (c *Client) OpenPR(ctx context.Context, r Repo, head, base, title, body str
 	return &pr, err
 }
 
+// OpenPRHeads lists the head branches of the repository's open pull requests.
+func (c *Client) OpenPRHeads(ctx context.Context, r Repo) ([]string, error) {
+	var heads []string
+	for page := 1; ; page++ {
+		var prs []struct {
+			Head struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+		}
+		if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/pulls?state=open&per_page=100&page=%d", r.Owner, r.Name, page), nil, &prs); err != nil {
+			return nil, err
+		}
+		for _, pr := range prs {
+			heads = append(heads, pr.Head.Ref)
+		}
+		if len(prs) < 100 {
+			return heads, nil
+		}
+	}
+}
+
 // BranchExists reports whether a branch exists.
 func (c *Client) BranchExists(ctx context.Context, r Repo, branch string) (bool, error) {
 	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/branches/%s", r.Owner, r.Name, url.PathEscape(branch)), nil, nil)

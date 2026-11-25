@@ -54,13 +54,13 @@ func TestCreateTasksAndLedgerSuppression(t *testing.T) {
 	h := newHarness(t)
 	createdTitles := []string{}
 	seenExt := map[string]string{}
-	h.e.SetTaskCreator(func(ctx context.Context, project, source, externalID, title, body string, plan bool) (string, bool, error) {
-		if id, dup := seenExt[externalID]; dup {
+	h.e.SetTaskCreator(func(ctx context.Context, c engine.ChildTask) (string, bool, error) {
+		if id, dup := seenExt[c.Key]; dup {
 			return id, false, nil
 		}
 		id := fmt.Sprintf("t-%d", len(createdTitles)+1)
-		seenExt[externalID] = id
-		createdTitles = append(createdTitles, title)
+		seenExt[c.Key] = id
+		createdTitles = append(createdTitles, c.Title)
 		return id, true, nil
 	})
 	// Pre-populate ledger with a rejected item so create_tasks skips it.
@@ -87,6 +87,71 @@ func TestCreateTasksAndLedgerSuppression(t *testing.T) {
 	ledger := h.e.Ledger(h.ctx, "sandbox")
 	if len(ledger) != 3 {
 		t.Fatalf("expected 3 ledger entries (1 rejected + 2 proposed), got %d: %+v", len(ledger), ledger)
+	}
+}
+
+// The catalog's audit template hands its keyed proposals to create_tasks.
+func TestAuditTemplateSpawnsKeyedTasks(t *testing.T) {
+	h := newHarness(t)
+	var got []engine.ChildTask
+	h.e.SetTaskCreator(func(_ context.Context, c engine.ChildTask) (string, bool, error) {
+		got = append(got, c)
+		return "t-child", true, nil
+	})
+	must(t, h.st.CreateTask(h.ctx, &store.Task{ID: "t-audit", Source: "schedule", Title: "Audit", Project: "sandbox"}))
+	h.cfg.Env.Metrics.URL = ""
+	if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", Project: "sandbox", TaskID: "t-audit", YAML: header + `  start: sweep
+  nodes:
+    sweep:
+      uses: template/continuous-audit
+      model: ` + testModel + `
+      next: { created: $success, clean: $success }
+`}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := h.e.CreateRun(h.ctx, "f", 0, "")
+	must(t, err)
+	for range 3 {
+		h.e.Tick(h.ctx)
+	}
+	h.finish(r.ID, "proposed", map[string]any{"proposals": []any{
+		map[string]any{"key": "parser-nil-deref", "title": "Guard \"nil\" input — parser", "body": "In parser.go\nrun go test"},
+	}, "rationale": "", "project_map": "", "map_commit": ""})
+	if r := h.run(r.ID); r.Status != store.RunSucceeded {
+		t.Fatalf("%s: %s (%s)", r.Status, r.Error, h.path(r.ID))
+	}
+	if len(got) != 1 || got[0].Key != "parser-nil-deref" || got[0].Title != "Guard \"nil\" input — parser" || got[0].ParentTaskID != "t-audit" || !got[0].Plan {
+		t.Fatalf("spawned %+v", got)
+	}
+}
+
+func TestDeliveredWorkWaitsForItsPullRequest(t *testing.T) {
+	for _, tc := range []struct{ source, pr, want string }{
+		{"flow", "https://github.com/o/r/pull/1", engine.LedgerPROpen},
+		{"storymap", "https://github.com/o/r/pull/1", engine.LedgerPROpen},
+		{"flow", "", engine.LedgerShipped},
+		{"schedule", "", ""},
+	} {
+		h := newHarness(t)
+		must(t, h.st.CreateTask(h.ctx, &store.Task{ID: "t-1", Source: tc.source, Identifier: "card", Title: "Card", Project: "sandbox"}))
+		if _, err := h.st.SaveFlow(h.ctx, &store.FlowVersion{Name: "f", Project: "sandbox", TaskID: "t-1", YAML: header + `  start: step
+  nodes:
+    step: { type: check, run: make test, next: { pass: $success, fail: $fail } }
+`}); err != nil {
+			t.Fatal(err)
+		}
+		r, err := h.e.CreateRun(h.ctx, "f", 0, "")
+		must(t, err)
+		must(t, h.st.UpdateRun(h.ctx, r.ID, map[string]any{"pr_url": tc.pr}))
+		h.e.Tick(h.ctx)
+		h.finish(r.ID, "pass", nil)
+		got := ""
+		for _, it := range h.e.Ledger(h.ctx, "sandbox") {
+			got = it.Status
+		}
+		if got != tc.want {
+			t.Errorf("%s task with PR %q: ledger %q, want %q", tc.source, tc.pr, got, tc.want)
+		}
 	}
 }
 

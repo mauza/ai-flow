@@ -357,6 +357,10 @@ func (h *HTTPBackend) TriggerSchedule(ctx context.Context, project, name string,
 	return &out, h.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%s/schedules/%s/run", url.PathEscape(project), url.PathEscape(name)), map[string]any{"force": force}, &out)
 }
 
+func (h *HTTPBackend) PauseSchedule(ctx context.Context, project, name string, paused bool) error {
+	return h.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%s/schedules/%s/pause", url.PathEscape(project), url.PathEscape(name)), map[string]any{"paused": paused}, nil)
+}
+
 func (h *HTTPBackend) ProjectLedger(ctx context.Context, project string) ([]engine.LedgerEntry, error) {
 	var out []engine.LedgerEntry
 	return out, h.do(ctx, http.MethodGet, "/api/projects/"+url.PathEscape(project)+"/ledger", nil, &out)

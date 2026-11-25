@@ -52,6 +52,7 @@ type App struct {
 	gradeSem   chan struct{}
 	gradeOnce  sync.Once
 	improverMu sync.Mutex // serialize improver passes
+	schedMu    sync.Mutex // serialize schedule triggers and queued-run starts
 }
 
 func (a *App) AddNotifier(n Notifier) { a.notifiers = append(a.notifiers, n) }
@@ -188,18 +189,19 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 	for _, n := range a.notifiers {
 		n.PlanFinished(ctx, t, name, res.Valid, res.Explanation)
 	}
-	autoStart := a.startMode(res.YAML, t.Project) == "auto"
-	if !autoStart {
-		if v, err := a.Store.GetKV(ctx, kvTaskAutoStart(t.ID)); err == nil && v == "1" {
-			autoStart = true
-		}
+	if !res.Valid {
+		return nil
 	}
-	if res.Valid && autoStart {
-		_ = a.Store.WriteKV(ctx, nil, []string{kvTaskAutoStart(t.ID)})
-		if a.Engine != nil {
-			if _, err := a.Engine.CreateRun(ctx, name, fv.Version, t.ID); err != nil {
-				return fmt.Errorf("auto-start: %w", err)
-			}
+	rec, err := a.autoStartRecord(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("auto-start: %w", err)
+	}
+	if rec != nil {
+		return a.startQueued(ctx, t.Project)
+	}
+	if a.startMode(res.YAML, t.Project) == "auto" {
+		if _, err := a.Engine.CreateRun(ctx, name, fv.Version, t.ID); err != nil {
+			return fmt.Errorf("auto-start: %w", err)
 		}
 	}
 	return nil

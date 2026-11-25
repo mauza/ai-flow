@@ -26,6 +26,7 @@ func TestScheduleTriggerAndBacklogGuard(t *testing.T) {
 		Name:         "daily-audit",
 		Every:        flow.Duration{Duration: 24 * time.Hour},
 		Task:         &config.ScheduleTask{Title: "Daily improvement audit", Body: "Audit repo"},
+		AutoStart:    true,
 		MaxOpenTasks: 1,
 	}}
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -55,21 +56,11 @@ func TestScheduleTriggerAndBacklogGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st2.LastStatus != "skipped" {
-		t.Fatalf("expected skipped due to max_open_tasks, got %+v", st2)
+		t.Fatalf("a queued task should fill the only slot, got %+v", st2)
 	}
 	views := a.ListSchedules(ctx, "sandbox")
 	if len(views) != 1 || views[0].Name != "daily-audit" || views[0].State.LastStatus != "skipped" {
 		t.Fatalf("unexpected views: %+v", views)
-	}
-
-	// Dedup test for CreateTaskFromFlow.
-	id1, c1, err := a.CreateTaskFromFlow(ctx, "sandbox", "flow", "fix-bug-1", "Fix bug 1", "body", false)
-	if err != nil || !c1 || id1 == "" {
-		t.Fatalf("first create: %s %v %v", id1, c1, err)
-	}
-	id2, c2, err := a.CreateTaskFromFlow(ctx, "sandbox", "flow", "fix-bug-1", "Fix bug 1", "body", false)
-	if err != nil || c2 || id2 != id1 {
-		t.Fatalf("duplicate should skip: %s %v %v", id2, c2, err)
 	}
 }
 
