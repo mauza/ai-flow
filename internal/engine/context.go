@@ -527,6 +527,8 @@ func (e *Engine) runAction(ctx context.Context, r *store.Run, res *resolve.Resol
 		return e.waitForDeploy(ctx, r, res, with)
 	case "check_health":
 		return e.checkHealth(ctx, r, res, v, with)
+	case "run_workflow":
+		return e.runWorkflow(ctx, r, res, v, with)
 	case "rollback_deploy":
 		return e.rollbackDeploy(ctx, r, res, v, with)
 	case "query_metrics":

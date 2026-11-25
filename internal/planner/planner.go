@@ -519,6 +519,12 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 			fmt.Fprintf(&sb, "\nai-flow never merges changes to %s (outcome blocked): keep them out of the change unless the task is about them, and then end with the open pull request.\n", strings.Join(d.Protected, ", "))
 		}
 	}
+	if len(proj.Spec.Workflows) > 0 {
+		sb.WriteString("\n## Workflows\n\nFlows may start these with action run_workflow, only when the task asks for what they do, and after the change is live and healthy. A failed one does not undo the release: report it and end in $success.\n\n")
+		for _, name := range sortedKeys(proj.Spec.Workflows) {
+			fmt.Fprintf(&sb, "- `%s`: %s\n", name, proj.Spec.Workflows[name].Description)
+		}
+	}
 	if rv := proj.Spec.Review; rv != nil && rv.Required {
 		sb.WriteString("\nai-flow merges only when, after the last step that wrote code, a review preset (category review, outcome approve) on a different model than every author's approved, and no review of the final code ended otherwise. Put such a review on every path to a merge, after the fix loop, and route deploy's blocked outcome to a report.\n")
 	}

@@ -277,6 +277,20 @@ spec:
 - `deploy.pipeline`: without it, any failed job on the merged commit ends
   `wait_for_deploy`, which a flow answers with a rollback.
 
+A project can also list workflows that flows may start, such as a mobile build:
+
+```yaml
+spec:
+  workflows:
+    testflight:
+      file: ios-testflight.yml
+      description: Builds the iOS app and uploads it to TestFlight.
+      note: changelog            # the workflow input that gets with.note
+```
+
+`run_workflow` starts a listed workflow on the base branch, so it only ever runs
+merged code, and waits for it. Workflows that are not listed can't be started.
+
 The release rules in [SPEC.md](SPEC.md) still apply: CI must pass on the exact
 commit, and a run only succeeds once `check_health` reports the release healthy.
 

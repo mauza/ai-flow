@@ -778,29 +778,77 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 		}
 	}
 	previous := e.lastPrevious(ctx, r, res)
+	run, pending, err := e.dispatchWorkflow(ctx, r, v, repo, d.Rollback.Workflow, d.Branch, map[string]string{"sha": sha}, "to roll back "+short(sha))
+	if err != nil || pending != nil {
+		return pending, err
+	}
+	outputs := map[string]any{"url": run.HTMLURL, "previous": previous}
+	if run.Conclusion != "success" {
+		return &actionResult{outcome: "failed", summary: fmt.Sprintf("%s ended %s: %s", d.Rollback.Workflow, run.Conclusion, run.HTMLURL), outputs: outputs}, nil
+	}
+	return &actionResult{outcome: "rolled_back", summary: fmt.Sprintf("Rolled back %s; %s should go live again", short(sha), short(previous)), outputs: outputs}, nil
+}
+
+// runWorkflow dispatches one of the project's listed workflows on its base
+// branch, where only merged code runs, and waits for it.
+func (e *Engine) runWorkflow(ctx context.Context, r *store.Run, res *resolve.Resolved, v *store.Visit, with map[string]string) (*actionResult, error) {
+	name := strings.TrimSpace(with["workflow"])
+	p := e.cfg.Current().Projects[r.Project]
+	if p == nil || p.Spec.Workflows[name] == nil {
+		return nil, rejectf("project %q lists no workflow %q", r.Project, name)
+	}
+	wf := p.Spec.Workflows[name]
+	repo, err := e.repoOf(res)
+	if err != nil {
+		return nil, err
+	}
+	var inputs map[string]string
+	if note := strings.TrimSpace(with["note"]); note != "" && wf.Note != "" {
+		inputs = map[string]string{wf.Note: note}
+	}
+	base := p.Spec.Base
+	if base == "" {
+		base = "main"
+	}
+	run, pending, err := e.dispatchWorkflow(ctx, r, v, repo, wf.File, base, inputs, "on "+base)
+	if err != nil || pending != nil {
+		return pending, err
+	}
+	outputs := map[string]any{"url": run.HTMLURL}
+	if run.Conclusion != "success" {
+		return &actionResult{outcome: "failed", summary: fmt.Sprintf("%s ended %s: %s", name, run.Conclusion, run.HTMLURL), outputs: outputs}, nil
+	}
+	return &actionResult{outcome: "succeeded", summary: fmt.Sprintf("%s succeeded: %s", name, run.HTMLURL), outputs: outputs}, nil
+}
+
+// dispatchWorkflow starts a workflow once for this visit and returns its run when
+// it has completed. Until then, or when GitHub refuses, it returns the result to
+// report instead. The dispatch is recorded in kv before it is sent, so polls
+// after a lost reply or a restart follow the same run.
+func (e *Engine) dispatchWorkflow(ctx context.Context, r *store.Run, v *store.Visit, repo github.Repo, workflow, branch string, inputs map[string]string, what string) (*github.WorkflowRun, *actionResult, error) {
 	key := fmt.Sprintf("dispatch/%s/%d", r.ID, v.Seq)
 	state, err := e.store.GetKV(ctx, key)
 	if errors.Is(err, store.ErrNotFound) {
 		// Record the dispatch before sending it: if the reply is lost (or
 		// the process dies) the next poll looks for the run instead of
-		// dispatching a second rollback.
+		// dispatching a second time.
 		at := time.Now()
 		if err := e.store.SetKV(ctx, key, strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		err := e.gh.DispatchWorkflow(ctx, repo, d.Rollback.Workflow, d.Branch, map[string]string{"sha": sha})
+		err := e.gh.DispatchWorkflow(ctx, repo, workflow, branch, inputs)
 		var api *github.APIError
 		if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
-			return &actionResult{outcome: "failed", summary: fmt.Sprintf("GitHub refused to start %s: %s", d.Rollback.Workflow, strings.TrimSpace(api.Body))}, nil
+			return nil, &actionResult{outcome: "failed", summary: fmt.Sprintf("GitHub refused to start %s: %s", workflow, strings.TrimSpace(api.Body))}, nil
 		}
 		if err != nil {
-			slog.Warn("rollback dispatch", "run", r.ID, "err", err)
-			return waiting("Dispatching %s to roll back %s (reply lost: %v)", d.Rollback.Workflow, short(sha), err), nil
+			slog.Warn("workflow dispatch", "run", r.ID, "err", err)
+			return nil, waiting("Dispatching %s %s (reply lost: %v)", workflow, what, err), nil
 		}
-		return waiting("Dispatched %s to roll back %s", d.Rollback.Workflow, short(sha)), nil
+		return nil, waiting("Dispatched %s %s", workflow, what), nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	at, runID := state, int64(0)
 	if i := strings.IndexByte(state, ':'); i >= 0 {
@@ -809,9 +857,9 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 	}
 	ms, _ := strconv.ParseInt(at, 10, 64)
 	if runID == 0 {
-		runs, err := e.gh.DispatchedRuns(ctx, repo, d.Rollback.Workflow, d.Branch)
+		runs, err := e.gh.DispatchedRuns(ctx, repo, workflow, branch)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// The oldest run created after the dispatch (allowing for clock skew).
 		since := time.UnixMilli(ms).Add(-15 * time.Second)
@@ -825,28 +873,24 @@ func (e *Engine) rollbackDeploy(ctx context.Context, r *store.Run, res *resolve.
 				// No run ever appeared: the dispatch did not land. Send it
 				// again on the next poll.
 				if err := e.store.WriteKV(ctx, nil, []string{key}); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return waiting("GitHub never started %s; dispatching it again", d.Rollback.Workflow), nil
+				return nil, waiting("GitHub never started %s; dispatching it again", workflow), nil
 			}
-			return waiting("Waiting for GitHub to start %s", d.Rollback.Workflow), nil
+			return nil, waiting("Waiting for GitHub to start %s", workflow), nil
 		}
 		if err := e.store.SetKV(ctx, key, fmt.Sprintf("%d:%d", ms, runID)); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	run, err := e.gh.Run(ctx, repo, runID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	outputs := map[string]any{"url": run.HTMLURL, "previous": previous}
 	if run.Status != "completed" {
-		return waiting("%s %s (%s)", d.Rollback.Workflow, strings.ReplaceAll(run.Status, "_", " "), run.HTMLURL), nil
+		return nil, waiting("%s %s (%s)", workflow, strings.ReplaceAll(run.Status, "_", " "), run.HTMLURL), nil
 	}
-	if run.Conclusion != "success" {
-		return &actionResult{outcome: "failed", summary: fmt.Sprintf("%s ended %s: %s", d.Rollback.Workflow, run.Conclusion, run.HTMLURL), outputs: outputs}, nil
-	}
-	return &actionResult{outcome: "rolled_back", summary: fmt.Sprintf("Rolled back %s; %s should go live again", short(sha), short(previous)), outputs: outputs}, nil
+	return run, nil, nil
 }
 
 // lastPrevious is the previous_sha of the run's latest merge ("" if unknown).

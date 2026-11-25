@@ -412,21 +412,31 @@ type ProjectMetadata struct {
 }
 
 type ProjectSpec struct {
-	Description   string            `json:"description,omitempty"`
-	Linear        *LinearLink       `json:"linear,omitempty"`
-	Repo          string            `json:"repo"` // git grant name
-	Base          string            `json:"base,omitempty"`
-	Start         string            `json:"start,omitempty"` // manual | auto
-	Allow         Allow             `json:"allow"`
-	Budget        *ProjBudget       `json:"budget,omitempty"`
-	Planner       PlannerGuide      `json:"planner,omitempty"`
-	Agent         AgentGuide        `json:"agent,omitempty"`
-	Defaults      *flow.Node        `json:"defaults,omitempty"`
-	Deploy        *Deploy           `json:"deploy,omitempty"`
-	Review        *Review           `json:"review,omitempty"`
-	Notify        *ProjectNotify    `json:"notify,omitempty"`
-	Observability *Observability    `json:"observability,omitempty"`
-	Schedules     []ProjectSchedule `json:"schedules,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Linear      *LinearLink    `json:"linear,omitempty"`
+	Repo        string         `json:"repo"` // git grant name
+	Base        string         `json:"base,omitempty"`
+	Start       string         `json:"start,omitempty"` // manual | auto
+	Allow       Allow          `json:"allow"`
+	Budget      *ProjBudget    `json:"budget,omitempty"`
+	Planner     PlannerGuide   `json:"planner,omitempty"`
+	Agent       AgentGuide     `json:"agent,omitempty"`
+	Defaults    *flow.Node     `json:"defaults,omitempty"`
+	Deploy      *Deploy        `json:"deploy,omitempty"`
+	Review      *Review        `json:"review,omitempty"`
+	Notify      *ProjectNotify `json:"notify,omitempty"`
+	// Workflows are the GitHub Actions workflows flows may start (run_workflow),
+	// by name. Each must have a workflow_dispatch trigger.
+	Workflows     map[string]*ProjectWorkflow `json:"workflows,omitempty"`
+	Observability *Observability              `json:"observability,omitempty"`
+	Schedules     []ProjectSchedule           `json:"schedules,omitempty"`
+}
+
+// ProjectWorkflow is a workflow a flow may start on the base branch.
+type ProjectWorkflow struct {
+	File        string `json:"file"`                  // under .github/workflows, e.g. release.yml
+	Description string `json:"description,omitempty"` // what it does and when to run it, for the planner
+	Note        string `json:"note,omitempty"`        // the workflow input that gets with.note, e.g. changelog
 }
 
 // ProjectNotify is how a project's owner hears about its runs.
@@ -1116,6 +1126,11 @@ func (c *Config) check() error {
 				if pr.URL == "" {
 					errs = append(errs, fmt.Sprintf("project %s: deploy.probes[%d] needs url", name, i))
 				}
+			}
+		}
+		for wname, wf := range p.Spec.Workflows {
+			if wf == nil || wf.File == "" || strings.Contains(wf.File, "/") {
+				errs = append(errs, fmt.Sprintf("project %s: workflows.%s needs file, a name under .github/workflows", name, wname))
 			}
 		}
 		if n := p.Spec.Notify; n != nil {
