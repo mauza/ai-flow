@@ -47,6 +47,12 @@ var Actions = map[string]ActionSpec{
 		Waits:   true, Timeout: 20 * time.Minute,
 		Doc: "waits until every version endpoint of the project's deploy target reports the expected commit (default: the run's latest merge). Outcomes: deployed, timeout (also at once when CI on that commit fails: outputs.failed, outputs.log_tail).",
 	},
+	"run_workflow": {
+		Outcomes: []string{"succeeded", "failed"}, With: []string{"workflow", "note"},
+		Outputs: map[string]any{"url": "string"},
+		Waits:   true, Timeout: 2 * time.Hour,
+		Doc: "runs one of the project's listed GitHub Actions workflows (with.workflow is its name) on the base branch and waits for it; with.note is text for the workflow, such as a changelog. It runs merged code only, so put it after the change is live and healthy. Outcomes: succeeded, failed (outputs.url), timeout.",
+	},
 	"rollback_deploy": {
 		Outcomes: []string{"rolled_back", "failed"}, With: []string{"sha"},
 		Outputs: map[string]any{"url": "string", "previous": "string"},

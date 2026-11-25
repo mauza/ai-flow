@@ -326,6 +326,12 @@ func (v *validator) checkNode(n *Node, raw *flow.Node) {
 		if n.Action == "rollback_deploy" && (v.r.Project == nil || v.r.Project.Spec.Deploy == nil || v.r.Project.Spec.Deploy.Rollback == nil) {
 			v.errf(id, "action", "rollback_deploy needs the project's deploy.rollback workflow")
 		}
+		if n.Action == "run_workflow" {
+			name, _ := n.With["workflow"].(string)
+			if v.r.Project == nil || v.r.Project.Spec.Workflows[name] == nil {
+				v.errf(id, "with.workflow", "the project lists no workflow %q (spec.workflows)", name)
+			}
+		}
 		if n.Action == "open_pull_request" && v.r.Repo == "" {
 			v.errf(id, "action", "open_pull_request needs spec.repo or a project repo")
 		}
