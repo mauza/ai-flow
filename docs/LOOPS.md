@@ -243,3 +243,41 @@ fixes one per visit (a fresh session, its own test and commit) and reports
       default: done
       next: { more: fix, done: verify }
 ```
+
+## Releases without a person
+
+A project with a `deploy` config can merge, deploy and roll back on its own. These
+settings are rules of the engine, so a flow cannot plan around them:
+
+```yaml
+spec:
+  review:
+    required: true               # an approving review before any merge
+  deploy:
+    branch: main
+    pipeline: [test, release]    # only these CI jobs mean "no release was built"
+    protected: [".github/**"]    # never merged by ai-flow
+    rollback: { workflow: rollback.yml }
+  notify:
+    summaries: true
+    digest: { at: "08:00", tz: America/Denver }
+```
+
+- `review.required`: after the last step that wrote code, a catalog preset of
+  category `review` must have approved, on a model none of the authors used, and no
+  review of that code may have ended otherwise. Merging or reverting the base
+  branch does not need a new review. Otherwise the merge returns `blocked`.
+- `deploy.protected`: a pull request that touches these paths returns `blocked`, and
+  a person merges it. Protect the files that check the agents' work.
+- `deploy.pipeline`: without it, any failed job on the merged commit ends
+  `wait_for_deploy`, which a flow answers with a rollback.
+
+The release rules in [SPEC.md](SPEC.md) still apply: CI must pass on the exact
+commit, and a run only succeeds once `check_health` reports the release healthy.
+
+`notify.summaries` replaces the `succeeded` and `failed` events with a short text
+about the result: shipped, rolled back, did not ship, a pull request that waits,
+or "check production" when a merged release is neither healthy nor undone. Runs
+that ship nothing appear only in the digest. `notify.digest` sends one summary a
+day, unless nothing happened and nothing waits. `notify.events` overrides the
+environment's events for the project.

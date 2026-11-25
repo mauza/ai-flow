@@ -931,12 +931,12 @@ func (e *Engine) finish(ctx context.Context, r *store.Run, status, msg string) e
 		e.promoteBaselines(ctx, r)
 		e.recordDelivered(ctx, r)
 		e.event(ctx, r, "", "finished", "Run succeeded")
-		e.alert(ctx, config.NotifySucceeded, r, "succeeded", r.PRURL, 3, "white_check_mark")
+		e.alertEnd(ctx, config.NotifySucceeded, r, "succeeded", r.PRURL, 3, "white_check_mark")
 	case store.RunCanceled:
 		e.event(ctx, r, "", "finished", "Run canceled")
 	default:
 		e.event(ctx, r, "", "finished", "Run failed: "+msg)
-		e.alert(ctx, config.NotifyFailed, r, "failed", msg, 4, "x")
+		e.alertEnd(ctx, config.NotifyFailed, r, "failed", msg, 4, "x")
 	}
 	e.publishRun(r)
 	var fresh *store.Run
@@ -1536,8 +1536,27 @@ func (e *Engine) publishVisit(runID string, seq int) {
 
 // alert pushes a notification about r in the background. Delivery is best
 // effort: a failed push is logged and never affects the run.
+// alertEnd announces how a run ended, unless the project gets a written summary
+// of that instead (notify.summaries, sent by the app).
+func (e *Engine) alertEnd(ctx context.Context, event string, r *store.Run, what, body string, priority int, tags ...string) {
+	if p := e.cfg.Current().Projects[r.Project]; p != nil && p.Spec.Notify != nil && p.Spec.Notify.Summaries {
+		return
+	}
+	e.alert(ctx, event, r, what, body, priority, tags...)
+}
+
+// notifies reports whether an event of the project is sent.
+func (e *Engine) notifies(project, event string) bool {
+	cfg := e.cfg.Current()
+	n := cfg.Env.Notify
+	if p := cfg.Projects[project]; p != nil && p.Spec.Notify != nil && len(p.Spec.Notify.Events) > 0 {
+		n.Events = p.Spec.Notify.Events
+	}
+	return n.Sends(event)
+}
+
 func (e *Engine) alert(ctx context.Context, event string, r *store.Run, what, body string, priority int, tags ...string) {
-	if e.notifier == nil || !e.cfg.Current().Env.Notify.Sends(event) {
+	if e.notifier == nil || !e.notifies(r.Project, event) {
 		return
 	}
 	label := r.FlowName
@@ -1586,7 +1605,7 @@ func shortDuration(d time.Duration) string {
 // notify.stuckAfter. The kv marker keeps restarts from repeating it.
 func (e *Engine) alertStuck(ctx context.Context, r *store.Run, v *store.Visit) error {
 	after := e.cfg.Current().Env.Notify.StuckAfter.Duration
-	if e.notifier == nil || !e.cfg.Current().Env.Notify.Sends(config.NotifyStuck) || v.StartedAt == 0 || store.Now()-v.StartedAt < after.Milliseconds() {
+	if e.notifier == nil || !e.notifies(r.Project, config.NotifyStuck) || v.StartedAt == 0 || store.Now()-v.StartedAt < after.Milliseconds() {
 		return nil
 	}
 	key := fmt.Sprintf("notify/stuck/%s/%d", r.ID, v.Seq)

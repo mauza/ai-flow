@@ -653,6 +653,7 @@ func (a *App) OnRunFinished(ctx context.Context, run *store.Run) {
 	if _, err := a.RecordRunFacts(ctx, run); err != nil {
 		slog.Warn("record run facts", "run", run.ID, "err", err)
 	}
+	go a.reportRun(context.WithoutCancel(ctx), run)
 	cfg := a.Cfg.Current()
 	if !cfg.Catalog.Improvement.AutoGradeEnabled() || a.LLM == nil || graderModel(cfg) == "" {
 		return

@@ -17,6 +17,7 @@ import (
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/ids"
 	"github.com/mauza/ai-flow/internal/llm"
+	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
 	"github.com/mauza/ai-flow/internal/resolve"
@@ -43,6 +44,8 @@ type App struct {
 	Workspaces *workspace.Manager
 	// Obj lets the grader and retrospectives inspect visit transcripts.
 	Obj objstore.Store
+	// Notifier pushes run summaries and digests to a project's owner.
+	Notifier notify.Sender
 
 	notifiers  []Notifier
 	planning   sync.Map   // task id → struct{}

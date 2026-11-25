@@ -424,8 +424,48 @@ type ProjectSpec struct {
 	Defaults      *flow.Node        `json:"defaults,omitempty"`
 	Deploy        *Deploy           `json:"deploy,omitempty"`
 	Review        *Review           `json:"review,omitempty"`
+	Notify        *ProjectNotify    `json:"notify,omitempty"`
 	Observability *Observability    `json:"observability,omitempty"`
 	Schedules     []ProjectSchedule `json:"schedules,omitempty"`
+}
+
+// ProjectNotify is how a project's owner hears about its runs.
+type ProjectNotify struct {
+	// Events replaces the environment's notify.events for this project.
+	Events []string `json:"events,omitempty"`
+	// Summaries announces how each run ended in plain language (shipped, rolled
+	// back, did not ship, a PR that waits) instead of the succeeded and failed
+	// events.
+	Summaries bool `json:"summaries,omitempty"`
+	// Digest sends one daily summary of the project.
+	Digest *DigestTime `json:"digest,omitempty"`
+}
+
+// DigestTime is a local time of day.
+type DigestTime struct {
+	At string `json:"at"`           // "08:00"
+	TZ string `json:"tz,omitempty"` // IANA zone; default UTC
+}
+
+func (d DigestTime) parse() (time.Time, *time.Location, error) {
+	loc, err := time.LoadLocation(d.TZ)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+	at, err := time.Parse("15:04", d.At)
+	return at, loc, err
+}
+
+// Due reports whether today's time has come, and today's date, where the
+// digest's owner lives.
+func (d DigestTime) Due(now time.Time) (bool, string) {
+	at, loc, err := d.parse()
+	if err != nil {
+		return false, ""
+	}
+	local := now.In(loc)
+	due := local.Hour()*60+local.Minute() >= at.Hour()*60+at.Minute()
+	return due, local.Format("2006-01-02")
 }
 
 // Observability defines read-only PromQL queries for discovery and health sweeps
@@ -514,6 +554,9 @@ type Review struct {
 	// blocks only on findings still open and acceptance or test failures;
 	// "thorough" reviews everything again and blocks on any real defect.
 	Mode string `json:"mode,omitempty"`
+	// Required keeps ai-flow from merging until a review preset on another model
+	// than the author's approved the code as it last changed.
+	Required bool `json:"required,omitempty"`
 }
 
 const (
@@ -538,6 +581,13 @@ type Deploy struct {
 	// waiting for its next git poll (needs get/patch on that Application).
 	ArgoCDApp       string `json:"argocd_app,omitempty"`
 	ArgoCDNamespace string `json:"argocd_namespace,omitempty"` // default argocd
+	// Pipeline names the CI jobs whose failure on the merged commit means no
+	// release was built. Default: any failed job. Set it when unrelated
+	// workflows run on the deploy branch too.
+	Pipeline []string `json:"pipeline,omitempty"`
+	// Protected are path globs ("dir/**" is everything under dir) of files whose
+	// changes ai-flow never merges itself, such as the checks it must pass.
+	Protected []string `json:"protected,omitempty"`
 }
 
 type RollbackSpec struct {
@@ -1052,6 +1102,18 @@ func (c *Config) check() error {
 			}
 			if d.Rollback != nil && d.Rollback.Workflow == "" {
 				errs = append(errs, fmt.Sprintf("project %s: deploy.rollback needs workflow", name))
+			}
+		}
+		if n := p.Spec.Notify; n != nil {
+			for _, ev := range n.Events {
+				if !slices.Contains([]string{NotifyGate, NotifyStuck, NotifyFailed, NotifySucceeded}, ev) {
+					errs = append(errs, fmt.Sprintf("project %s: notify.events: unknown event %q", name, ev))
+				}
+			}
+			if n.Digest != nil {
+				if _, _, err := n.Digest.parse(); err != nil {
+					errs = append(errs, fmt.Sprintf("project %s: notify.digest: %v", name, err))
+				}
 			}
 		}
 		if obs := p.Spec.Observability; obs != nil {

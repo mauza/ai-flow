@@ -138,6 +138,29 @@ func (c *Client) OpenPRHeads(ctx context.Context, r Repo) ([]string, error) {
 	}
 }
 
+// PRFiles lists the files a pull request changes, with a renamed file's old path.
+func (c *Client) PRFiles(ctx context.Context, r Repo, number int) ([]string, error) {
+	var out []string
+	for page := 1; ; page++ {
+		var files []struct {
+			Filename string `json:"filename"`
+			Previous string `json:"previous_filename"`
+		}
+		if err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100&page=%d", r.Owner, r.Name, number, page), nil, &files); err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			out = append(out, f.Filename)
+			if f.Previous != "" {
+				out = append(out, f.Previous)
+			}
+		}
+		if len(files) < 100 {
+			return out, nil
+		}
+	}
+}
+
 // BranchExists reports whether a branch exists.
 func (c *Client) BranchExists(ctx context.Context, r Repo, branch string) (bool, error) {
 	err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/%s/branches/%s", r.Owner, r.Name, url.PathEscape(branch)), nil, nil)

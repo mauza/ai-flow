@@ -808,6 +808,21 @@ func (v *validator) checkDeploySafety() {
 		}
 	}
 
+	// Merging needs a review (engine: mergeRefused): a flow without one can only
+	// end blocked.
+	if rv := r.Project.Spec.Review; rv != nil && rv.Required {
+		reviewed := false
+		for _, n := range r.Nodes {
+			p := v.cfg.Catalog.Presets[n.Preset]
+			reviewed = reviewed || (p != nil && p.Category == "review" && slices.Contains(n.Outcomes, "approve"))
+		}
+		for _, id := range r.Order {
+			if isAction(r.Nodes[id], "merge_pull_request") && !reviewed {
+				v.errf(id, "", "this project merges only reviewed changes (review.required): add a review preset with an approve outcome, on another model than the author's, after the last step that writes code")
+			}
+		}
+	}
+
 	// Rules 2 and 3, from every merge's `merged` target.
 	type postState struct {
 		id                string
