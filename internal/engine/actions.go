@@ -214,6 +214,11 @@ func (e *Engine) mergePR(ctx context.Context, r *store.Run, res *resolve.Resolve
 		return &actionResult{outcome: "conflict", summary: fmt.Sprintf(
 			"#%d head is %s but %s: run CI on the current head before merging", number, short(pr.Head.SHA), what)}, nil
 	}
+	if why, err := e.mergeRefused(ctx, r, res, repo, number); err != nil {
+		return nil, err
+	} else if why != "" {
+		return &actionResult{outcome: "blocked", summary: fmt.Sprintf("ai-flow will not merge #%d: %s", number, why)}, nil
+	}
 	if other, err := e.releaseInFlight(ctx, r); err != nil {
 		return nil, err
 	} else if other != "" {
@@ -340,7 +345,7 @@ func failureExcerpt(log string, limit int) string {
 // deployPipelineFailure reports CI on the merged commit that finished and
 // failed (the build/release workflow), as a timeout: the release cannot go
 // live, and the timeout route is where flows handle that.
-func (e *Engine) deployPipelineFailure(ctx context.Context, res *resolve.Resolved, sha string) *actionResult {
+func (e *Engine) deployPipelineFailure(ctx context.Context, res *resolve.Resolved, d *config.Deploy, sha string) *actionResult {
 	repo, err := e.repoOf(res)
 	if err != nil {
 		return nil
@@ -348,6 +353,9 @@ func (e *Engine) deployPipelineFailure(ctx context.Context, res *resolve.Resolve
 	checks, err := e.gh.Checks(ctx, repo, sha)
 	if err != nil {
 		return nil // inconclusive; keep waiting
+	}
+	if len(d.Pipeline) > 0 {
+		checks = slices.DeleteFunc(checks, func(c github.Check) bool { return !slices.Contains(d.Pipeline, c.Name) })
 	}
 	var failed []string
 	for _, c := range checks {
@@ -514,7 +522,7 @@ func (e *Engine) waitForDeploy(ctx context.Context, r *store.Run, res *resolve.R
 		// A failed build on the merged commit never deploys: say so now, with
 		// the failure, instead of timing out. A web-games release waited 20
 		// minutes for an image whose Docker build had failed in 2.
-		if failed := e.deployPipelineFailure(ctx, res, expect); failed != nil {
+		if failed := e.deployPipelineFailure(ctx, res, d, expect); failed != nil {
 			return failed, nil
 		}
 		e.refreshArgo(ctx, d)

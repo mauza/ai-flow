@@ -667,6 +667,7 @@ func (a *App) RunScheduleLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.tickSchedules(ctx)
+			a.sendDigests(ctx, time.Now())
 			if n%10 == 0 {
 				a.reconcileLedgers(ctx)
 			}

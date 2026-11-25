@@ -33,8 +33,9 @@ type fakeWorld struct {
 	version   string
 	metric    string // value returned by every PromQL query; "" = query error
 	appStatus int
-	down      bool   // every GitHub/metrics/app request fails with 502
-	prHead    string // PR #7 head when it moved after CI ("" = headsha)
+	down      bool             // every GitHub/metrics/app request fails with 502
+	files     []map[string]any // the PR's changed files
+	prHead    string           // PR #7 head when it moved after CI ("" = headsha)
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
 	rollbackRun map[string]any   // the dispatched run, once GitHub lists it
@@ -59,6 +60,8 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			}
 			reply(map[string]any{"number": 7, "state": "open", "merged": w.merged, "mergeable": w.mergeable, "mergeable_state": w.state,
 				"merge_commit_sha": "mergedsha0000001", "head": map[string]any{"sha": head}})
+		case p == "/repos/your-org/ai-flow-sandbox/pulls/7/files":
+			reply(append([]map[string]any{}, w.files...))
 		case p == "/repos/your-org/ai-flow-sandbox/pulls/7/merge" && r.Method == "PUT":
 			w.merges++
 			w.merged = true

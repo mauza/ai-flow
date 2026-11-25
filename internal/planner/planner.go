@@ -515,6 +515,12 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	fmt.Fprintf(&sb, "\n# Project `%s`\n\nRepo grant: `%s` (base branch `%s`). %s\n", proj.Metadata.Name, proj.Spec.Repo, proj.Spec.Base, proj.Spec.Description)
 	if d := proj.Spec.Deploy; d != nil {
 		writeDeploy(&sb, proj.Spec.Base, d)
+		if len(d.Protected) > 0 {
+			fmt.Fprintf(&sb, "\nai-flow never merges changes to %s (outcome blocked): keep them out of the change unless the task is about them, and then end with the open pull request.\n", strings.Join(d.Protected, ", "))
+		}
+	}
+	if rv := proj.Spec.Review; rv != nil && rv.Required {
+		sb.WriteString("\nai-flow merges only when, after the last step that wrote code, a review preset (category review, outcome approve) on a different model than every author's approved, and no review of the final code ended otherwise. Put such a review on every path to a merge, after the fix loop, and route deploy's blocked outcome to a report.\n")
 	}
 	sb.WriteString("\n# Planning guidance\n\n")
 	if g := strings.TrimSpace(cat.Planner.Guidance); g != "" {

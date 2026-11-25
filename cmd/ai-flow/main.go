@@ -225,6 +225,9 @@ func serverCmd(ctx context.Context, args []string) error {
 	llmc := llm.New(cfg)
 	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llmc, gh), Hub: h, LLM: llmc, GitHub: gh, Obj: obj,
 		Workspaces: workspace.New(filepath.Join(env.Server.DataDir, "workspaces"), gh, store.Now)}
+	if n := notify.New(env.Notify); n != nil {
+		a.Notifier = n
+	}
 	eng.SetTaskCreator(a.CreateTaskFromFlow)
 	eng.OnRunDone(a.OnRunFinished)
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
