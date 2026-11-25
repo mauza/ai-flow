@@ -705,8 +705,10 @@ presets:
       and anything nearby the diff could have broken. Prefer real requests (curl, the CLI, a headless browser
       if available: on agent-web, `browse --help`) over reading code. Stop what you started before finishing.
       Return passed when the change works as the task asks, defects with one concrete repro per problem
-      (steps, expected, actual; start each with an ID: D1, D2, …), or blocked if the app cannot be started
-      here (say exactly why and which acceptance criteria stay unverified).
+      (steps, expected, actual; start each with an ID: D1, D2, …). Defects are problems of the change, not of this
+      environment. Create the test data you need through the app, its seed or its documented tools. If one criterion
+      cannot be exercised here, verify the rest and list it in outputs.tested as "not verified: … because …".
+      Return blocked only if the app cannot be started or the main path cannot be exercised at all (say exactly why).
     outputs: { defects: [string], tested: [string] }
     outcomes: [passed, defects, blocked]
 
