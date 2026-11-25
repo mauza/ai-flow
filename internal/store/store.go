@@ -640,6 +640,14 @@ func (s *Store) UpdateVisitIf(ctx context.Context, runID string, seq int, status
 	return err == nil, err
 }
 
+// BudgetTokens is what a run's token budget counts: output and uncached prompt
+// tokens since the latest resume, which opens a fresh budget window.
+func (s *Store) BudgetTokens(ctx context.Context, r *Run) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(MAX(tokens_in - tokens_cached, 0) + tokens_out), 0) FROM visits WHERE run_id = ? AND seq > ?`, r.ID, r.ResumeSeq).Scan(&n)
+	return n, err
+}
+
 // AddUsage adds LLM usage to a visit and its run.
 func (s *Store) AddUsage(ctx context.Context, runID string, seq int, model string, in, out, cached int64, cost float64) error {
 	tx, err := s.db.BeginTx(ctx, nil)

@@ -66,8 +66,9 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		httpErr(w, 500, "model "+name+" has no upstream")
 		return
 	}
+	graced := false
 	withinBudget := func() bool {
-		msg, err := b.overBudget(ctx, c)
+		msg, soft, err := b.overBudget(ctx, c)
 		if err != nil {
 			slog.Warn("budget lookup", "run", c.Run, "err", err)
 			w.Header().Set("Retry-After", "3")
@@ -75,6 +76,10 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 			return false
 		}
 		if msg != "" {
+			if soft && (graced || b.useGrace(c)) {
+				graced = true
+				return true
+			}
 			limitErr(w, 429, flow.LimitBudgetExceeded, msg)
 			return false
 		}
@@ -222,48 +227,68 @@ func cachedTokens(u map[string]any) float64 {
 	return v
 }
 
-// overBudget checks the node's USD limit, the flow budget and the project's per-run cap.
-func (b *Broker) overBudget(ctx context.Context, c *grant.Claims) (string, error) {
+// graceCalls is enough for a step stopped by its run's budget to report what
+// it has, so its work is pushed instead of lost.
+const graceCalls = 6
+
+// useGrace admits a visit's few calls after its run's budget ran out. The first
+// is refused: that is what tells the runner to ask the agent to finish.
+func (b *Broker) useGrace(c *grant.Claims) bool {
+	b.graceMu.Lock()
+	defer b.graceMu.Unlock()
+	if b.grace == nil {
+		b.grace = map[string]int{}
+	}
+	key := fmt.Sprintf("%s/%d", c.Run, c.Seq)
+	left, told := b.grace[key]
+	if !told {
+		b.grace[key] = graceCalls
+		return false
+	}
+	b.grace[key] = max(left-1, 0)
+	return left > 0
+}
+
+// overBudget checks the node's USD limit and the run's and project's budgets.
+// soft means the run's own budget ran out: a step under way may still report.
+func (b *Broker) overBudget(ctx context.Context, c *grant.Claims) (msg string, soft bool, err error) {
 	run, err := b.store.GetRun(ctx, c.Run)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	v, err := b.store.GetVisit(ctx, c.Run, c.Seq)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	res, err := b.engine.Resolved(ctx, run)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if v.Node != c.Node || res.Nodes[c.Node] == nil {
-		return "", fmt.Errorf("budget visit/node mismatch")
+		return "", false, fmt.Errorf("budget visit/node mismatch")
 	}
 	if n := res.Nodes[c.Node]; n != nil && n.LLM != nil && n.LLM.Limits != nil && n.LLM.Limits.USD > 0 && v.CostUSD >= n.LLM.Limits.USD {
-		return fmt.Sprintf("node budget of $%.2f is used up", n.LLM.Limits.USD), nil
+		return fmt.Sprintf("node budget of $%.2f is used up", n.LLM.Limits.USD), false, nil
 	}
 	if bd := res.Flow.Spec.Budget; bd != nil && bd.USD > 0 && run.CostUSD >= bd.USD {
-		return fmt.Sprintf("flow budget of $%.2f is used up", bd.USD), nil
-	}
-	if bd := res.Flow.Spec.Budget; bd != nil && bd.Tokens > 0 && run.Tokens >= bd.Tokens {
-		return fmt.Sprintf("flow token budget of %d is used up (%d used)", bd.Tokens, run.Tokens), nil
+		return fmt.Sprintf("flow budget of $%.2f is used up", bd.USD), true, nil
 	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerRun > 0 && run.CostUSD >= p.Spec.Budget.USDPerRun {
-		return fmt.Sprintf("project cap of $%.2f per run is used up", p.Spec.Budget.USDPerRun), nil
+		return fmt.Sprintf("project cap of $%.2f per run is used up", p.Spec.Budget.USDPerRun), true, nil
 	}
-	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.TokensPerRun > 0 && run.Tokens >= p.Spec.Budget.TokensPerRun {
-		return fmt.Sprintf("project cap of %d tokens per run is used up (%d used)", p.Spec.Budget.TokensPerRun, run.Tokens), nil
+	if msg, err := b.engine.TokenBudgetExceeded(ctx, run, res); err != nil || msg != "" {
+		return msg, true, err
 	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerMonth > 0 {
 		spent, err := b.monthSpend(ctx, p.Metadata.Name)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if spent >= p.Spec.Budget.USDPerMonth {
-			return fmt.Sprintf("project monthly cap of $%.2f is used up", p.Spec.Budget.USDPerMonth), nil
+			return fmt.Sprintf("project monthly cap of $%.2f is used up", p.Spec.Budget.USDPerMonth), false, nil
 		}
 	}
-	return "", nil
+	return "", false, nil
 }
 
 func (b *Broker) monthSpend(ctx context.Context, project string) (float64, error) {

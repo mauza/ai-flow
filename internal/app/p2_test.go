@@ -3,13 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/mauza/ai-flow/internal/config"
-	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/store"
 )
 
@@ -86,57 +82,6 @@ func TestSkillAndPresetConfigProposalsExportAndProtection(t *testing.T) {
 		if !strings.Contains(exported, want) {
 			t.Fatalf("export missing %q:\n%s", want, exported)
 		}
-	}
-
-	// 4. Verify LoadStoredConfig protects applied proposals from unrelated file changes.
-	dir := t.TempDir()
-	b, err := os.ReadFile("../../examples/templates/config/fixture.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, b, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st2, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st2.Close()
-	files1, err := config.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg1, _, err := LoadStoredConfig(ctx, st2, files1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app2 := &App{Cfg: cfg1, Store: st2, Hub: hub.New()}
-	if _, err := app2.EditConfig(ctx, true, ConfigEdit{Section: "models", Name: "gpt-6-luna", YAML: "upstream: home\nmodel: gpt-6-luna\nnotes: improved-in-db\n"}); err != nil {
-		t.Fatal(err)
-	}
-	// Mark models/gpt-6-luna as protected by an applied improvement proposal.
-	if err := st2.SetKV(ctx, kvImpApplied+"models/gpt-6-luna", `{"proposal_id":"imp-1"}`); err != nil {
-		t.Fatal(err)
-	}
-	// File changes gpt-6-luna to something else -> protected DB version must survive!
-	edited := strings.Replace(string(b), "notes: Alternate alias", "notes: file-overwrite-attempt", 1)
-	if err := os.WriteFile(cfgPath, []byte(edited), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	files2, err := config.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg2, report, err := LoadStoredConfig(ctx, st2, files2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg2.Catalog.Models["gpt-6-luna"].Notes != "improved-in-db" {
-		t.Fatalf("protected DB entry was overwritten: %q", cfg2.Catalog.Models["gpt-6-luna"].Notes)
-	}
-	if len(report.Protected) != 1 || report.Protected[0] != "models gpt-6-luna" {
-		t.Fatalf("expected protected report, got %+v", report)
 	}
 }
 

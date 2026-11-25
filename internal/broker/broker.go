@@ -58,6 +58,9 @@ type Broker struct {
 
 	slotsMu sync.Mutex
 	slots   map[string]chan struct{} // per catalog model, sized max_concurrency
+
+	graceMu sync.Mutex
+	grace   map[string]int // run/seq → calls left after the run's own budget ran out
 }
 
 func New(cfg *config.Config, st *store.Store, e *engine.Engine, s *grant.Signer, obj objstore.Store, h *hub.Hub, pods PodIdentifier, mcp *mcpx.Pool) *Broker {

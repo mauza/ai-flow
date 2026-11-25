@@ -128,8 +128,12 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 	// read-only web-games investigation hit its 3M cap after mapping most of
 	// the repo and returned nothing at all.
 	if st := stop(); st != nil && st.Kind == flow.LimitBudgetExceeded && st.Action == flow.ActFail && ctx.Err() == nil {
-		if _, err := os.Stat(resultPath); err != nil && b.LLM.Config != nil && b.LLM.Config.Limits != nil {
-			if shim.Grace(max(int64(b.LLM.Config.Limits.Tokens)*15/100, 150000)) {
+		if _, err := os.Stat(resultPath); err != nil {
+			limit := 0 // the run's own budget stops steps without limits too
+			if b.LLM.Config != nil && b.LLM.Config.Limits != nil {
+				limit = b.LLM.Config.Limits.Tokens
+			}
+			if shim.Grace(max(int64(limit)*15/100, 150000)) {
 				r.progress("Out of token budget; asking the agent to report what it has")
 				runErr = r.runHarness(ctx, h, h.args(s, fmt.Sprintf(
 					"You have used up your budget (tokens or turns). Do no more work: call %s now with the outcome (one of: %s) that fits what you have, a summary that says the step stopped at its budget and what is still undone, and the outputs you can fill.",

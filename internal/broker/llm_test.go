@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -116,7 +117,7 @@ func TestMonthlyBudgetUsesAllProjectRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	msg, err := b.overBudget(ctx, c)
+	msg, _, err := b.overBudget(ctx, c)
 	if err != nil || !strings.Contains(msg, "monthly cap") {
 		t.Fatalf("msg=%q err=%v", msg, err)
 	}
@@ -124,6 +125,35 @@ func TestMonthlyBudgetUsesAllProjectRuns(t *testing.T) {
 	b.llmChat(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`)), c)
 	if w.Code != 429 {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// A run over its own budget refuses a step's next call once, which makes the
+// runner ask the agent to finish, then admits the few calls that takes.
+func TestRunBudgetLeavesAStepCallsToReport(t *testing.T) {
+	b, c := llmTestBroker(t)
+	ctx := context.Background()
+	b.cfg.Projects["sandbox"].Spec.Budget = &config.ProjBudget{TokensPerRun: 100}
+	if err := b.store.UpdateRun(ctx, c.Run, map[string]any{"snapshot": ""}); err != nil {
+		t.Fatal(err)
+	}
+	b.http.Transport = llmTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":1000,"completion_tokens":60,"prompt_tokens_details":{"cached_tokens":980}}}`))}, nil
+	})
+	var codes []int
+	for range graceCalls + 5 {
+		w := httptest.NewRecorder()
+		b.llmChat(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"model":"`+c.Models[0]+`"}`)), c)
+		codes = append(codes, w.Code)
+	}
+	// 80 counted tokens per call: two calls fit, then one refusal and the grace.
+	want := []int{200, 200, 429}
+	for range graceCalls {
+		want = append(want, 200)
+	}
+	want = append(want, 429, 429)
+	if !slices.Equal(codes, want) {
+		t.Fatalf("codes %v, want %v", codes, want)
 	}
 }
 
