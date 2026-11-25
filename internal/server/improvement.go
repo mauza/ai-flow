@@ -104,7 +104,7 @@ func (s *Server) gradeUngradedRuns(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 && !readJSON(w, r, &in) {
 		return
 	}
-	queued, err := s.app.GradeUngradedRuns(r.Context(), in.Project, in.Limit)
+	queued, err := s.app.GradeUngradedRuns(r.Context(), in.Project, in.Limit, false)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

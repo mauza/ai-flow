@@ -86,6 +86,7 @@ const sampleSummary: ImprovementSummary = {
       target_kind: "preset",
       target: "code-review",
       theme: "missing-line-citations",
+      themes: ["missing-line-citations", "no-file-paths"],
       editable: true,
       eligible: true,
       count: 3,
@@ -103,6 +104,7 @@ const sampleSummary: ImprovementSummary = {
       target_kind: "infra",
       target: "kubernetes",
       theme: "pod-evicted",
+      themes: ["pod-evicted"],
       editable: false,
       eligible: false,
       count: 2,
@@ -206,13 +208,16 @@ test("improve page shows trends, applies proposal with diff, separates infra fai
   await page.getByRole("tab", { name: /Failure themes/ }).click();
   await expect(page.getByText("missing-line-citations")).toBeVisible();
   await expect(page.getByText("pod-evicted")).toBeVisible();
+  await expect(page.getByText("+1 theme")).toBeVisible();
   await noHorizontalScroll(page);
 
   await page.getByRole("tab", { name: /Graded runs/ }).click();
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect.poll(() => posts[1]).toEqual({ path: "/api/improvement/grades/g-1/confirm", body: {} });
   await page.getByRole("button", { name: "Disagree" }).click();
   await page.getByLabel("Disagreement note for g-1").fill("Citations were in summary");
   await page.getByRole("button", { name: "Confirm disagree" }).click();
-  await expect.poll(() => posts[1]).toEqual({ path: "/api/improvement/grades/g-1/disagree", body: { disagreed: true, note: "Citations were in summary" } });
+  await expect.poll(() => posts[2]).toEqual({ path: "/api/improvement/grades/g-1/disagree", body: { disagreed: true, note: "Citations were in summary" } });
 
   // Also verify pending proposal surfaces in the unified Inbox without overflow.
   await page.goto("/inbox");

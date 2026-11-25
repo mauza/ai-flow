@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -63,6 +64,13 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 	for name, d := range fileProjects {
 		baseline[kvFilesProject+name] = string(d)
 	}
+	if _, err := st.GetKV(ctx, kvRevisionsSince); errors.Is(err, store.ErrNotFound) {
+		if err := st.SetKV(ctx, kvRevisionsSince, strconv.FormatInt(store.Now(), 10)); err != nil {
+			return nil, nil, err
+		}
+	} else if err != nil {
+		return nil, nil, err
+	}
 	cat, err := st.GetKV(ctx, kvCatalog)
 	if errors.Is(err, store.ErrNotFound) {
 		set := map[string]string{kvCatalog: string(fileCat), kvSeededAt: strconv.FormatInt(store.Now(), 10)}
@@ -87,6 +95,7 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 		dbProjects[strings.TrimPrefix(k, kvProject)] = v
 	}
 	report := &StoredConfig{}
+	prevDocs, prevProjectDocs := cat, dbProjects
 	prevCat, err := st.GetKV(ctx, kvFilesCatalog)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -163,6 +172,13 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 	next, err := files.WithDocs([]byte(cat), docList(dbProjects))
 	if err != nil {
 		return nil, nil, fmt.Errorf("stored catalog and projects (edit them in the UI or clear the config/ keys to reseed from files): %w", err)
+	}
+	if len(report.FromFiles) > 0 {
+		if before, err := files.WithDocs([]byte(prevDocs), docList(prevProjectDocs)); err != nil {
+			slog.Warn("prompt revisions of config file changes not recorded", "err", err)
+		} else {
+			recordPromptRevisions(ctx, st, before, next, "config files", "", "")
+		}
 	}
 	files.Publish(next)
 	return next, report, nil
@@ -538,7 +554,7 @@ func (a *App) EditConfigWithMeta(ctx context.Context, force bool, author, note, 
 	}
 	warnings = a.brokenFlows(ctx, cur, next)
 	a.Cfg.Publish(next)
-	a.recordPromptRevisions(ctx, cur, next, author, note, proposalID)
+	recordPromptRevisions(ctx, a.Store, cur, next, author, note, proposalID)
 	a.Hub.Publish(hub.Event{Type: "config", ID: time.Now().Format(time.RFC3339Nano)})
 	return warnings, nil
 }

@@ -133,6 +133,26 @@ func scanRunFacts(row interface{ Scan(...any) error }) (*RunFacts, error) {
 	return &f, nil
 }
 
+// SetPromptVersions replaces the prompt versions recorded for a run's facts
+// and grades.
+func (s *Store) SetPromptVersions(ctx context.Context, runID string, versions map[string]string) error {
+	pv, err := json.Marshal(versions)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"run_facts", "run_grades"} {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET prompt_versions = ? WHERE run_id = ?`, string(pv), runID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpsertRunFacts(ctx context.Context, f *RunFacts) error {
 	pv, _ := json.Marshal(f.PromptVersions)
 	if len(pv) == 0 || string(pv) == "null" {
