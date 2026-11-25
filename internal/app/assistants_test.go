@@ -90,6 +90,7 @@ func TestRetroReviewsTheRunRecord(t *testing.T) {
 	if err != nil || r.Status != "pending" {
 		t.Fatalf("start: %+v %v", r, err)
 	}
+	started := r
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		r, _ = a.GetRetro(ctx, run.ID)
@@ -100,6 +101,9 @@ func TestRetroReviewsTheRunRecord(t *testing.T) {
 	}
 	if r.Status != "done" || r.Report.Suggestions[0].Kind != "primitive" || r.Report.Problems[0].Node != "fix" {
 		t.Fatalf("retro: %+v", r)
+	}
+	if started.Status != "pending" {
+		t.Fatal("the review in the background changed the caller's copy")
 	}
 	prompts := model.calls()
 	if len(prompts) != 2 {
