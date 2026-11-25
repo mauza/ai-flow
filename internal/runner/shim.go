@@ -35,14 +35,15 @@ type Shim struct {
 	client   *http.Client
 	sleep    func(context.Context, time.Duration) error
 
-	mu         sync.Mutex
-	current    int
-	calls      int
-	tokensIn   int64
-	tokensOut  int64
-	grace      int64 // tokens allowed past the limit to let the agent finish
-	graceTurns int   // calls allowed past the turn limit, likewise
-	stopped    *LimitStop
+	mu           sync.Mutex
+	current      int
+	calls        int
+	tokensIn     int64
+	tokensOut    int64
+	tokensCached int64
+	grace        int64 // tokens allowed past the limit to let the agent finish
+	graceTurns   int   // calls allowed past the turn limit, likewise
+	stopped      *LimitStop
 
 	stop chan struct{}
 	srv  *http.Server
@@ -437,12 +438,22 @@ func (s *Shim) checkBudget() {
 	if l == nil || l.Tokens == 0 {
 		return
 	}
-	in, out, _ := s.Usage()
 	s.mu.Lock()
-	grace := s.grace
+	in, out, cached, grace := s.tokensIn, s.tokensOut, s.tokensCached, s.grace
 	s.mu.Unlock()
-	if in+out > int64(l.Tokens)+grace {
-		s.budgetStop(fmt.Sprintf("token limit %d reached (%d used)", l.Tokens, in+out))
+	// Count uncached input + output tokens so prompt-cache hits (~90-95% of
+	// agent prompt tokens) do not prematurely abort healthy multi-turn steps.
+	uncached := in - cached
+	if uncached < 0 {
+		uncached = 0
+	}
+	effective := uncached + out
+	if effective > int64(l.Tokens)+grace {
+		if cached > 0 {
+			s.budgetStop(fmt.Sprintf("token limit %d reached (%d uncached+out used, %d cached)", l.Tokens, effective, cached))
+		} else {
+			s.budgetStop(fmt.Sprintf("token limit %d reached (%d used)", l.Tokens, effective))
+		}
 	}
 }
 
@@ -451,10 +462,35 @@ func (s *Shim) recordUsage(resp map[string]any) {
 	if !ok {
 		return
 	}
+	cached := UsageCachedTokens(resp)
 	s.mu.Lock()
 	s.tokensIn += int64(in)
 	s.tokensOut += int64(out)
+	s.tokensCached += int64(cached)
 	s.mu.Unlock()
+}
+
+// UsageCachedTokens reads prompt tokens served from cache across Chat
+// Completions, Responses API, and Anthropic/LiteLLM usage shapes.
+func UsageCachedTokens(resp map[string]any) float64 {
+	u, ok := resp["usage"].(map[string]any)
+	if !ok {
+		if r, isMap := resp["response"].(map[string]any); isMap {
+			u, ok = r["usage"].(map[string]any)
+		}
+	}
+	if !ok {
+		return 0
+	}
+	for _, k := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if d, ok := u[k].(map[string]any); ok {
+			if v, ok := d["cached_tokens"].(float64); ok {
+				return v
+			}
+		}
+	}
+	v, _ := u["cache_read_input_tokens"].(float64)
+	return v
 }
 
 // UsageTokens reads prompt and completion tokens from a chat completion (or

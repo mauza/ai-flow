@@ -96,12 +96,17 @@ func Validate(r *Resolved, cfg *config.Config) []Issue {
 		v.errf("", "spec.start", "unknown node %q", f.Spec.Start)
 	}
 	v.checkRepo()
-	if b := f.Spec.Budget; b != nil && b.Wall.Duration > 0 {
-		v.warnf("", "spec.budget.wall", "declared but not enforced: the engine has no whole-run deadline; use node and gate timeouts")
-	}
-	if b := f.Spec.Budget; b != nil && r.Project != nil && r.Project.Spec.Budget != nil {
-		if max := r.Project.Spec.Budget.USDPerRun; max > 0 && b.USD > max {
-			v.errf("", "spec.budget.usd", "$%.2f exceeds the project cap of $%.2f per run", b.USD, max)
+	if b := f.Spec.Budget; b != nil {
+		if b.Tokens < 0 {
+			v.errf("", "spec.budget.tokens", "must be positive")
+		}
+		if r.Project != nil && r.Project.Spec.Budget != nil {
+			if max := r.Project.Spec.Budget.USDPerRun; max > 0 && b.USD > max {
+				v.errf("", "spec.budget.usd", "$%.2f exceeds the project cap of $%.2f per run", b.USD, max)
+			}
+			if max := r.Project.Spec.Budget.TokensPerRun; max > 0 && b.Tokens > max {
+				v.errf("", "spec.budget.tokens", "%d exceeds the project cap of %d tokens per run", b.Tokens, max)
+			}
 		}
 	}
 
@@ -339,6 +344,7 @@ var consumers = map[string][]string{
 	"default":    {flow.TypeSwitch, flow.TypeJoin},
 	"branches":   {flow.TypeParallel},
 	"join":       {flow.TypeParallel},
+	"fail_fast":  {flow.TypeParallel},
 	"action":     {flow.TypeAction},
 	"with":       {flow.TypeAction},
 }
@@ -352,7 +358,7 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 		"timeout": raw.Timeout.Duration > 0, "prompt": raw.Prompt != "", "inputs": len(raw.Inputs) > 0,
 		"outputs": len(raw.Outputs) > 0, "run": raw.Run != "", "exit_codes": len(raw.ExitCodes) > 0,
 		"cases": len(raw.Cases) > 0, "default": raw.Default != "", "action": raw.Action != "", "with": len(raw.With) > 0,
-		"branches": len(raw.Branches) > 0, "join": raw.Join != "",
+		"branches": len(raw.Branches) > 0, "join": raw.Join != "", "fail_fast": raw.FailFast,
 	}
 	for _, field := range sortedKeys(consumers) {
 		if set[field] && !slices.Contains(consumers[field], n.Type) {

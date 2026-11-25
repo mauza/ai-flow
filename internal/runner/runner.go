@@ -145,6 +145,11 @@ func (r *Runner) run(ctx context.Context) (res *protocol.Result) {
 				return out
 			}
 			out.Commit = sha
+		} else if b.Type == flow.TypeAgent {
+			if dirty := r.modifiedTrackedFiles(ctx); len(dirty) > 0 {
+				out.Error = "read-only step modified tracked files: " + strings.Join(dirty, ", ")
+				return out
+			}
 		}
 		if d, err := r.diffStat(ctx); err == nil {
 			out.Diff = d

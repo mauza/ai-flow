@@ -181,3 +181,58 @@ spec:
 		t.Fatalf("max_visits fix=%d review=%d ship=%d", r.Nodes["fix"].MaxVisits, r.Nodes["review"].MaxVisits, r.Nodes["ship"].MaxVisits)
 	}
 }
+
+func TestReviewRoundsSkipNonCycleNodes(t *testing.T) {
+	cfg := loadCfg(t)
+	cfg.Projects["sandbox"].Spec.Review = &config.Review{Rounds: 10}
+	f, err := flow.Parse([]byte(`apiVersion: ai-flow/v1alpha1
+kind: Flow
+metadata: { name: non-cycle-rounds, project: sandbox }
+spec:
+  start: investigate
+  nodes:
+    investigate:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: map repo
+      outcomes: [done]
+      max_visits: 2
+      next: { done: fix }
+    fix:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: fix
+      outcomes: [done]
+      max_visits: 3
+      on_exhausted: report
+      next: { done: review }
+    review:
+      type: llm
+      model: gpt-6.1-sol
+      prompt: review
+      outcomes: [approve, changes]
+      max_visits: 3
+      on_exhausted: report
+      next: { approve: $success, changes: fix }
+    report:
+      type: agent
+      model: gpt-6.1-sol
+      prompt: report failure
+      outcomes: [done]
+      max_visits: 1
+      next: { done: $fail }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Resolve(f, cfg)
+	if r.Nodes["investigate"].MaxVisits != 2 {
+		t.Errorf("non-cycle investigate raised to %d, want 2", r.Nodes["investigate"].MaxVisits)
+	}
+	if r.Nodes["report"].MaxVisits != 1 {
+		t.Errorf("non-cycle report raised to %d, want 1", r.Nodes["report"].MaxVisits)
+	}
+	if r.Nodes["fix"].MaxVisits != 10 || r.Nodes["review"].MaxVisits != 10 {
+		t.Errorf("cycle nodes should be raised to 10: fix=%d review=%d", r.Nodes["fix"].MaxVisits, r.Nodes["review"].MaxVisits)
+	}
+}

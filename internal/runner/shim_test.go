@@ -216,3 +216,44 @@ func TestShimGraceAfterTurnLimit(t *testing.T) {
 		t.Fatalf("grace call: %v", err)
 	}
 }
+
+func TestShimCacheAwareTokenLimit(t *testing.T) {
+	cachedCall := func(in, cached, out int) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "hi"}}},
+				"usage": map[string]any{
+					"prompt_tokens":        in,
+					"completion_tokens":    out,
+					"prompt_tokens_details": map[string]any{"cached_tokens": cached},
+				},
+			})
+		}
+	}
+	// Each call has 1000 input tokens, 900 cached, 50 output => 150 effective tokens.
+	// 3 calls = 450 effective (< 500 cap) even though total = 3150.
+	// 4th call = 600 effective (> 500 cap) => triggers budget_exceeded.
+	u := &upstream{script: []func(http.ResponseWriter){
+		cachedCall(1000, 900, 50),
+		cachedCall(1000, 900, 50),
+		cachedCall(1000, 900, 50),
+		cachedCall(1000, 900, 50),
+	}}
+	s, _ := newTestShim(t, u, &flow.LLMConfig{Limits: &flow.Limits{Tokens: 500}, OnLimit: map[string]*flow.OnLimit{
+		flow.LimitBudgetExceeded: {Action: flow.ActOutcome},
+	}}, "a")
+	for i := 0; i < 3; i++ {
+		if err := call(s); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if st := s.StopInfo(); st != nil {
+			t.Fatalf("call %d stopped prematurely despite cached tokens: %+v", i, st)
+		}
+	}
+	call(s)
+	st := s.StopInfo()
+	if st == nil || st.Kind != flow.LimitBudgetExceeded || st.Action != flow.ActOutcome {
+		t.Fatalf("4th call should trip effective token cap: %+v", st)
+	}
+}

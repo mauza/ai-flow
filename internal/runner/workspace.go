@@ -161,18 +161,48 @@ func (r *Runner) diffStat(ctx context.Context) (*protocol.DiffStat, error) {
 }
 
 // branchDiff returns the diff of the run branch against its base, truncated.
-func (r *Runner) branchDiff(ctx context.Context, max int) string {
+func (r *Runner) branchDiff(ctx context.Context, max int) (string, bool) {
 	if r.repo == "" {
-		return ""
+		return "", false
 	}
 	out, err := r.git(ctx, r.repo, "diff", "origin/"+r.b.Repo.Base+"...HEAD")
 	if err != nil {
-		return ""
+		return "", false
 	}
 	if len(out) > max {
-		return out[:max] + "\n… (diff truncated)"
+		return out[:max] + "\n… (diff truncated)", true
+	}
+	return out, false
+}
+
+// diffStatSummary returns `git diff --stat` for the branch against its base.
+func (r *Runner) diffStatSummary(ctx context.Context) string {
+	if r.repo == "" {
+		return ""
+	}
+	out, err := r.git(ctx, r.repo, "diff", "--stat", "origin/"+r.b.Repo.Base+"...HEAD")
+	if err != nil {
+		return ""
 	}
 	return out
+}
+
+// modifiedTrackedFiles lists tracked files modified in the working tree.
+func (r *Runner) modifiedTrackedFiles(ctx context.Context) []string {
+	if r.repo == "" {
+		return nil
+	}
+	out, err := r.git(ctx, r.repo, "diff", "--name-only")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			files = append(files, s)
+		}
+	}
+	return files
 }
 
 func firstLine(s string) string {

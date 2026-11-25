@@ -491,8 +491,9 @@ type Allow struct {
 }
 
 type ProjBudget struct {
-	USDPerRun   float64 `json:"usd_per_run,omitempty"`
-	USDPerMonth float64 `json:"usd_per_month,omitempty"`
+	USDPerRun    float64 `json:"usd_per_run,omitempty"`
+	USDPerMonth  float64 `json:"usd_per_month,omitempty"`
+	TokensPerRun int64   `json:"tokens_per_run,omitempty"`
 }
 
 type PlannerGuide struct {

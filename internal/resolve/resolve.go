@@ -87,13 +87,6 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 		if spec, ok := flow.Actions[n.Action]; ok && n.Type == flow.TypeAction && spec.Waits && n.Timeout.Duration == 0 {
 			n.Timeout.Duration = spec.Timeout
 		}
-		if proj != nil && proj.Spec.Review != nil && n.MaxVisits > 0 && n.MaxVisits < proj.Spec.Review.Rounds &&
-			(n.Type == flow.TypeAgent || n.Type == flow.TypeLLM || n.Type == flow.TypeCheck) {
-			// The project's review budget: the fix and review loops get at
-			// least that many rounds. Actions (publish, merge, deploy,
-			// rollback) and gates keep their own limits.
-			n.MaxVisits = proj.Spec.Review.Rounds
-		}
 		if n.OnExhausted == "" && n.MaxVisits > 0 {
 			n.OnExhausted = flow.Fail
 		}
@@ -113,8 +106,47 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 		n.Outcomes = effectiveOutcomes(&n.Node)
 		r.Nodes[id] = n
 	}
+	if proj != nil && proj.Spec.Review != nil && proj.Spec.Review.Rounds > 0 {
+		// The project's review budget: only nodes that actually participate in
+		// a cycle get raised to review.rounds. Non-cycle nodes (e.g. initial
+		// investigation, failure reports) keep their own max_visits so they
+		// cannot loop needlessly. Actions and gates keep their own limits too.
+		cycling := nodesInCycles(r)
+		for id, n := range r.Nodes {
+			if cycling[id] && n.MaxVisits > 0 && n.MaxVisits < proj.Spec.Review.Rounds &&
+				(n.Type == flow.TypeAgent || n.Type == flow.TypeLLM || n.Type == flow.TypeCheck) {
+				n.MaxVisits = proj.Spec.Review.Rounds
+			}
+		}
+	}
 	r.Order = f.NodeIDs()
 	return r
+}
+
+// nodesInCycles returns every node ID that lies on at least one directed cycle
+// in the resolved flow graph (following transitions and parallel branch/join edges).
+func nodesInCycles(r *Resolved) map[string]bool {
+	out := map[string]bool{}
+	for start := range r.Nodes {
+		seen := map[string]bool{}
+		queue := append([]string{}, r.Nodes[start].Targets()...)
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			if cur == start {
+				out[start] = true
+				break
+			}
+			if seen[cur] || flow.Terminal(cur) {
+				continue
+			}
+			seen[cur] = true
+			if n := r.Nodes[cur]; n != nil {
+				queue = append(queue, n.Targets()...)
+			}
+		}
+	}
+	return out
 }
 
 func cloneNode(n *flow.Node) *flow.Node {

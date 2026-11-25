@@ -12,6 +12,7 @@ import (
 
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/protocol"
+	"github.com/mauza/ai-flow/internal/resolve"
 )
 
 // runLLM makes one structured completion: no tools, JSON out.
@@ -30,7 +31,13 @@ func (r *Runner) runLLM(ctx context.Context) *protocol.Result {
 	}
 	if b.Repo != nil && b.Repo.IncludeDiff {
 		r.progress("Reading the branch diff")
-		if d := r.branchDiff(ctx, 60000); d != "" {
+		if d, truncated := r.branchDiff(ctx, 60000); d != "" {
+			if truncated {
+				if stat := r.diffStatSummary(ctx); stat != "" {
+					fmt.Fprintf(&user, "## Full diff stat against %s (diff body below was truncated at 60KB)\n\n```\n%s\n```\n\n", b.Repo.Base, stat)
+				}
+				user.WriteString("NOTE: The diff below is truncated at 60KB. Do not assume unseen files are missing or broken; report missing context if a judgment depends on truncated files.\n\n")
+			}
 			fmt.Fprintf(&user, "## Diff of the branch against %s\n\n```diff\n%s\n```\n\n", b.Repo.Base, d)
 		} else {
 			fmt.Fprintf(&user, "## Diff of the branch against %s\n\n(no changes yet)\n\n", b.Repo.Base)
@@ -101,7 +108,7 @@ Reply with a single JSON object and nothing else. It must match this JSON Schema
 		}
 		content := messageContent(resp)
 		transcript.event(map[string]any{"type": "llm_response", "model": shim.CurrentModel(), "content": content, "usage": resp["usage"]})
-		res, verr := parseResult(content, b.Outcomes)
+		res, verr := parseResult(content, b.Outcomes, b.Outputs)
 		if verr == nil {
 			return res
 		}
@@ -136,8 +143,8 @@ func messageContent(resp map[string]any) string {
 	return s
 }
 
-// parseResult extracts the JSON object from a model reply and checks the outcome.
-func parseResult(content string, outcomes []string) (*protocol.Result, error) {
+// parseResult extracts the JSON object from a model reply and checks the outcome and declared output types.
+func parseResult(content string, outcomes []string, declared map[string]any) (*protocol.Result, error) {
 	s := strings.TrimSpace(content)
 	if i := strings.Index(s, "{"); i >= 0 {
 		if j := strings.LastIndex(s, "}"); j > i {
@@ -153,6 +160,17 @@ func parseResult(content string, outcomes []string) (*protocol.Result, error) {
 	}
 	if res.Outputs == nil {
 		res.Outputs = map[string]any{}
+	}
+	for k, typ := range declared {
+		val, exists := res.Outputs[k]
+		if !exists {
+			return nil, fmt.Errorf("missing required output field %q", k)
+		}
+		if schema, err := resolve.OutputSchema(typ); err == nil {
+			if err := resolve.CheckValue(schema, val); err != nil {
+				return nil, fmt.Errorf("outputs.%s: %w", k, err)
+			}
+		}
 	}
 	return &res, nil
 }

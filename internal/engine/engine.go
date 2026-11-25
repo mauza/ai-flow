@@ -318,6 +318,11 @@ func (e *Engine) begin(ctx context.Context, r *store.Run) error {
 // ---- the state machine ----
 
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
+	if msg, err := e.runBudgetExceeded(ctx, r); err != nil {
+		return err
+	} else if msg != "" {
+		return e.finish(ctx, r, store.RunFailed, msg)
+	}
 	v, err := e.store.LastVisit(ctx, r.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		res, err := e.Resolved(ctx, r)
@@ -562,6 +567,10 @@ func (e *Engine) enterWhy(ctx context.Context, r *store.Run, res *resolve.Resolv
 		}
 		if why != "" {
 			msg = why + " (last step: " + msg + ")"
+		} else if ln == nil && last != nil && isReportingStep(res.Nodes[last.Node], last) {
+			if root := e.rootFailureReason(ctx, r, last); root != "" {
+				msg = root + " (reported via " + last.Node + ")"
+			}
 		}
 		return e.finish(ctx, r, store.RunFailed, msg)
 	}
@@ -618,6 +627,7 @@ func (e *Engine) stepParallel(ctx context.Context, r *store.Run, fv *store.Visit
 		e.publishVisit(r.ID, fv.Seq)
 	}
 	arrived := 0
+	var fastFail *store.Visit
 	for _, b := range n.Branches {
 		ln := &lane{fork: fv.Seq, name: b, join: n.Join}
 		head, err := e.store.LaneHead(ctx, r.ID, fv.Seq, b)
@@ -631,6 +641,9 @@ func (e *Engine) stepParallel(ctx context.Context, r *store.Run, fv *store.Visit
 			var done bool
 			if done, err = e.laneArrived(ctx, r, res, ln, head); done {
 				arrived++
+				if n.FailFast && isFailFastOutcome(res.Nodes[head.Node], head.Outcome) && fastFail == nil {
+					fastFail = head
+				}
 			} else if err == nil {
 				err = e.advance(ctx, r, head)
 			}
@@ -645,6 +658,20 @@ func (e *Engine) stepParallel(ctx context.Context, r *store.Run, fv *store.Visit
 		if store.RunDone(r.Status) {
 			return nil
 		}
+	}
+	if fastFail != nil && arrived < len(n.Branches) {
+		if err := e.cancelSiblingLanes(ctx, r, fv, fastFail.Lane, fmt.Sprintf("canceled by parallel fail_fast (%s → %s)", fastFail.Node, fastFail.Outcome)); err != nil {
+			return err
+		}
+		ok, err := e.store.UpdateVisitIf(ctx, r.ID, fv.Seq, []string{store.VisitPending, store.VisitRunning}, map[string]any{
+			"status": store.VisitSucceeded, "outcome": flow.OutcomeJoined, "finished_at": store.Now(),
+			"summary": fmt.Sprintf("Fail-fast triggered by %s → %s; sibling branches canceled", fastFail.Node, fastFail.Outcome),
+		})
+		if err != nil || !ok {
+			return err
+		}
+		fv.Status, fv.Outcome = store.VisitSucceeded, flow.OutcomeJoined
+		return e.advance(ctx, r, fv)
 	}
 	if arrived < len(n.Branches) {
 		return nil
@@ -1276,6 +1303,111 @@ func (e *Engine) ResumeOn(ctx context.Context, runID string, version int, refres
 
 func visitDone(s string) bool {
 	return s == store.VisitSucceeded || s == store.VisitError || s == store.VisitCanceled
+}
+
+// runBudgetExceeded enforces flow wall-clock and run-level token caps.
+func (e *Engine) runBudgetExceeded(ctx context.Context, r *store.Run) (string, error) {
+	res, err := e.Resolved(ctx, r)
+	if err != nil {
+		return "", nil // let normal reconciliation surface drift/validation errors
+	}
+	if bd := res.Flow.Spec.Budget; bd != nil {
+		if bd.Wall.Duration > 0 && r.StartedAt > 0 && store.Now() > r.StartedAt+bd.Wall.Duration.Milliseconds() {
+			return fmt.Sprintf("flow wall-clock budget %s exceeded", shortDuration(bd.Wall.Duration)), nil
+		}
+		if bd.Tokens > 0 && r.Tokens >= bd.Tokens {
+			return fmt.Sprintf("flow token budget %d exceeded (%d used)", bd.Tokens, r.Tokens), nil
+		}
+	}
+	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.TokensPerRun > 0 && r.Tokens >= p.Spec.Budget.TokensPerRun {
+		return fmt.Sprintf("project token cap %d per run exceeded (%d used)", p.Spec.Budget.TokensPerRun, r.Tokens), nil
+	}
+	return "", nil
+}
+
+// isReportingStep reports whether a visit before $fail is a reporting/comment
+// step whose own happy outcome ("done", "reported", "ready") would mask the
+// real reason the flow took a failure path.
+func isReportingStep(n *resolve.Node, v *store.Visit) bool {
+	if v == nil {
+		return false
+	}
+	if n != nil && n.Type == flow.TypeAction && n.Action == "comment_task" {
+		return true
+	}
+	switch v.Outcome {
+	case "done", "reported", "ready", "drafted":
+		return strings.Contains(v.Node, "report") || strings.Contains(v.Node, "publish") || strings.Contains(v.Node, "comment") || strings.Contains(v.Node, "handoff")
+	}
+	return false
+}
+
+// rootFailureReason walks recent events and visits (after the latest resume)
+// to recover the underlying cause when a failure-reporting step routes to $fail.
+func (e *Engine) rootFailureReason(ctx context.Context, r *store.Run, last *store.Visit) string {
+	if evs, err := e.store.Events(ctx, "run_id", r.ID, 50); err == nil {
+		for _, ev := range evs {
+			if ev.Kind == "exhausted" && ev.Message != "" {
+				return ev.Message
+			}
+		}
+	}
+	vs, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return ""
+	}
+	for i := len(vs) - 1; i >= 0; i-- {
+		v := vs[i]
+		if v.Seq >= last.Seq || v.Seq <= r.ResumeSeq {
+			continue
+		}
+		if v.Status == store.VisitError && v.Error != "" {
+			return fmt.Sprintf("%s#%d: %s", v.Node, v.Visit, v.Error)
+		}
+		switch v.Outcome {
+		case "fail", "failed", "defects", "changes", "degraded", "timeout", "stuck", "blocked", "limit", "cannot_reproduce", "inconclusive":
+			msg := fmt.Sprintf("%s#%d → %s", v.Node, v.Visit, v.Outcome)
+			if v.Summary != "" {
+				msg += ": " + oneLine(v.Summary, 240)
+			}
+			return msg
+		}
+	}
+	return ""
+}
+
+func isFailFastOutcome(n *resolve.Node, outcome string) bool {
+	if n != nil && n.Type == flow.TypeCheck && outcome != "pass" {
+		return true
+	}
+	switch outcome {
+	case "fail", "failed", "defects", "blocked", "stuck", "timeout", "limit":
+		return true
+	}
+	return false
+}
+
+func (e *Engine) cancelSiblingLanes(ctx context.Context, r *store.Run, fv *store.Visit, winnerLane, reason string) error {
+	vs, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return err
+	}
+	for _, v := range vs {
+		if v.ForkSeq != fv.Seq || v.Lane == winnerLane || visitDone(v.Status) {
+			continue
+		}
+		if _, err := e.store.UpdateVisitIf(ctx, r.ID, v.Seq, []string{store.VisitPending, store.VisitRunning, store.VisitWaiting},
+			map[string]any{"status": store.VisitCanceled, "error": reason, "finished_at": store.Now()}); err != nil {
+			return err
+		}
+		e.publishVisit(r.ID, v.Seq)
+		if flow.PodType(v.Type) && v.JobName != "" {
+			if err := e.launcher.Kill(ctx, v.JobName); err != nil {
+				return fmt.Errorf("kill sibling job %s: %w", v.JobName, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ---- helpers ----

@@ -245,8 +245,14 @@ func (b *Broker) overBudget(ctx context.Context, c *grant.Claims) (string, error
 	if bd := res.Flow.Spec.Budget; bd != nil && bd.USD > 0 && run.CostUSD >= bd.USD {
 		return fmt.Sprintf("flow budget of $%.2f is used up", bd.USD), nil
 	}
+	if bd := res.Flow.Spec.Budget; bd != nil && bd.Tokens > 0 && run.Tokens >= bd.Tokens {
+		return fmt.Sprintf("flow token budget of %d is used up (%d used)", bd.Tokens, run.Tokens), nil
+	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerRun > 0 && run.CostUSD >= p.Spec.Budget.USDPerRun {
 		return fmt.Sprintf("project cap of $%.2f per run is used up", p.Spec.Budget.USDPerRun), nil
+	}
+	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.TokensPerRun > 0 && run.Tokens >= p.Spec.Budget.TokensPerRun {
+		return fmt.Sprintf("project cap of %d tokens per run is used up (%d used)", p.Spec.Budget.TokensPerRun, run.Tokens), nil
 	}
 	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.USDPerMonth > 0 {
 		spent, err := b.monthSpend(ctx, p.Metadata.Name)

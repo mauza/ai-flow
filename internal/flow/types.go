@@ -89,8 +89,9 @@ type Repo struct {
 }
 
 type Budget struct {
-	USD  float64  `json:"usd,omitempty"`
-	Wall Duration `json:"wall,omitzero"`
+	USD    float64  `json:"usd,omitempty"`
+	Wall   Duration `json:"wall,omitzero"`
+	Tokens int64    `json:"tokens,omitempty"`
 }
 
 type Node struct {
@@ -128,6 +129,7 @@ type Node struct {
 	// parallel: the first node of each branch, and the join they all end at
 	Branches []string `json:"branches,omitempty"`
 	Join     string   `json:"join,omitempty"`
+	FailFast bool     `json:"fail_fast,omitempty"`
 }
 
 type Case struct {
