@@ -434,16 +434,38 @@ type Observability struct {
 	Queries []HealthQuery `json:"queries,omitempty"`
 }
 
-// ProjectSchedule triggers a recurring flow or task for continuous improvement
-// loops (e.g. nightly codebase/metrics audit) with backlog and concurrency guards.
+// ProjectSchedule triggers a recurring flow, task, or story-map card pull for
+// continuous improvement loops with backlog and concurrency guards.
 type ProjectSchedule struct {
-	Name          string        `json:"name"`
-	Enabled       *bool         `json:"enabled,omitempty"` // default true
-	Every         flow.Duration `json:"every"`
-	Flow          string        `json:"flow,omitempty"`
-	Task          *ScheduleTask `json:"task,omitempty"`
-	MaxActiveRuns int           `json:"max_active_runs,omitempty"` // default 1
-	MaxOpenTasks  int           `json:"max_open_tasks,omitempty"`  // default 5
+	Name          string            `json:"name"`
+	Enabled       *bool             `json:"enabled,omitempty"` // default true
+	Every         flow.Duration     `json:"every"`
+	Flow          string            `json:"flow,omitempty"`
+	Task          *ScheduleTask     `json:"task,omitempty"`
+	StoryMap      *ScheduleStoryMap `json:"storymap,omitempty"`
+	AutoStart     bool              `json:"auto_start,omitempty"`      // start planned run automatically even when project.start is manual
+	MaxActiveRuns int               `json:"max_active_runs,omitempty"` // default 1
+	MaxOpenTasks  int               `json:"max_open_tasks,omitempty"`  // default 5
+}
+
+// ScheduleStoryMap pulls the next ready "todo" card from a project's user story
+// map(s) and sends it to a flow, deduplicating against already-sent cards.
+type ScheduleStoryMap struct {
+	Map               string `json:"map,omitempty"`                 // map ID, or empty for all maps
+	Release           string `json:"release,omitempty"`             // optional release ID filter
+	MaxPerTick        int    `json:"max_per_tick,omitempty"`        // default 1
+	SkipOpenQuestions *bool  `json:"skip_open_questions,omitempty"` // default true
+}
+
+func (s ScheduleStoryMap) EffectiveMaxPerTick() int {
+	if s.MaxPerTick <= 0 {
+		return 1
+	}
+	return s.MaxPerTick
+}
+
+func (s ScheduleStoryMap) ShouldSkipOpenQuestions() bool {
+	return s.SkipOpenQuestions == nil || *s.SkipOpenQuestions
 }
 
 func (s ProjectSchedule) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
@@ -1039,8 +1061,19 @@ func (c *Config) check() error {
 			}
 			hasFlow := strings.TrimSpace(sc.Flow) != ""
 			hasTask := sc.Task != nil && strings.TrimSpace(sc.Task.Title) != ""
-			if hasFlow == hasTask {
-				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow or task.title", name, sname))
+			hasStoryMap := sc.StoryMap != nil
+			targets := 0
+			if hasFlow {
+				targets++
+			}
+			if hasTask {
+				targets++
+			}
+			if hasStoryMap {
+				targets++
+			}
+			if targets != 1 {
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow, task.title, or storymap", name, sname))
 			}
 			if sc.MaxActiveRuns < 0 || sc.MaxOpenTasks < 0 {
 				errs = append(errs, fmt.Sprintf("project %s: schedule %q limits must be non-negative", name, sname))

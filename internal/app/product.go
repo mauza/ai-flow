@@ -53,6 +53,12 @@ func (a *App) ProductSource(project string) (workspace.Source, error) {
 // SendToFlow hands part of a story map to ai-flow: it creates a task whose
 // description is the scope's brief and (optionally) starts planning it.
 func (a *App) SendToFlow(ctx context.Context, project, mapID, kind, id, release string, plan bool) (*store.Task, error) {
+	return a.SendToFlowWithOptions(ctx, project, mapID, kind, id, release, plan, false)
+}
+
+// SendToFlowWithOptions is like SendToFlow and optionally marks the created
+// task to auto-start its run once planning produces a valid flow.
+func (a *App) SendToFlowWithOptions(ctx context.Context, project, mapID, kind, id, release string, plan, autoStart bool) (*store.Task, error) {
 	l, err := storymap.Load(a.Workspaces.WorkDir(project), mapID)
 	if err != nil {
 		return nil, err
@@ -72,11 +78,15 @@ func (a *App) SendToFlow(ctx context.Context, project, mapID, kind, id, release 
 	// Record the scope first so the map can show the task as soon as it exists.
 	t.ID = ids.New("t")
 	b, _ := json.Marshal(sc)
-	if err := a.Store.SetKV(ctx, kvScope(project, mapID, t.ID), string(b)); err != nil {
+	kv := map[string]string{kvScope(project, mapID, t.ID): string(b)}
+	if autoStart {
+		kv[kvTaskAutoStart(t.ID)] = "1"
+	}
+	if err := a.Store.WriteKV(ctx, kv, nil); err != nil {
 		return nil, err
 	}
 	if err := a.CreateTask(ctx, t, plan); err != nil {
-		a.Store.WriteKV(ctx, nil, []string{kvScope(project, mapID, t.ID)})
+		a.Store.WriteKV(ctx, nil, []string{kvScope(project, mapID, t.ID), kvTaskAutoStart(t.ID)})
 		return nil, err
 	}
 	return t, nil

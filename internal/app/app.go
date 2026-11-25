@@ -188,9 +188,18 @@ func (a *App) planTask(ctx context.Context, taskID string) error {
 	for _, n := range a.notifiers {
 		n.PlanFinished(ctx, t, name, res.Valid, res.Explanation)
 	}
-	if res.Valid && a.startMode(res.YAML, t.Project) == "auto" {
-		if _, err := a.Engine.CreateRun(ctx, name, fv.Version, t.ID); err != nil {
-			return fmt.Errorf("auto-start: %w", err)
+	autoStart := a.startMode(res.YAML, t.Project) == "auto"
+	if !autoStart {
+		if v, err := a.Store.GetKV(ctx, kvTaskAutoStart(t.ID)); err == nil && v == "1" {
+			autoStart = true
+		}
+	}
+	if res.Valid && autoStart {
+		_ = a.Store.WriteKV(ctx, nil, []string{kvTaskAutoStart(t.ID)})
+		if a.Engine != nil {
+			if _, err := a.Engine.CreateRun(ctx, name, fv.Version, t.ID); err != nil {
+				return fmt.Errorf("auto-start: %w", err)
+			}
 		}
 	}
 	return nil

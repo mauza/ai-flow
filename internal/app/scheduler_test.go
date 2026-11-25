@@ -2,7 +2,9 @@ package app_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/store"
+	"github.com/mauza/ai-flow/internal/workspace"
 )
 
 func TestScheduleTriggerAndBacklogGuard(t *testing.T) {
@@ -67,5 +70,99 @@ func TestScheduleTriggerAndBacklogGuard(t *testing.T) {
 	id2, c2, err := a.CreateTaskFromFlow(ctx, "sandbox", "flow", "fix-bug-1", "Fix bug 1", "body", false)
 	if err != nil || c2 || id2 != id1 {
 		t.Fatalf("duplicate should skip: %s %v %v", id2, c2, err)
+	}
+}
+
+func TestStoryMapSchedulePicksNextReadyCardAndDedups(t *testing.T) {
+	ctx := context.Background()
+	cfg, err := config.Load("../../deploy/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Projects["sandbox"].Spec.Schedules = []config.ProjectSchedule{{
+		Name:         "storymap-runner",
+		Every:        flow.Duration{Duration: 2 * time.Hour},
+		StoryMap:     &config.ScheduleStoryMap{Map: "core", MaxPerTick: 1},
+		AutoStart:    true,
+		MaxOpenTasks: 5,
+	}}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	wsRoot := t.TempDir()
+	ws := workspace.New(wsRoot, nil, store.Now)
+	mapDir := filepath.Join(ws.WorkDir("sandbox"), "product", "user-story-maps", "core")
+	if err := os.MkdirAll(filepath.Join(mapDir, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapYAML := `title: Core Loop
+journey:
+  - id: discover
+    title: Discover
+    activities:
+      - id: read
+        title: Read
+releases:
+  - id: r0
+    title: Shipped
+    status: released
+  - id: r1
+    title: Next
+    status: in_progress
+`
+	if err := os.WriteFile(filepath.Join(mapDir, "map.yaml"), []byte(mapYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTask := func(id, body string) {
+		if err := os.WriteFile(filepath.Join(mapDir, "tasks", id+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Released slice card should be skipped.
+	writeTask("old-card", "title: Old\nactivity: read\nrelease: r0\norder: 1\nstatus: todo\n")
+	// Card with open_questions should be skipped.
+	writeTask("ambiguous", "title: Ambiguous\nactivity: read\nrelease: r1\norder: 1\nstatus: todo\nopen_questions:\n  - Decide copy?\n")
+	// First ready card in r1.
+	writeTask("ready-one", "title: Ready One\nactivity: read\nrelease: r1\norder: 2\nstatus: todo\n")
+	// Second ready card in r1.
+	writeTask("ready-two", "title: Ready Two\nactivity: read\nrelease: r1\norder: 3\nstatus: todo\n")
+
+	a := &app.App{Cfg: cfg, Store: st, Hub: hub.New(), Workspaces: ws}
+
+	st1, err := a.TriggerSchedule(ctx, "sandbox", "storymap-runner", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for a.Planning(st1.LastTaskID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st1.LastStatus != "started" || !strings.Contains(st1.LastReason, "core/ready-one") {
+		t.Fatalf("expected core/ready-one queued, got %+v", st1)
+	}
+
+	// Second trigger picks ready-two (ready-one already recorded in MapWorks).
+	st2, err := a.TriggerSchedule(ctx, "sandbox", "storymap-runner", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for a.Planning(st2.LastTaskID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st2.LastStatus != "started" || !strings.Contains(st2.LastReason, "core/ready-two") {
+		t.Fatalf("expected core/ready-two queued, got %+v", st2)
+	}
+
+	// Third trigger has no ready cards left -> skipped cleanly.
+	st3, err := a.TriggerSchedule(ctx, "sandbox", "storymap-runner", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st3.LastStatus != "skipped" {
+		t.Fatalf("expected skipped when no ready cards remain, got %+v", st3)
 	}
 }

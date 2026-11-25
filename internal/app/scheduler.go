@@ -14,7 +14,12 @@ import (
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/ids"
 	"github.com/mauza/ai-flow/internal/store"
+	"github.com/mauza/ai-flow/internal/storymap"
 )
+
+func kvTaskAutoStart(taskID string) string {
+	return "task/autostart/" + taskID
+}
 
 // ScheduleState tracks the last execution of one project schedule in KV.
 type ScheduleState struct {
@@ -27,16 +32,18 @@ type ScheduleState struct {
 
 // ScheduleView combines a configured ProjectSchedule with its live runtime state.
 type ScheduleView struct {
-	Project       string        `json:"project"`
-	Name          string        `json:"name"`
-	Enabled       bool          `json:"enabled"`
-	Every         string        `json:"every"`
-	Flow          string        `json:"flow,omitempty"`
-	TaskTitle     string        `json:"task_title,omitempty"`
-	MaxActiveRuns int           `json:"max_active_runs"`
-	MaxOpenTasks  int           `json:"max_open_tasks"`
-	NextDueAt     int64         `json:"next_due_at,omitempty"`
-	State         ScheduleState `json:"state"`
+	Project       string                   `json:"project"`
+	Name          string                   `json:"name"`
+	Enabled       bool                     `json:"enabled"`
+	Every         string                   `json:"every"`
+	Flow          string                   `json:"flow,omitempty"`
+	TaskTitle     string                   `json:"task_title,omitempty"`
+	StoryMap      *config.ScheduleStoryMap `json:"storymap,omitempty"`
+	AutoStart     bool                     `json:"auto_start,omitempty"`
+	MaxActiveRuns int                      `json:"max_active_runs"`
+	MaxOpenTasks  int                      `json:"max_open_tasks"`
+	NextDueAt     int64                    `json:"next_due_at,omitempty"`
+	State         ScheduleState            `json:"state"`
 }
 
 func scheduleKVKey(project, name string) string {
@@ -74,6 +81,8 @@ func (a *App) ListSchedules(ctx context.Context, project string) []ScheduleView 
 				Enabled:       sc.IsEnabled(),
 				Every:         sc.Every.Duration.String(),
 				Flow:          sc.Flow,
+				StoryMap:      sc.StoryMap,
+				AutoStart:     sc.AutoStart,
 				MaxActiveRuns: sc.EffectiveMaxActiveRuns(),
 				MaxOpenTasks:  sc.EffectiveMaxOpenTasks(),
 				State:         st,
@@ -141,8 +150,11 @@ func (a *App) TriggerSchedule(ctx context.Context, project, name string, force b
 		a.saveScheduleState(ctx, project, name, st)
 		return &st, nil
 	}
+	if sc.StoryMap != nil {
+		return a.triggerStoryMapSchedule(ctx, project, *sc, now)
+	}
 	if sc.Task == nil || strings.TrimSpace(sc.Task.Title) == "" {
-		return nil, fmt.Errorf("schedule %q has neither flow nor task", name)
+		return nil, fmt.Errorf("schedule %q has neither flow, task, nor storymap", name)
 	}
 	stamp := time.UnixMilli(now).UTC().Format("2006-01-02")
 	t := &store.Task{
@@ -153,7 +165,13 @@ func (a *App) TriggerSchedule(ctx context.Context, project, name string, force b
 		Body:       sc.Task.Body,
 		Project:    project,
 	}
+	if sc.AutoStart {
+		_ = a.Store.SetKV(ctx, kvTaskAutoStart(t.ID), "1")
+	}
 	if err := a.CreateTask(ctx, t, true); err != nil {
+		if sc.AutoStart {
+			_ = a.Store.WriteKV(ctx, nil, []string{kvTaskAutoStart(t.ID)})
+		}
 		st.LastStatus = "error"
 		st.LastReason = err.Error()
 		a.saveScheduleState(ctx, project, name, st)
@@ -164,6 +182,157 @@ func (a *App) TriggerSchedule(ctx context.Context, project, name string, force b
 	st.LastReason = fmt.Sprintf("Created scheduled task %s", t.ID)
 	a.saveScheduleState(ctx, project, name, st)
 	return &st, nil
+}
+
+func (a *App) triggerStoryMapSchedule(ctx context.Context, project string, sc config.ProjectSchedule, now int64) (*ScheduleState, error) {
+	st := ScheduleState{LastRunAt: now}
+	if a.Workspaces == nil {
+		err := fmt.Errorf("product workspaces are not configured")
+		st.LastStatus, st.LastReason = "error", err.Error()
+		a.saveScheduleState(ctx, project, sc.Name, st)
+		return &st, err
+	}
+	if a.GitHub != nil {
+		if src, err := a.ProductSource(project); err == nil {
+			pctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			if _, err := a.Workspaces.Ensure(pctx, project, src); err == nil {
+				_, _ = a.Workspaces.Pull(pctx, project, src)
+			}
+			cancel()
+		}
+	}
+	workDir := a.Workspaces.WorkDir(project)
+	var mapIDs []string
+	if m := strings.TrimSpace(sc.StoryMap.Map); m != "" && m != "*" {
+		mapIDs = []string{m}
+	} else {
+		sums, err := storymap.List(workDir)
+		if err != nil {
+			st.LastStatus, st.LastReason = "error", err.Error()
+			a.saveScheduleState(ctx, project, sc.Name, st)
+			return &st, err
+		}
+		for _, s := range sums {
+			if s.Error == "" {
+				mapIDs = append(mapIDs, s.ID)
+			}
+		}
+	}
+	maxPick := sc.StoryMap.EffectiveMaxPerTick()
+	skipQuestions := sc.StoryMap.ShouldSkipOpenQuestions()
+	var created []*store.Task
+	var pickedLabels []string
+	for _, mapID := range mapIDs {
+		if len(created) >= maxPick {
+			break
+		}
+		loaded, err := storymap.Load(workDir, mapID)
+		if err != nil {
+			slog.Warn("storymap schedule load failed", "project", project, "map", mapID, "err", err)
+			continue
+		}
+		works, err := a.MapWorks(ctx, project, mapID)
+		if err != nil {
+			slog.Warn("storymap schedule map works failed", "project", project, "map", mapID, "err", err)
+			continue
+		}
+		handled := map[string]bool{}
+		for _, w := range works {
+			for _, id := range w.Scope.Tasks {
+				handled[id] = true
+			}
+		}
+		candidates := selectNextStoryMapTasks(loaded, sc.StoryMap.Release, handled, skipQuestions, maxPick-len(created))
+		for _, card := range candidates {
+			t, err := a.SendToFlowWithOptions(ctx, project, mapID, "task", card.ID, "", true, sc.AutoStart)
+			if err != nil {
+				st.LastStatus, st.LastReason = "error", err.Error()
+				a.saveScheduleState(ctx, project, sc.Name, st)
+				return &st, err
+			}
+			created = append(created, t)
+			pickedLabels = append(pickedLabels, mapID+"/"+card.ID)
+		}
+	}
+	if len(created) == 0 {
+		st.LastStatus = "skipped"
+		st.LastReason = "no ready todo user tasks in storymap"
+		a.saveScheduleState(ctx, project, sc.Name, st)
+		return &st, nil
+	}
+	st.LastStatus = "started"
+	st.LastTaskID = created[0].ID
+	st.LastReason = fmt.Sprintf("Queued %d storymap task(s): %s", len(created), strings.Join(pickedLabels, ", "))
+	a.saveScheduleState(ctx, project, sc.Name, st)
+	return &st, nil
+}
+
+// selectNextStoryMapTasks picks up to limit ready "todo" user tasks ordered by
+// release slice (in map.Releases order), then journey backbone order, then card order.
+func selectNextStoryMapTasks(l *storymap.Loaded, releaseFilter string, handled map[string]bool, skipOpenQuestions bool, limit int) []storymap.Task {
+	if l == nil || limit <= 0 {
+		return nil
+	}
+	var releases []string
+	if releaseFilter != "" {
+		releases = []string{releaseFilter}
+	} else {
+		for _, r := range l.Map.Releases {
+			if r.Status == "released" {
+				continue
+			}
+			releases = append(releases, r.ID)
+		}
+		releases = append(releases, "")
+	}
+	actRank := map[string]int{}
+	idx := 0
+	for _, ph := range l.Map.Journey {
+		for _, act := range ph.Activities {
+			actRank[act.ID] = idx
+			idx++
+		}
+	}
+	var out []storymap.Task
+	for _, rel := range releases {
+		var sliceCards []storymap.Task
+		for _, t := range l.Tasks {
+			if t.Release != rel {
+				continue
+			}
+			if t.Status != "" && t.Status != "todo" {
+				continue
+			}
+			if handled[t.ID] {
+				continue
+			}
+			if skipOpenQuestions && len(t.OpenQuestions) > 0 {
+				continue
+			}
+			sliceCards = append(sliceCards, t)
+		}
+		slices.SortStableFunc(sliceCards, func(a, b storymap.Task) int {
+			ra, okA := actRank[a.Activity]
+			rb, okB := actRank[b.Activity]
+			if !okA {
+				ra = 1 << 20
+			}
+			if !okB {
+				rb = 1 << 20
+			}
+			if ra != rb {
+				return ra - rb
+			}
+			return a.Order - b.Order
+		})
+		for _, card := range sliceCards {
+			out = append(out, card)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func (a *App) scheduleBlockedReason(ctx context.Context, project string, sc config.ProjectSchedule) (string, error) {
