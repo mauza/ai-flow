@@ -35,6 +35,7 @@ type fakeWorld struct {
 	appStatus int
 	down      bool             // every GitHub/metrics/app request fails with 502
 	files     []map[string]any // the PR's changed files
+	page      string           // body of the probed page
 	prHead    string           // PR #7 head when it moved after CI ("" = headsha)
 
 	dispatches  []map[string]any // rollback workflow dispatch bodies
@@ -110,6 +111,8 @@ func (w *fakeWorld) handler(t *testing.T) http.Handler {
 			reply(map[string]any{"commit": w.version})
 		case p == "/app":
 			rw.WriteHeader(w.appStatus)
+		case p == "/page":
+			io.WriteString(rw, w.page)
 		case p == "/api/v1/query":
 			if w.metric == "" {
 				reply(map[string]any{"status": "error", "error": "vmsingle unavailable"})

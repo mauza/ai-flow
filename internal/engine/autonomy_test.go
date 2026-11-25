@@ -3,6 +3,7 @@ package engine_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/store"
@@ -96,5 +97,23 @@ func TestProjectNotifySettings(t *testing.T) {
 	// The gate is announced; how the run ended is the app's to summarize.
 	if got := f2.titles(t, 2); len(got) != 1 {
 		t.Fatalf("sent %v", got)
+	}
+}
+
+func TestPageProbesWatchTheContent(t *testing.T) {
+	for page, want := range map[string]string{"<title>Bills": "soak:healthy", "<div id=root>": "soak:degraded"} {
+		w := greenWorld()
+		w.version, w.page = "mergedsha0000001", page
+		h, id := releaseFlow(t, w, func(d *config.Deploy) {
+			base := strings.TrimSuffix(d.URL, "/app")
+			d.Probes = []config.PageProbe{{URL: base + "/page", Contains: "<title>Bills"}}
+		}, strings.ReplaceAll(shipNodes, "duration: 1h", "duration: 20ms"))
+		for range 8 {
+			h.ticks(1)
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := h.path(id); !strings.HasSuffix(got, want) {
+			t.Errorf("page %q: %s, want %s", page, got, want)
+		}
 	}
 }
