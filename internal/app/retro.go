@@ -434,27 +434,6 @@ func transcriptDigest(data []byte) string {
 					recordTool("edit", nil)
 				}
 			}
-		case "assistant": // claude stream-json
-			if msg, ok := ev["message"].(map[string]any); ok {
-				if content, ok := msg["content"].([]any); ok {
-					for _, raw := range content {
-						c, _ := raw.(map[string]any)
-						if c["type"] == "tool_use" {
-							name, _ := c["name"].(string)
-							args, _ := c["input"].(map[string]any)
-							recordTool(name, args)
-						}
-					}
-				}
-				if usage, ok := msg["usage"].(map[string]any); ok {
-					if v, ok := usage["input_tokens"].(float64); ok {
-						totalIn += int64(v)
-					}
-					if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-						totalCached += int64(v)
-					}
-				}
-			}
 		case "message_end": // pi usage
 			if msg, ok := ev["message"].(map[string]any); ok {
 				if usage, ok := msg["usage"].(map[string]any); ok {

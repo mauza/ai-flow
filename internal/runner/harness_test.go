@@ -177,37 +177,6 @@ func TestCodexConfig(t *testing.T) {
 	}
 }
 
-func TestClaudeConfig(t *testing.T) {
-	s := testSession(t, AgentTools(false))
-	env, err := claudeHarness{}.setup(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(env, "ANTHROPIC_BASE_URL=http://127.0.0.1:1") || !slices.Contains(env, "CLAUDE_CONFIG_DIR="+filepath.Join(s.home, ".claude")) {
-		t.Fatalf("env = %v", env)
-	}
-	var mcpCfg map[string]any
-	data, _ := os.ReadFile(filepath.Join(s.dir, "claude-mcp.json"))
-	if err := json.Unmarshal(data, &mcpCfg); err != nil {
-		t.Fatal(err)
-	}
-	servers := mcpCfg["mcpServers"].(map[string]any)
-	if servers["flow"] == nil {
-		t.Fatalf("missing flow mcp server: %v", mcpCfg)
-	}
-	claudeMD, _ := os.ReadFile(filepath.Join(s.home, ".claude", "CLAUDE.md"))
-	if !strings.Contains(string(claudeMD), "Be careful.") || !strings.Contains(string(claudeMD), "Use make test.") {
-		t.Fatalf("CLAUDE.md = %q", claudeMD)
-	}
-	if target, _ := os.Readlink(filepath.Join(s.home, ".claude", "skills", "small-diffs")); target != s.skills[0] {
-		t.Fatalf("skill link = %q", target)
-	}
-	args := (claudeHarness{}).args(s, "go", true)
-	if !slices.Contains(args, "--disallowedTools") || !slices.Contains(args, "--continue") || args[len(args)-1] != "go" {
-		t.Fatalf("args = %v", args)
-	}
-}
-
 func TestTomlString(t *testing.T) {
 	if got := tomlString("a\"b\\c\nd\x01é"); got != `"a\"b\\c\nd\u0001é"` {
 		t.Fatalf("got %s", got)
