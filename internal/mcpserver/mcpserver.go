@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/mauza/ai-flow/internal/app"
+	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
@@ -47,6 +48,10 @@ type Backend interface {
 	ImprovementSummary(ctx context.Context, project string) (*app.ImprovementSummary, error)
 	ListRunGrades(ctx context.Context, runID, project, rubric, blame string, limit int) ([]*store.RunGrade, error)
 	ListProposals(ctx context.Context, status string, limit int) ([]*store.ImprovementProposal, error)
+	ListSchedules(ctx context.Context, project string) ([]app.ScheduleView, error)
+	ProjectLedger(ctx context.Context, project string) ([]engine.LedgerEntry, error)
+	ProjectBaselines(ctx context.Context, project string) (map[string]engine.BaselineEntry, error)
+	ExportCatalogImprovements(ctx context.Context) (string, error)
 
 	// Steering actions (only wired when Options.AllowSteer is true).
 	DecideGate(ctx context.Context, runID string, seq int, outcome, note, by string, extendVisits bool) error
@@ -58,8 +63,11 @@ type Backend interface {
 	GradeRun(ctx context.Context, runID string) (map[string]any, error)
 	RunImprover(ctx context.Context, project string, minFailures int) (*app.ImproverRunStatus, error)
 	DisagreeGrade(ctx context.Context, gradeID string, disagreed bool, by, note string) (*store.RunGrade, error)
+	ConfirmGrade(ctx context.Context, gradeID, by, note string) (*store.RunGrade, error)
 	ApplyProposal(ctx context.Context, proposalID, by, note, afterText string, force bool) (*store.ImprovementProposal, []string, error)
 	RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error)
+	TriggerSchedule(ctx context.Context, project, name string, force bool) (*app.ScheduleState, error)
+	UpsertProjectLedger(ctx context.Context, project string, entry engine.LedgerEntry) ([]engine.LedgerEntry, error)
 }
 
 // NewServer creates an MCP server backed by b.
@@ -329,6 +337,60 @@ func registerReadTools(s *mcp.Server, b Backend) {
 		res, err := jsonText(v)
 		return res, nil, err
 	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_schedules",
+		Description: "List configured recurring schedules across projects with their last run time, status, and backlog guard limits.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in attentionIn) (*mcp.CallToolResult, any, error) {
+		v, err := b.ListSchedules(ctx, in.Project)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_project_ledger",
+		Description: "Read a project's persistent improvement ledger (shipped, open, rejected, wont_fix items) used to avoid duplicate continuous-improvement proposals.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in projectIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Project) == "" {
+			return errResult("project is required"), nil, nil
+		}
+		v, err := b.ProjectLedger(ctx, in.Project)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_project_baselines",
+		Description: "Read a project's stored metric ratchet baselines enforced on check nodes.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in projectIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Project) == "" {
+			return errResult("project is required"), nil, nil
+		}
+		v, err := b.ProjectBaselines(ctx, in.Project)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "export_catalog_improvements",
+		Description: "Export DB-applied improvement proposals (presets, skills, harnesses, project instructions) as YAML for GitOps sync back into git.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
+		doc, err := b.ExportCatalogImprovements(ctx)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := plainText(doc)
+		return res, nil, err
+	})
 }
 
 func registerSteerTools(s *mcp.Server, b Backend, actor string) {
@@ -541,6 +603,69 @@ func registerSteerTools(s *mcp.Server, b Backend, actor string) {
 			return errResult("decision must be apply or reject"), nil, nil
 		}
 	})
+
+	type confirmGradeIn struct {
+		GradeID string `json:"grade_id" jsonschema:"the grade id (e.g. g-...)"`
+		Note    string `json:"note,omitempty" jsonschema:"optional confirmation note"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "confirm_grade",
+		Description: "Confirm agreement with a rubric grade to build Cohen's kappa calibration data.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in confirmGradeIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.GradeID) == "" {
+			return errResult("grade_id is required"), nil, nil
+		}
+		v, err := b.ConfirmGrade(ctx, in.GradeID, actor, in.Note)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type triggerScheduleIn struct {
+		Project string `json:"project" jsonschema:"project name"`
+		Name    string `json:"name" jsonschema:"schedule name"`
+		Force   bool   `json:"force,omitempty" jsonschema:"bypass max_active_runs / max_open_tasks backlog guard"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "trigger_schedule",
+		Description: "Trigger a project's configured recurring schedule immediately.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in triggerScheduleIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Project) == "" || strings.TrimSpace(in.Name) == "" {
+			return errResult("project and name are required"), nil, nil
+		}
+		v, err := b.TriggerSchedule(ctx, in.Project, in.Name, in.Force)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
+	type updateLedgerIn struct {
+		Project string `json:"project" jsonschema:"project name"`
+		Key     string `json:"key,omitempty" jsonschema:"stable slug key (optional; derived from title if omitted)"`
+		Title   string `json:"title" jsonschema:"concise title of the improvement item"`
+		Status  string `json:"status" jsonschema:"proposed, shipped, reverted, rejected, or wont_fix"`
+		Summary string `json:"summary,omitempty" jsonschema:"optional rationale or context"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "update_project_ledger",
+		Description: "Add or update an entry in a project's persistent improvement ledger (e.g. mark an idea wont_fix or rejected so future audits skip it).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateLedgerIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Project) == "" || strings.TrimSpace(in.Title) == "" {
+			return errResult("project and title are required"), nil, nil
+		}
+		v, err := b.UpsertProjectLedger(ctx, in.Project, engine.LedgerEntry{
+			Key: in.Key, Title: in.Title, Status: in.Status, Summary: in.Summary,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
 }
 
 // LocalBackend serves MCP requests directly from the control plane's App.
@@ -706,4 +831,35 @@ func (l *LocalBackend) ApplyProposal(ctx context.Context, proposalID, by, note, 
 
 func (l *LocalBackend) RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error) {
 	return l.App.RejectProposal(ctx, proposalID, by, note)
+}
+
+func (l *LocalBackend) ConfirmGrade(ctx context.Context, gradeID, by, note string) (*store.RunGrade, error) {
+	return l.App.ConfirmGrade(ctx, gradeID, by, note)
+}
+
+func (l *LocalBackend) ListSchedules(ctx context.Context, project string) ([]app.ScheduleView, error) {
+	return l.App.ListSchedules(ctx, project), nil
+}
+
+func (l *LocalBackend) TriggerSchedule(ctx context.Context, project, name string, force bool) (*app.ScheduleState, error) {
+	return l.App.TriggerSchedule(ctx, project, name, force)
+}
+
+func (l *LocalBackend) ProjectLedger(ctx context.Context, project string) ([]engine.LedgerEntry, error) {
+	return l.App.Engine.Ledger(ctx, project), nil
+}
+
+func (l *LocalBackend) UpsertProjectLedger(ctx context.Context, project string, entry engine.LedgerEntry) ([]engine.LedgerEntry, error) {
+	if err := l.App.Engine.UpsertLedger(ctx, project, entry); err != nil {
+		return nil, err
+	}
+	return l.App.Engine.Ledger(ctx, project), nil
+}
+
+func (l *LocalBackend) ProjectBaselines(ctx context.Context, project string) (map[string]engine.BaselineEntry, error) {
+	return l.App.Engine.Baselines(ctx, project), nil
+}
+
+func (l *LocalBackend) ExportCatalogImprovements(ctx context.Context) (string, error) {
+	return l.App.ExportAppliedImprovements(ctx)
 }

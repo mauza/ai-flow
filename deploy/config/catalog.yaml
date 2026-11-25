@@ -76,6 +76,15 @@ harnesses:
         flow_finish summary which commands you ran and what they reported, and
         what you could not check.
       - Never weaken, skip or delete a test to make it pass.
+  claude:
+    description: Claude Code CLI — Bash/Read/Edit/Grep/Glob plus granted tools over MCP.
+    # Read as Claude Code's global CLAUDE.md ($CLAUDE_CONFIG_DIR), like pi's.
+    instructions: |
+      - Read the code you are about to change, and its tests, before editing.
+      - Verify with the repository's own test and build commands. Say in the
+        flow_finish summary which commands you ran and what they reported, and
+        what you could not check.
+      - Never weaken, skip or delete a test to make it pass.
 
 runtimes:
   agent-base:

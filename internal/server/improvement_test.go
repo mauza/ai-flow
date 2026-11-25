@@ -99,8 +99,8 @@ spec:
 	var gv app.RunGradesView
 	json.NewDecoder(resp.Body).Decode(&gv)
 	resp.Body.Close()
-	if len(gv.Grades) != 3 {
-		t.Fatalf("expected 3 grades, got %d", len(gv.Grades))
+	if len(gv.Grades) != 4 {
+		t.Fatalf("expected 4 grades, got %d", len(gv.Grades))
 	}
 
 	// POST /api/improvement/grades/{id}/disagree

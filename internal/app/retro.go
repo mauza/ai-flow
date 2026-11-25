@@ -1,17 +1,22 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
+	"github.com/mauza/ai-flow/internal/github"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/llm"
 	"github.com/mauza/ai-flow/internal/store"
@@ -193,6 +198,9 @@ func (a *App) runRecord(ctx context.Context, run *store.Run) (string, error) {
 	}
 	if run.PRURL != "" {
 		fmt.Fprintf(&b, ", PR %s", run.PRURL)
+		if state := a.prOutcome(ctx, run.PRURL); state != "" {
+			fmt.Fprintf(&b, " (PR state: %s)", state)
+		}
 	}
 	if run.Resumes > 0 {
 		fmt.Fprintf(&b, ", resumed %d times (latest note: %s)", run.Resumes, run.ResumeNote)
@@ -212,6 +220,7 @@ func (a *App) runRecord(ctx context.Context, run *store.Run) (string, error) {
 	}
 	b.WriteString("\n## Steps, in order\n")
 	budget := 60000
+	transcriptBudget := 6000
 	for _, v := range visits {
 		fmt.Fprintf(&b, "\n### #%d %s (%s, visit %d): %s", v.Seq, v.Node, v.Type, v.Visit, v.Status)
 		if v.Outcome != "" {
@@ -236,6 +245,15 @@ func (a *App) runRecord(ctx context.Context, run *store.Run) (string, error) {
 		}
 		if o := string(v.Outputs); o != "" && o != "null" && o != "{}" {
 			fmt.Fprintf(&b, "outputs: %s\n", clip(o, 2000))
+		}
+		if v.TranscriptKey != "" && a.Obj != nil && transcriptBudget > 0 {
+			if data, err := a.Obj.Get(ctx, v.TranscriptKey); err == nil {
+				if digest := transcriptDigest(data); digest != "" {
+					digest = clip(digest, min(1000, transcriptBudget))
+					transcriptBudget -= len(digest)
+					fmt.Fprintf(&b, "transcript digest: %s\n", digest)
+				}
+			}
 		}
 		// Log tails are the most useful evidence for failures and loops.
 		if v.LogTail != "" && (v.Status != store.VisitSucceeded || v.Visit > 1) && budget > 0 {
@@ -310,4 +328,185 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+func parsePRURL(raw string) (github.Repo, int, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return github.Repo{}, 0, false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 || parts[2] != "pull" {
+		return github.Repo{}, 0, false
+	}
+	n, err := strconv.Atoi(parts[3])
+	if err != nil || n <= 0 {
+		return github.Repo{}, 0, false
+	}
+	return github.Repo{Host: u.Host, Owner: parts[0], Name: parts[1]}, n, true
+}
+
+func (a *App) prOutcome(ctx context.Context, prURL string) string {
+	if a.GitHub == nil || prURL == "" {
+		return ""
+	}
+	repo, num, ok := parsePRURL(prURL)
+	if !ok {
+		return ""
+	}
+	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	pr, err := a.GitHub.PR(tctx, repo, num)
+	if err != nil || pr == nil {
+		return ""
+	}
+	if pr.Merged {
+		return "merged"
+	}
+	if pr.State == "open" && pr.MergeableState != "" && pr.MergeableState != "clean" && pr.MergeableState != "unknown" {
+		return "open (" + pr.MergeableState + ")"
+	}
+	return pr.State
+}
+
+// transcriptDigest extracts a compact summary of tool usage, repeated commands,
+// and prompt cache hit rate from an agent JSONL transcript so the grader and
+// retro can detect in-step thrashing without loading megabytes of raw logs.
+func transcriptDigest(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	toolCounts := map[string]int{}
+	cmdCounts := map[string]int{}
+	var totalIn, totalCached int64
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	recordTool := func(name string, args map[string]any) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		name = strings.TrimPrefix(strings.TrimPrefix(name, "mcp__flow__"), "flow_")
+		toolCounts[name]++
+		if cmd, ok := args["command"].(string); ok {
+			c := oneLine(cmd)
+			if len(c) > 120 {
+				c = c[:120]
+			}
+			if c != "" {
+				cmdCounts[c]++
+			}
+		}
+	}
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		switch t, _ := ev["type"].(string); t {
+		case "tool_execution_start": // pi
+			name, _ := ev["toolName"].(string)
+			args, _ := ev["args"].(map[string]any)
+			recordTool(name, args)
+		case "tool_use": // opencode
+			if part, ok := ev["part"].(map[string]any); ok {
+				name, _ := part["tool"].(string)
+				state, _ := part["state"].(map[string]any)
+				args, _ := state["input"].(map[string]any)
+				recordTool(name, args)
+			}
+		case "item.started": // codex
+			if item, ok := ev["item"].(map[string]any); ok {
+				switch item["type"] {
+				case "command_execution":
+					cmd, _ := item["command"].(string)
+					recordTool("bash", map[string]any{"command": cmd})
+				case "mcp_tool_call":
+					name, _ := item["tool"].(string)
+					args, _ := item["arguments"].(map[string]any)
+					recordTool(name, args)
+				case "file_change":
+					recordTool("edit", nil)
+				}
+			}
+		case "assistant": // claude stream-json
+			if msg, ok := ev["message"].(map[string]any); ok {
+				if content, ok := msg["content"].([]any); ok {
+					for _, raw := range content {
+						c, _ := raw.(map[string]any)
+						if c["type"] == "tool_use" {
+							name, _ := c["name"].(string)
+							args, _ := c["input"].(map[string]any)
+							recordTool(name, args)
+						}
+					}
+				}
+				if usage, ok := msg["usage"].(map[string]any); ok {
+					if v, ok := usage["input_tokens"].(float64); ok {
+						totalIn += int64(v)
+					}
+					if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+						totalCached += int64(v)
+					}
+				}
+			}
+		case "message_end": // pi usage
+			if msg, ok := ev["message"].(map[string]any); ok {
+				if usage, ok := msg["usage"].(map[string]any); ok {
+					if v, ok := usage["input"].(float64); ok {
+						totalIn += int64(v)
+					}
+					if v, ok := usage["cacheRead"].(float64); ok {
+						totalCached += int64(v)
+					}
+				}
+			}
+		}
+	}
+	if len(toolCounts) == 0 && totalIn == 0 {
+		return ""
+	}
+	var parts []string
+	if len(toolCounts) > 0 {
+		names := make([]string, 0, len(toolCounts))
+		for k := range toolCounts {
+			names = append(names, k)
+		}
+		sort.Slice(names, func(i, j int) bool {
+			if toolCounts[names[i]] != toolCounts[names[j]] {
+				return toolCounts[names[i]] > toolCounts[names[j]]
+			}
+			return names[i] < names[j]
+		})
+		var tc []string
+		for _, k := range names {
+			tc = append(tc, fmt.Sprintf("%s=%d", k, toolCounts[k]))
+		}
+		parts = append(parts, "tools("+strings.Join(tc, ", ")+")")
+	}
+	var repeated []string
+	for cmd, n := range cmdCounts {
+		if n >= 3 {
+			repeated = append(repeated, fmt.Sprintf("%dx %q", n, cmd))
+		}
+	}
+	sort.Strings(repeated)
+	if len(repeated) > 0 {
+		if len(repeated) > 4 {
+			repeated = repeated[:4]
+		}
+		parts = append(parts, "REPEATED COMMANDS: "+strings.Join(repeated, "; "))
+	}
+	if totalIn+totalCached > 0 && totalCached > 0 {
+		denom := totalIn
+		if totalCached > denom {
+			denom = totalIn + totalCached
+		}
+		parts = append(parts, fmt.Sprintf("cache_hit=%d%%", (100*totalCached)/denom))
+	}
+	return strings.Join(parts, "; ")
 }

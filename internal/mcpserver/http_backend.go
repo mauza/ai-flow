@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mauza/ai-flow/internal/app"
+	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/store"
 )
 
@@ -333,4 +334,45 @@ func (h *HTTPBackend) RejectProposal(ctx context.Context, proposalID, by, note s
 		"by": by, "note": note,
 	}, &out)
 	return out.Proposal, err
+}
+
+func (h *HTTPBackend) ConfirmGrade(ctx context.Context, gradeID, by, note string) (*store.RunGrade, error) {
+	var out store.RunGrade
+	return &out, h.do(ctx, http.MethodPost, "/api/improvement/grades/"+url.PathEscape(gradeID)+"/confirm", map[string]any{
+		"by": by, "note": note,
+	}, &out)
+}
+
+func (h *HTTPBackend) ListSchedules(ctx context.Context, project string) ([]app.ScheduleView, error) {
+	p := "/api/schedules"
+	if project != "" {
+		p = "/api/projects/" + url.PathEscape(project) + "/schedules"
+	}
+	var out []app.ScheduleView
+	return out, h.do(ctx, http.MethodGet, p, nil, &out)
+}
+
+func (h *HTTPBackend) TriggerSchedule(ctx context.Context, project, name string, force bool) (*app.ScheduleState, error) {
+	var out app.ScheduleState
+	return &out, h.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%s/schedules/%s/run", url.PathEscape(project), url.PathEscape(name)), map[string]any{"force": force}, &out)
+}
+
+func (h *HTTPBackend) ProjectLedger(ctx context.Context, project string) ([]engine.LedgerEntry, error) {
+	var out []engine.LedgerEntry
+	return out, h.do(ctx, http.MethodGet, "/api/projects/"+url.PathEscape(project)+"/ledger", nil, &out)
+}
+
+func (h *HTTPBackend) UpsertProjectLedger(ctx context.Context, project string, entry engine.LedgerEntry) ([]engine.LedgerEntry, error) {
+	var out []engine.LedgerEntry
+	return out, h.do(ctx, http.MethodPost, "/api/projects/"+url.PathEscape(project)+"/ledger", entry, &out)
+}
+
+func (h *HTTPBackend) ProjectBaselines(ctx context.Context, project string) (map[string]engine.BaselineEntry, error) {
+	var out map[string]engine.BaselineEntry
+	return out, h.do(ctx, http.MethodGet, "/api/projects/"+url.PathEscape(project)+"/baselines", nil, &out)
+}
+
+func (h *HTTPBackend) ExportCatalogImprovements(ctx context.Context) (string, error) {
+	var out string
+	return out, h.do(ctx, http.MethodGet, "/api/improvement/export-catalog", nil, &out)
 }

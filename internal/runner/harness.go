@@ -32,7 +32,7 @@ type harness interface {
 }
 
 // Harnesses are the agent harnesses the runner can start, by catalog name.
-var Harnesses = map[string]harness{"pi": piHarness{}, "opencode": opencodeHarness{}, "codex": codexHarness{}}
+var Harnesses = map[string]harness{"pi": piHarness{}, "opencode": opencodeHarness{}, "codex": codexHarness{}, "claude": claudeHarness{}}
 
 // agentSession is what an adapter needs to configure one agent step.
 type agentSession struct {
@@ -411,6 +411,109 @@ func (codexHarness) event(r *Runner, line []byte) {
 		r.setLastStop("error: " + firstLine(ev.Error.Message))
 	case "error":
 		r.setLastStop("error: " + firstLine(ev.Message))
+	}
+}
+
+// ---- claude ----
+
+type claudeHarness struct{}
+
+func (claudeHarness) binary() string     { return envOr("AI_FLOW_CLAUDE", "claude") }
+func (claudeHarness) finishTool() string { return "mcp__flow__flow_finish" }
+
+func (claudeHarness) setup(s *agentSession) ([]string, error) {
+	cfgDir := filepath.Join(s.home, ".claude")
+	if err := linkSkills(filepath.Join(cfgDir, "skills"), s.skills); err != nil {
+		return nil, err
+	}
+	if text := s.instructions(); text != "" {
+		if err := os.WriteFile(filepath.Join(cfgDir, "CLAUDE.md"), []byte(text), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	mcpCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"flow": map[string]any{
+				"command": selfBinary(),
+				"args":    []string{"flow-tools"},
+				"env":     s.flowToolsEnv(),
+			},
+		},
+	}
+	mcpPath := filepath.Join(s.dir, "claude-mcp.json")
+	if err := writeJSONFile(mcpPath, mcpCfg); err != nil {
+		return nil, err
+	}
+	baseURL := strings.TrimSuffix(strings.TrimSuffix(s.shimURL, "/"), "/v1")
+	return []string{
+		"ANTHROPIC_BASE_URL=" + baseURL,
+		"ANTHROPIC_API_KEY=ai-flow",
+		"CLAUDE_CONFIG_DIR=" + cfgDir,
+		"DISABLE_TELEMETRY=1",
+		"DISABLE_ERROR_REPORTING=1",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+	}, nil
+}
+
+func (claudeHarness) args(s *agentSession, prompt string, resume bool) []string {
+	args := []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--permission-mode", "bypassPermissions",
+		"--model", s.model().Name,
+		"--mcp-config", filepath.Join(s.dir, "claude-mcp.json"),
+		"--strict-mcp-config",
+		"--append-system-prompt-file", s.sysPath,
+	}
+	if !s.write() {
+		args = append(args, "--disallowedTools", "Edit,Write,NotebookEdit")
+	}
+	if resume {
+		args = append(args, "--continue")
+	}
+	return append(args, prompt)
+}
+
+func (claudeHarness) event(r *Runner, line []byte) {
+	var ev struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		IsError bool   `json:"is_error"`
+		Result  string `json:"result"`
+		Message struct {
+			Content []struct {
+				Type  string          `json:"type"`
+				Text  string          `json:"text"`
+				Name  string          `json:"name"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	switch ev.Type {
+	case "assistant":
+		for _, c := range ev.Message.Content {
+			switch c.Type {
+			case "tool_use":
+				name := strings.TrimPrefix(c.Name, "mcp__flow__")
+				r.progress(describeToolCall(name, c.Input))
+			case "text":
+				if t := strings.TrimSpace(c.Text); t != "" {
+					r.progress(firstLine(t))
+				}
+			}
+		}
+	case "result":
+		if ev.IsError {
+			r.setLastStop("error: " + firstLine(ev.Result))
+		} else if ev.Subtype != "" {
+			r.setLastStop(ev.Subtype)
+		} else {
+			r.setLastStop("stop")
+		}
 	}
 }
 

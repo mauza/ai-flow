@@ -180,6 +180,9 @@ func serverCmd(ctx context.Context, args []string) error {
 	case len(stored.FromFiles) > 0:
 		slog.Info("took entries the config files changed since the last start", "entries", stored.FromFiles)
 	}
+	if len(stored.Protected) > 0 {
+		slog.Info("preserved DB-applied improvement proposals over config file changes (export via /api/improvement/export-catalog)", "entries", stored.Protected)
+	}
 	env := &cfg.Env
 	go st.Backups(ctx, filepath.Join(env.Server.DataDir, "backups"), 14)
 	signer, err := grant.LoadOrCreate(env.Server.DataDir)

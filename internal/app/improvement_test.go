@@ -138,8 +138,8 @@ func TestImprovementLoopEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grade r1: %v", err)
 	}
-	if len(g1) != 3 {
-		t.Fatalf("expected 3 grades, got %d", len(g1))
+	if len(g1) != 4 {
+		t.Fatalf("expected 4 grades, got %d", len(g1))
 	}
 	if g1[0].PromptVersions["preset:code-review"] != promptHash(origPrompt) {
 		t.Fatalf("missing pinned prompt version hash: %+v", g1[0].PromptVersions)

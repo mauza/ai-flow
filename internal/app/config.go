@@ -37,6 +37,7 @@ const (
 	kvFilesCatalog = "config/files/catalog"
 	kvFilesProject = "config/files/project/"
 	kvFilesError   = "config/files/error"
+	kvImpApplied   = "improvement/applied/"
 )
 
 // CatalogSections are the catalog's named collections the UI edits entry by entry.
@@ -49,6 +50,7 @@ var CatalogSettings = []string{"planner", "defaults", "improvement"}
 type StoredConfig struct {
 	Seeded    bool     // first start: the database was filled from the files
 	FromFiles []string // entries the files changed since the last start, now in the database
+	Protected []string // entries kept from applied improvement proposals instead of being overwritten by file changes
 	Error     string   // the file changes could not be applied; the database version is served
 }
 
@@ -103,7 +105,12 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 		for k, v := range prevProjects {
 			prev[strings.TrimPrefix(k, kvFilesProject)] = v
 		}
-		merged, mergedProjects, changed, err := mergeFileChanges(cat, dbProjects, prevCat, prev, string(fileCat), fileProjects)
+		appliedKV, _ := st.ListKV(ctx, kvImpApplied)
+		protected := map[string]bool{}
+		for k := range appliedKV {
+			protected[strings.TrimPrefix(k, kvImpApplied)] = true
+		}
+		merged, mergedProjects, changed, kept, syncedApplied, err := mergeFileChangesProtected(cat, dbProjects, prevCat, prev, string(fileCat), fileProjects, protected)
 		if err == nil && len(changed) > 0 {
 			_, err = files.WithDocs([]byte(merged), docList(mergedProjects))
 		}
@@ -115,6 +122,10 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 		}
 		set := maps.Clone(baseline)
 		var del []string
+		for _, k := range syncedApplied {
+			del = append(del, kvImpApplied+k)
+		}
+		report.Protected = kept
 		if len(changed) > 0 {
 			set[kvCatalog] = merged
 			for name := range dbProjects {
@@ -150,19 +161,24 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 // changed between prev and now. It returns the merged documents and the
 // changed entries ("models gpt-6-luna", "projects web-games").
 func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string, prevProjects map[string]string, fileCat string, fileProjects map[string][]byte) (string, map[string]string, []string, error) {
+	merged, mergedProjects, changed, _, _, err := mergeFileChangesProtected(dbCat, dbProjects, prevCat, prevProjects, fileCat, fileProjects, nil)
+	return merged, mergedProjects, changed, err
+}
+
+func mergeFileChangesProtected(dbCat string, dbProjects map[string]string, prevCat string, prevProjects map[string]string, fileCat string, fileProjects map[string][]byte, protected map[string]bool) (string, map[string]string, []string, []string, []string, error) {
 	var db, prev, now map[string]any
 	for _, x := range []struct {
 		src string
 		dst *map[string]any
 	}{{dbCat, &db}, {prevCat, &prev}, {fileCat, &now}} {
 		if err := yaml.Unmarshal([]byte(x.src), x.dst); err != nil {
-			return "", nil, nil, err
+			return "", nil, nil, nil, nil, err
 		}
 		if *x.dst == nil {
 			*x.dst = map[string]any{}
 		}
 	}
-	var changed []string
+	var changed, kept, synced []string
 	for _, section := range CatalogSections {
 		d, _ := db[section].(map[string]any)
 		if d == nil {
@@ -175,6 +191,14 @@ func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string
 			nv, inNow := n[name]
 			if inPrev == inNow && sameJSON(pv, nv) {
 				continue
+			}
+			protKey := section + "/" + name
+			if protected[protKey] && inNow {
+				if dv, inDB := d[name]; inDB && !sameJSON(dv, nv) {
+					kept = append(kept, section+" "+name)
+					continue
+				}
+				synced = append(synced, protKey)
 			}
 			changed = append(changed, section+" "+name)
 			if inNow {
@@ -192,6 +216,14 @@ func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string
 		nv, inNow := now[key]
 		if inPrev == inNow && sameJSON(pv, nv) {
 			continue
+		}
+		protKey := "settings/" + key
+		if protected[protKey] && inNow {
+			if dv, inDB := db[key]; inDB && !sameJSON(dv, nv) {
+				kept = append(kept, "settings "+key)
+				continue
+			}
+			synced = append(synced, protKey)
 		}
 		changed = append(changed, "settings "+key)
 		if inNow {
@@ -214,6 +246,14 @@ func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string
 		if inPrev == inNow && sameYAML(pv, string(nv)) {
 			continue
 		}
+		protKey := "projects/" + name
+		if protected[protKey] && inNow {
+			if dv, inDB := merged[name]; inDB && !sameYAML(dv, string(nv)) {
+				kept = append(kept, "projects "+name)
+				continue
+			}
+			synced = append(synced, protKey)
+		}
 		changed = append(changed, "projects "+name)
 		if inNow {
 			merged[name] = string(nv)
@@ -222,10 +262,10 @@ func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string
 		}
 	}
 	if len(changed) == 0 {
-		return dbCat, dbProjects, nil, nil
+		return dbCat, dbProjects, nil, kept, synced, nil
 	}
 	out, err := yaml.Marshal(db)
-	return string(out), merged, changed, err
+	return string(out), merged, changed, kept, synced, err
 }
 
 func unionKeys(a, b map[string]any) []string {

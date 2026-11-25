@@ -17,6 +17,7 @@ func (s *Server) improvementRoutes(api func(string, http.HandlerFunc)) {
 	api("GET /api/improvement/grades", s.listImprovementGrades)
 	api("POST /api/improvement/grade-ungraded", s.gradeUngradedRuns)
 	api("POST /api/improvement/grades/{id}/disagree", s.disagreeGrade)
+	api("POST /api/improvement/grades/{id}/confirm", s.confirmGrade)
 
 	api("GET /api/improvement/proposals", s.listProposals)
 	api("POST /api/improvement/run", s.runImprover)
@@ -24,6 +25,7 @@ func (s *Server) improvementRoutes(api func(string, http.HandlerFunc)) {
 	api("POST /api/improvement/proposals/{id}/reject", s.rejectProposal)
 
 	api("GET /api/improvement/revisions", s.listPromptRevisions)
+	api("GET /api/improvement/export-catalog", s.exportCatalogImprovements)
 }
 
 func (s *Server) getRunGrades(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +127,37 @@ func (s *Server) disagreeGrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, g)
+}
+
+func (s *Server) confirmGrade(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		By   string `json:"by"`
+		Note string `json:"note"`
+	}
+	if r.ContentLength > 0 && !readJSON(w, r, &in) {
+		return
+	}
+	g, err := s.app.ConfirmGrade(r.Context(), r.PathValue("id"), in.By, in.Note)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, 200, g)
+}
+
+func (s *Server) exportCatalogImprovements(w http.ResponseWriter, r *http.Request) {
+	doc, err := s.app.ExportAppliedImprovements(r.Context())
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if r.URL.Query().Get("format") == "json" {
+		writeJSON(w, 200, map[string]string{"yaml": doc})
+		return
+	}
+	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(doc))
 }
 
 func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {

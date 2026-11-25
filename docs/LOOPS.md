@@ -103,9 +103,8 @@ replaces that whole contract; the example also changes the assessor prompt to ma
   creates an effective `timeout` outcome, which must be routed.
 - Plan for cumulative waiting: the first example permits one 24h handoff; the
   second permits up to three separate 24h approval waits, plus execution time.
-  `budget.wall` exists in the flow schema but is not currently enforced by the
-  engine. These examples rely on node visit limits and explicit node/gate timeouts,
-  not an assumed global deadline.
+  Set `spec.budget.wall` and `spec.budget.tokens` (or `project.spec.budget.tokens_per_run`)
+  to enforce run-wide wall-clock and token ceilings across all visits.
 
 The exhaustion gate is an optional acknowledgment, not a bypass to success or a
 way to reset the exhausted node. For fully automatic handling, route exhaustion
@@ -137,8 +136,9 @@ spec:
     mode: thorough    # repeat reviews re-check everything and block on any real defect
 ```
 
-`rounds` raises every `max_visits` below it when a run is resolved, whatever the
-plan says. `mode: converge` (the default) tells a review that runs again to block
+`rounds` raises `max_visits` for bounded nodes participating in cycles when a run
+is resolved, without inflating acyclic nodes like `open-pull-request` or `deploy`.
+`mode: converge` (the default) tells a review that runs again to block
 only on findings still open and acceptance or test failures, so loops end;
 `thorough` makes every pass a full review that may find new problems.
 ## Work queue: one finding per visit
