@@ -67,6 +67,6 @@ func TestRevertDeployPresetFastForwards(t *testing.T) {
 	}
 	git(work, "merge-base", "--is-ancestor", runHead, "HEAD") // fast-forward of the run branch
 	git(work, "merge-base", "--is-ancestor", merged, "HEAD")  // and of main
-	git(work, "remote", "set-url", "origin", origin) // the runner pushes with credentials
+	git(work, "remote", "set-url", "origin", origin)          // the runner pushes with credentials
 	git(work, "push", "--quiet", "origin", "HEAD:refs/heads/ai-flow/release")
 }

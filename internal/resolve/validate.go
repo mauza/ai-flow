@@ -95,6 +95,7 @@ func Validate(r *Resolved, cfg *config.Config) []Issue {
 	} else if _, ok := f.Spec.Nodes[f.Spec.Start]; !ok {
 		v.errf("", "spec.start", "unknown node %q", f.Spec.Start)
 	}
+	v.issues = append(v.issues, r.templateIssues...)
 	v.checkRepo()
 	if b := f.Spec.Budget; b != nil {
 		if b.Tokens < 0 {
@@ -366,10 +367,9 @@ var consumers = map[string][]string{
 	"with":       {flow.TypeAction},
 }
 
-// checkIgnored warns about fields the author set that nothing enforces. It
-// reads the raw node so preset and default values never trigger it.
-func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
-	set := map[string]bool{
+// rawFields says which of the consumers' fields the author set.
+func rawFields(raw *flow.Node) map[string]bool {
+	return map[string]bool{
 		"model": raw.Model != "", "llm": raw.LLM != nil, "harness": raw.Harness != "",
 		"skills": len(raw.Skills) > 0, "runtime": raw.Runtime != "", "retry": raw.Retry != nil,
 		"timeout": raw.Timeout.Duration > 0, "prompt": raw.Prompt != "", "inputs": len(raw.Inputs) > 0,
@@ -377,6 +377,12 @@ func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
 		"cases": len(raw.Cases) > 0, "default": raw.Default != "", "action": raw.Action != "", "with": len(raw.With) > 0,
 		"branches": len(raw.Branches) > 0, "join": raw.Join != "", "fail_fast": raw.FailFast,
 	}
+}
+
+// checkIgnored warns about fields the author set that nothing enforces. It
+// reads the raw node so preset and default values never trigger it.
+func (v *validator) checkIgnored(n *Node, raw *flow.Node) {
+	set := rawFields(raw)
 	for _, field := range sortedKeys(consumers) {
 		if set[field] && !slices.Contains(consumers[field], n.Type) {
 			v.warnf(n.ID, field, "declared but not enforced: %s nodes ignore %s", n.Type, field)

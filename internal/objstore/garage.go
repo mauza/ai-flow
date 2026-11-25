@@ -25,7 +25,9 @@ type garageErr struct {
 	body   string
 }
 
-func (e *garageErr) Error() string { return fmt.Sprintf("garage admin: HTTP %d: %s", e.status, strings.TrimSpace(e.body)) }
+func (e *garageErr) Error() string {
+	return fmt.Sprintf("garage admin: HTTP %d: %s", e.status, strings.TrimSpace(e.body))
+}
 
 func (g *garageAdmin) call(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader

@@ -50,6 +50,20 @@ return retriable HTTP 503 rather than treating an unavailable budget as zero.
 These remain preflight spending checks, not reservations: simultaneous requests
 can overshoot a cap by their in-flight usage.
 
+Token budgets (`spec.budget.tokens`, the project's `tokens_per_run`) count output
+and uncached prompt tokens since the latest resume. When one runs out, the LLM
+proxy refuses the running step's next call, the runner asks the agent to finish,
+and the proxy admits six more calls for that. No further model step starts, but
+checks and actions do, so a finished change can still reach its pull request.
+
+`spec.budget.wall` is the time since the run started or was last resumed, without
+the time it waited at gates. It ends the run even in the middle of a step.
+
+With `runs.cachePVC`, all steps of a project share a writable dependency cache.
+Agents and the code they write can put anything in it, so a poisoned cache can
+reach later runs of the same project. Leave it off if a project's runs must not
+trust each other. Nothing prunes the Go module and npm caches.
+
 Git, LLM and MCP execution grants require the token's current active visit.
 Execution expires at its deadline; result/transcript delivery retains the
 engine's additional 60-second reconciliation grace. Terminal result delivery

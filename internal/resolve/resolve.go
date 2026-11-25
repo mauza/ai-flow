@@ -21,6 +21,8 @@ type Resolved struct {
 	Base    string
 	Nodes   map[string]*Node
 	Order   []string
+
+	templateIssues []Issue // found while expanding; not part of a run's snapshot
 }
 
 // Node is the effective configuration of one node.
@@ -32,12 +34,12 @@ type Node struct {
 
 // Resolve applies templates, presets and defaults. It never fails; problems surface in Validate.
 func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
-	f = expandTemplates(f, cfg)
+	f, templateIssues := expandTemplates(f, cfg)
 	var proj *config.Project
 	if f.Metadata.Project != "" {
 		proj = cfg.Projects[f.Metadata.Project]
 	}
-	r := &Resolved{Flow: f, Project: proj, Nodes: map[string]*Node{}}
+	r := &Resolved{Flow: f, Project: proj, Nodes: map[string]*Node{}, templateIssues: templateIssues}
 	if f.Spec.Repo != nil {
 		r.Repo, r.Base = f.Spec.Repo.Grant, f.Spec.Repo.Base
 	}

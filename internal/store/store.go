@@ -354,23 +354,23 @@ func RunDone(status string) bool {
 }
 
 type Run struct {
-	ID          string          `json:"id"`
-	FlowName    string          `json:"flow_name"`
-	FlowVersion int             `json:"flow_version"`
-	TaskID      string          `json:"task_id,omitempty"`
-	Project     string          `json:"project,omitempty"`
-	Status      string          `json:"status"`
-	CurrentNode string          `json:"current_node,omitempty"`
-	Branch      string          `json:"branch"`
-	Base        string          `json:"base"`
-	PRURL       string          `json:"pr_url,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	Diff        json.RawMessage `json:"diff"`
-	CostUSD     float64         `json:"cost_usd"`
-	Tokens      int64           `json:"tokens"`
-	CreatedAt   int64           `json:"created_at"`
-	StartedAt   int64           `json:"started_at,omitempty"`
-	FinishedAt  int64           `json:"finished_at,omitempty"`
+	ID             string          `json:"id"`
+	FlowName       string          `json:"flow_name"`
+	FlowVersion    int             `json:"flow_version"`
+	TaskID         string          `json:"task_id,omitempty"`
+	Project        string          `json:"project,omitempty"`
+	Status         string          `json:"status"`
+	CurrentNode    string          `json:"current_node,omitempty"`
+	Branch         string          `json:"branch"`
+	Base           string          `json:"base"`
+	PRURL          string          `json:"pr_url,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	Diff           json.RawMessage `json:"diff"`
+	CostUSD        float64         `json:"cost_usd"`
+	Tokens         int64           `json:"tokens"`
+	CreatedAt      int64           `json:"created_at"`
+	StartedAt      int64           `json:"started_at,omitempty"`
+	FinishedAt     int64           `json:"finished_at,omitempty"`
 	Snapshot       json.RawMessage `json:"-"`                         // versioned, non-secret execution settings
 	ResumeSeq      int             `json:"resume_seq,omitempty"`      // last visit before the latest resume
 	Resumes        int             `json:"resumes,omitempty"`         // how many times a human resumed the run
