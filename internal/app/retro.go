@@ -96,6 +96,7 @@ func (a *App) StartRetro(ctx context.Context, runID, note string) (*Retro, error
 	}
 	r := &Retro{Status: "pending", Model: model, StartedAt: store.Now(), Note: strings.TrimSpace(note)}
 	a.saveRetro(ctx, runID, r)
+	started := *r // the goroutine below keeps writing to r
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
@@ -108,7 +109,7 @@ func (a *App) StartRetro(ctx context.Context, runID, note string) (*Retro, error
 		}
 		a.saveRetro(ctx, runID, r)
 	}()
-	return r, nil
+	return &started, nil
 }
 
 const retroSystem = `You review one finished (or stuck) run of ai-flow, a system that runs software tasks as state machines ("flows") of small steps. Your job is to tell the owner where the run wasted time, money or attempts, where it went wrong, and what to change so the next run goes better. Be concrete and cite evidence from the run (node ids, outcomes, errors, durations, costs, outputs). Do not invent facts that are not in the run record; say so when the record is not enough to tell.
