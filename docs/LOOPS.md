@@ -256,6 +256,8 @@ spec:
   deploy:
     branch: main
     pipeline: [test, release]    # only these CI jobs mean "no release was built"
+    probes:                      # pages check_health requires, from the control plane
+      - { url: "https://example.org/", contains: "<title>Example" }
     protected: [".github/**"]    # never merged by ai-flow
     rollback: { workflow: rollback.yml }
   notify:
@@ -269,6 +271,9 @@ spec:
   branch does not need a new review. Otherwise the merge returns `blocked`.
 - `deploy.protected`: a pull request that touches these paths returns `blocked`, and
   a person merges it. Protect the files that check the agents' work.
+- `deploy.probes`: `check_health` fetches each page on every poll, and a page that
+  fails or lacks its text for longer than the sustain window is a violation. Probe
+  from here, not from a step: run pods may not reach a site in their own cluster.
 - `deploy.pipeline`: without it, any failed job on the merged commit ends
   `wait_for_deploy`, which a flow answers with a rollback.
 

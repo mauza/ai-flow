@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -625,6 +626,13 @@ func (e *Engine) checkHealth(ctx context.Context, r *store.Run, res *resolve.Res
 	if d.URL != "" {
 		_, err := e.get(ctx, d.URL)
 		record("http "+d.URL, err != nil, fmt.Sprint(err))
+	}
+	for _, p := range d.Probes {
+		body, err := e.get(ctx, p.URL)
+		if err == nil && !bytes.Contains(body, []byte(p.Contains)) {
+			err = fmt.Errorf("the page lacks %q", p.Contains)
+		}
+		record("page "+p.URL, err != nil, fmt.Sprint(err))
 	}
 	var degraded []string
 	for name, n := range streak {

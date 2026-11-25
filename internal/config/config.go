@@ -581,6 +581,9 @@ type Deploy struct {
 	// waiting for its next git poll (needs get/patch on that Application).
 	ArgoCDApp       string `json:"argocd_app,omitempty"`
 	ArgoCDNamespace string `json:"argocd_namespace,omitempty"` // default argocd
+	// Probes are pages check_health also requires on every poll. Unlike URL they
+	// look at the body, so a page that answers 200 without its content fails.
+	Probes []PageProbe `json:"probes,omitempty"`
 	// Pipeline names the CI jobs whose failure on the merged commit means no
 	// release was built. Default: any failed job. Set it when unrelated
 	// workflows run on the deploy branch too.
@@ -599,6 +602,12 @@ type RollbackSpec struct {
 type VersionProbe struct {
 	URL   string `json:"url"`
 	Field string `json:"field,omitempty"`
+}
+
+// PageProbe is a page that must answer 2xx and contain a text.
+type PageProbe struct {
+	URL      string `json:"url"`
+	Contains string `json:"contains,omitempty"`
 }
 
 // HealthQuery is a PromQL instant query; the highest series value must stay at
@@ -1102,6 +1111,11 @@ func (c *Config) check() error {
 			}
 			if d.Rollback != nil && d.Rollback.Workflow == "" {
 				errs = append(errs, fmt.Sprintf("project %s: deploy.rollback needs workflow", name))
+			}
+			for i, pr := range p.Spec.Deploy.Probes {
+				if pr.URL == "" {
+					errs = append(errs, fmt.Sprintf("project %s: deploy.probes[%d] needs url", name, i))
+				}
 			}
 		}
 		if n := p.Spec.Notify; n != nil {
