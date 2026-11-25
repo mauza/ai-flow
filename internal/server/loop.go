@@ -10,6 +10,7 @@ func (s *Server) loopRoutes(api func(string, http.HandlerFunc)) {
 	api("GET /api/schedules", s.listSchedules)
 	api("GET /api/projects/{project}/schedules", s.listProjectSchedules)
 	api("POST /api/projects/{project}/schedules/{name}/run", s.triggerSchedule)
+	api("POST /api/projects/{project}/schedules/{name}/pause", s.pauseSchedule)
 
 	api("GET /api/projects/{project}/ledger", s.getProjectLedger)
 	api("POST /api/projects/{project}/ledger", s.upsertProjectLedger)
@@ -47,6 +48,21 @@ func (s *Server) triggerSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+func (s *Server) pauseSchedule(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Paused bool `json:"paused"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	project := r.PathValue("project")
+	if err := s.app.PauseSchedule(r.Context(), project, r.PathValue("name"), in.Paused); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, s.app.ListSchedules(r.Context(), project))
 }
 
 func (s *Server) getProjectLedger(w http.ResponseWriter, r *http.Request) {

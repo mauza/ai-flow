@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import type { AttentionReport, Graph, ProjectSummary, Run, RunView, Visit } from "../src/api";
+import type { AttentionReport, Graph, ProjectSummary, Run, RunView, Schedule, Visit } from "../src/api";
 
 const graph: Graph = {
   start: "work",
@@ -180,8 +180,18 @@ test("project health & value tab and shareable digest modal work", async ({ page
     retros: [{ run_id: "r-1", flow_name: "home-grid", summary: "Shipped cleanly in one pass.", suggestions: [{ kind: "flow", change: "Keep qa-test in parallel", why: "Saved 4 minutes", priority: "low" }] }],
   };
 
+  const schedule: Schedule = {
+    project: "web-games", name: "nightly-audit", enabled: true, paused: false, every: "24h0m0s", task_title: "Nightly audit", auto_start: true,
+    max_active_runs: 1, max_open_tasks: 3, max_open_prs: 2, next_due_at: Date.now() + 5 * 3600_000,
+    state: { last_run_at: Date.now() - 3600_000, last_status: "skipped", last_reason: "2 ai-flow pull request(s) wait to be merged or closed (max 2)" },
+  };
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/projects/web-games/schedules") return route.fulfill({ json: [schedule] });
+    if (path === "/api/projects/web-games/schedules/nightly-audit/pause") {
+      schedule.paused = route.request().postDataJSON().paused;
+      return route.fulfill({ json: [schedule] });
+    }
     if (path === "/api/projects/web-games/product")
       return route.fulfill({ json: { project: { name: "web-games", description: "Browser games", repo: "o/web-games", branch: "main" }, workspace: { repo: "o/web-games", branch: "main", head: "abc", pulled_at: Date.now(), changes: [] }, docs: ["product/README.md"], maps: [{ id: "arcade", title: "Arcade", tasks: 4, done: 1 }] } });
     if (path === "/api/projects/web-games/summary") return route.fulfill({ json: summary });
@@ -196,6 +206,10 @@ test("project health & value tab and shareable digest modal work", async ({ page
   await expect(page.getByText("Keeps players in longer sessions")).toBeVisible();
   await expect(page.getByText("Trial plays up 24%")).toBeVisible();
   await noHorizontalScroll(page);
+  await expect(page.getByText("wait to be merged or closed")).toBeVisible();
+  await page.getByRole("button", { name: "Pause" }).click();
+  await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run now" })).toBeDisabled();
   await page.screenshot({ path: info.outputPath("project-health.png"), fullPage: true });
 
   await page.getByRole("button", { name: "Share digest" }).click();

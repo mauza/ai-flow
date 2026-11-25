@@ -16,6 +16,7 @@ import (
 // Ledger statuses for persistent per-project improvement memory.
 const (
 	LedgerProposed = "proposed"
+	LedgerPROpen   = "pr_open" // delivered as a pull request nobody has merged or closed yet
 	LedgerShipped  = "shipped"
 	LedgerReverted = "reverted"
 	LedgerRejected = "rejected"
@@ -29,7 +30,7 @@ type LedgerEntry struct {
 	Key       string `json:"key"`
 	Title     string `json:"title"`
 	Category  string `json:"category,omitempty"`
-	Status    string `json:"status"` // proposed | shipped | reverted | rejected | wont_fix
+	Status    string `json:"status"` // proposed | pr_open | shipped | reverted | rejected | wont_fix
 	Summary   string `json:"summary,omitempty"`
 	Evidence  string `json:"evidence,omitempty"`
 	RunID     string `json:"run_id,omitempty"`
@@ -68,6 +69,8 @@ func (e *Engine) UpsertLedger(ctx context.Context, project string, entries ...Le
 	if project == "" || len(entries) == 0 {
 		return nil
 	}
+	e.ledgerMu.Lock()
+	defer e.ledgerMu.Unlock()
 	existing := e.Ledger(ctx, project)
 	byKey := map[string]LedgerEntry{}
 	for _, it := range existing {
@@ -140,6 +143,8 @@ func (e *Engine) DeleteLedgerEntry(ctx context.Context, project, key string) err
 	if project == "" {
 		return nil
 	}
+	e.ledgerMu.Lock()
+	defer e.ledgerMu.Unlock()
 	want := normalizeLedgerKey(key)
 	existing := e.Ledger(ctx, project)
 	var kept []LedgerEntry
@@ -161,6 +166,26 @@ func (e *Engine) DeleteLedgerEntry(ctx context.Context, project, key string) err
 // ResetLedger clears a project's improvement ledger.
 func (e *Engine) ResetLedger(ctx context.Context, project string) error {
 	return e.store.WriteKV(ctx, nil, []string{ledgerKey(project)})
+}
+
+// recordDelivered notes a succeeded run's work in the ledger: open until its
+// pull request is merged (shipped) or closed (rejected), or shipped when there
+// is no pull request to wait for.
+func (e *Engine) recordDelivered(ctx context.Context, r *store.Run) {
+	t := e.task(ctx, r)
+	if t == nil || r.Project == "" || t.Identifier == "" || (t.Source != "flow" && t.Source != "storymap") {
+		return
+	}
+	it := LedgerEntry{Key: t.Identifier, Title: t.Title, Status: LedgerShipped, RunID: r.ID, PRURL: r.PRURL, Summary: "Completed by run " + r.ID}
+	if r.PRURL != "" {
+		it.Status, it.Summary = LedgerPROpen, "Pull request opened by run "+r.ID
+	}
+	if t.Source == "storymap" {
+		it.Category = "storymap"
+	}
+	if err := e.UpsertLedger(ctx, r.Project, it); err != nil {
+		slog.Warn("save project ledger", "run", r.ID, "err", err)
+	}
 }
 
 // saveLedgerEntries records any outputs.ledger_entries emitted by a step.
@@ -189,14 +214,14 @@ func (e *Engine) saveLedgerEntries(ctx context.Context, r *store.Run, v *store.V
 	e.event(ctx, r, v.Node, "ledger", fmt.Sprintf("%s#%d updated the improvement ledger (%d entries)", v.Node, v.Visit, len(out.Entries)))
 }
 
-// ledgerSuppressed reports whether key is already shipped, rejected, or won't-fix
+// ledgerSuppressed reports whether key is already delivered, rejected, or won't-fix
 // so discovery/create_tasks will not re-queue it.
 func ledgerSuppressed(entries []LedgerEntry, key string) (LedgerEntry, bool) {
 	want := normalizeLedgerKey(key)
 	for _, it := range entries {
 		if normalizeLedgerKey(it.Key) == want {
 			switch it.Status {
-			case LedgerShipped, LedgerRejected, LedgerWontFix:
+			case LedgerPROpen, LedgerShipped, LedgerRejected, LedgerWontFix:
 				return it, true
 			}
 		}
@@ -211,7 +236,7 @@ func writeLedgerContext(sb *strings.Builder, entries []LedgerEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	sb.WriteString("## Project improvement ledger\n\nEarlier improvements, shipped work, reverts, and dismissed findings for this project. Do not re-propose items already marked shipped, rejected, or wont_fix:\n\n")
+	sb.WriteString("## Project improvement ledger\n\nEarlier improvements, shipped work, reverts, and dismissed findings for this project. Do not re-propose items marked pr_open, shipped, rejected, or wont_fix:\n\n")
 	used := 0
 	for _, it := range entries {
 		when := ""
@@ -258,7 +283,7 @@ func normalizeLedgerKey(s string) string {
 
 func normalizeLedgerStatus(s, fallback string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case LedgerProposed, LedgerShipped, LedgerReverted, LedgerRejected, LedgerWontFix:
+	case LedgerProposed, LedgerPROpen, LedgerShipped, LedgerReverted, LedgerRejected, LedgerWontFix:
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 	if fallback != "" {

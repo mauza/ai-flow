@@ -53,12 +53,12 @@ func (a *App) ProductSource(project string) (workspace.Source, error) {
 // SendToFlow hands part of a story map to ai-flow: it creates a task whose
 // description is the scope's brief and (optionally) starts planning it.
 func (a *App) SendToFlow(ctx context.Context, project, mapID, kind, id, release string, plan bool) (*store.Task, error) {
-	return a.SendToFlowWithOptions(ctx, project, mapID, kind, id, release, plan, false)
+	return a.sendToFlow(ctx, project, mapID, kind, id, release, plan, nil, "")
 }
 
-// SendToFlowWithOptions is like SendToFlow and optionally marks the created
-// task to auto-start its run once planning produces a valid flow.
-func (a *App) SendToFlowWithOptions(ctx context.Context, project, mapID, kind, id, release string, plan, autoStart bool) (*store.Task, error) {
+// sendToFlow is SendToFlow for schedules too: rec lets the task start its own
+// run, and note is appended to the brief.
+func (a *App) sendToFlow(ctx context.Context, project, mapID, kind, id, release string, plan bool, rec *autoStart, note string) (*store.Task, error) {
 	l, err := storymap.Load(a.Workspaces.WorkDir(project), mapID)
 	if err != nil {
 		return nil, err
@@ -72,15 +72,15 @@ func (a *App) SendToFlowWithOptions(ctx context.Context, project, mapID, kind, i
 		ExternalID: fmt.Sprintf("%s/%s/%s/%s/%d", project, mapID, kind, id, store.Now()),
 		Identifier: id,
 		Title:      l.Title(sc, tasks),
-		Body:       l.Brief(sc, tasks),
+		Body:       l.Brief(sc, tasks) + note,
 		Project:    project,
 	}
 	// Record the scope first so the map can show the task as soon as it exists.
 	t.ID = ids.New("t")
 	b, _ := json.Marshal(sc)
 	kv := map[string]string{kvScope(project, mapID, t.ID): string(b)}
-	if autoStart {
-		kv[kvTaskAutoStart(t.ID)] = "1"
+	if rec != nil {
+		kv[kvTaskAutoStart(t.ID)] = rec.json()
 	}
 	if err := a.Store.WriteKV(ctx, kv, nil); err != nil {
 		return nil, err

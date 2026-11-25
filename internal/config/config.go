@@ -446,6 +446,7 @@ type ProjectSchedule struct {
 	AutoStart     bool              `json:"auto_start,omitempty"`      // start planned run automatically even when project.start is manual
 	MaxActiveRuns int               `json:"max_active_runs,omitempty"` // default 1
 	MaxOpenTasks  int               `json:"max_open_tasks,omitempty"`  // default 5
+	MaxOpenPRs    int               `json:"max_open_prs,omitempty"`    // default 2: unmerged ai-flow PRs on the project's repo
 }
 
 // ScheduleStoryMap pulls the next ready "todo" card from a project's user story
@@ -455,6 +456,14 @@ type ScheduleStoryMap struct {
 	Release           string `json:"release,omitempty"`             // optional release ID filter
 	MaxPerTick        int    `json:"max_per_tick,omitempty"`        // default 1
 	SkipOpenQuestions *bool  `json:"skip_open_questions,omitempty"` // default true
+	MaxAttempts       int    `json:"max_attempts,omitempty"`        // tasks per card, counting failed ones; default 2
+}
+
+func (s ScheduleStoryMap) EffectiveMaxAttempts() int {
+	if s.MaxAttempts <= 0 {
+		return 2
+	}
+	return s.MaxAttempts
 }
 
 func (s ScheduleStoryMap) EffectiveMaxPerTick() int {
@@ -482,6 +491,13 @@ func (s ProjectSchedule) EffectiveMaxOpenTasks() int {
 		return 5
 	}
 	return s.MaxOpenTasks
+}
+
+func (s ProjectSchedule) EffectiveMaxOpenPRs() int {
+	if s.MaxOpenPRs <= 0 {
+		return 2
+	}
+	return s.MaxOpenPRs
 }
 
 type ScheduleTask struct {
@@ -1075,7 +1091,7 @@ func (c *Config) check() error {
 			if targets != 1 {
 				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow, task.title, or storymap", name, sname))
 			}
-			if sc.MaxActiveRuns < 0 || sc.MaxOpenTasks < 0 {
+			if sc.MaxActiveRuns < 0 || sc.MaxOpenTasks < 0 || sc.MaxOpenPRs < 0 {
 				errs = append(errs, fmt.Sprintf("project %s: schedule %q limits must be non-negative", name, sname))
 			}
 		}

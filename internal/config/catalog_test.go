@@ -234,6 +234,20 @@ func exampleOutput(t *testing.T, typ any) any {
 		}
 	case []any:
 		return []any{exampleOutput(t, value[0])}
+	case map[string]any: // JSON Schema
+		switch value["type"] {
+		case "array":
+			return []any{exampleOutput(t, value["items"])}
+		case "object":
+			out := map[string]any{}
+			props, _ := value["properties"].(map[string]any)
+			for name, typ := range props {
+				out[name] = exampleOutput(t, typ)
+			}
+			return out
+		case "string":
+			return "evidence"
+		}
 	}
 	t.Fatalf("add a meaningful example for output type %v", typ)
 	return nil

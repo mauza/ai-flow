@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export interface HubEvent {
-  type: "run" | "visit" | "task" | "flow" | "progress" | "config" | "improvement";
+  type: "run" | "visit" | "task" | "flow" | "progress" | "config" | "improvement" | "schedule";
   id: string;
   seq?: number;
   text?: string;

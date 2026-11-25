@@ -67,6 +67,7 @@ type Backend interface {
 	ApplyProposal(ctx context.Context, proposalID, by, note, afterText string, force bool) (*store.ImprovementProposal, []string, error)
 	RejectProposal(ctx context.Context, proposalID, by, note string) (*store.ImprovementProposal, error)
 	TriggerSchedule(ctx context.Context, project, name string, force bool) (*app.ScheduleState, error)
+	PauseSchedule(ctx context.Context, project, name string, paused bool) error
 	UpsertProjectLedger(ctx context.Context, project string, entry engine.LedgerEntry) ([]engine.LedgerEntry, error)
 }
 
@@ -643,11 +644,34 @@ func registerSteerTools(s *mcp.Server, b Backend, actor string) {
 		return res, nil, err
 	})
 
+	type pauseScheduleIn struct {
+		Project string `json:"project" jsonschema:"project name"`
+		Name    string `json:"name" jsonschema:"schedule name"`
+		Paused  bool   `json:"paused" jsonschema:"true to pause, false to resume"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "pause_schedule",
+		Description: "Pause or resume a project's recurring schedule. A paused schedule triggers nothing and starts no runs for tasks it already queued.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in pauseScheduleIn) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Project) == "" || strings.TrimSpace(in.Name) == "" {
+			return errResult("project and name are required"), nil, nil
+		}
+		if err := b.PauseSchedule(ctx, in.Project, in.Name, in.Paused); err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		v, err := b.ListSchedules(ctx, in.Project)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		res, err := jsonText(v)
+		return res, nil, err
+	})
+
 	type updateLedgerIn struct {
 		Project string `json:"project" jsonschema:"project name"`
 		Key     string `json:"key,omitempty" jsonschema:"stable slug key (optional; derived from title if omitted)"`
 		Title   string `json:"title" jsonschema:"concise title of the improvement item"`
-		Status  string `json:"status" jsonschema:"proposed, shipped, reverted, rejected, or wont_fix"`
+		Status  string `json:"status" jsonschema:"proposed, pr_open, shipped, reverted, rejected, or wont_fix"`
 		Summary string `json:"summary,omitempty" jsonschema:"optional rationale or context"`
 	}
 	mcp.AddTool(s, &mcp.Tool{
@@ -843,6 +867,10 @@ func (l *LocalBackend) ListSchedules(ctx context.Context, project string) ([]app
 
 func (l *LocalBackend) TriggerSchedule(ctx context.Context, project, name string, force bool) (*app.ScheduleState, error) {
 	return l.App.TriggerSchedule(ctx, project, name, force)
+}
+
+func (l *LocalBackend) PauseSchedule(ctx context.Context, project, name string, paused bool) error {
+	return l.App.PauseSchedule(ctx, project, name, paused)
 }
 
 func (l *LocalBackend) ProjectLedger(ctx context.Context, project string) ([]engine.LedgerEntry, error) {

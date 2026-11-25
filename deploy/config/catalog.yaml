@@ -905,12 +905,23 @@ presets:
       You are running a read-only continuous improvement audit. Do not edit tracked files.
       Start from the Project map, Project improvement ledger, and any metrics or alerts in your context.
       Check recent commits (`git log -n 15 --oneline`) and inspect high-leverage areas: reliability bugs, missing regression tests for risky paths, security/invariant violations documented in AGENTS.md/CLAUDE.md, flaky/slow checks, or alert drivers.
-      Never propose items already marked shipped, rejected, or wont_fix in the Project improvement ledger.
+      Never propose items already marked pr_open, shipped, rejected, or wont_fix in the Project improvement ledger.
       Propose at most 3 small, independent, well-scoped improvements that can each land as one clean PR.
-      Format each proposal in outputs.proposals as `"<concise title> — <concrete problem, target files, and verification command>"`.
+      In each proposal, key is a short kebab-case slug for the defect itself (`parser-nil-deref`, not a wording of the title), so the same
+      defect gets the same key in every audit: reuse the ledger's key for anything already listed there. body states the concrete problem,
+      target files, and verification command.
       Also refresh outputs.project_map and outputs.map_commit (`git rev-parse HEAD`) if the architecture or commands changed.
       Return proposed when at least one high-value improvement is found, clean when nothing worthwhile needs work right now.
-    outputs: { proposals: [string], rationale: string, project_map: string, map_commit: string }
+    outputs:
+      proposals:
+        type: array
+        items:
+          type: object
+          required: [key, title, body]
+          properties: { key: { type: string }, title: { type: string }, body: { type: string }, category: { type: string } }
+      rationale: string
+      project_map: string
+      map_commit: string
     outcomes: [proposed, clean]
 
   spawn-improvement-tasks:
