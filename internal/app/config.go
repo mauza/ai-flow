@@ -50,7 +50,7 @@ var CatalogSettings = []string{"planner", "defaults", "improvement"}
 type StoredConfig struct {
 	Seeded    bool     // first start: the database was filled from the files
 	FromFiles []string // entries the files changed since the last start, now in the database
-	Protected []string // entries kept from applied improvement proposals instead of being overwritten by file changes
+	Protected []string // fields of applied improvement proposals kept over a file change to the same field
 	Error     string   // the file changes could not be applied; the database version is served
 }
 
@@ -106,11 +106,15 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 			prev[strings.TrimPrefix(k, kvFilesProject)] = v
 		}
 		appliedKV, _ := st.ListKV(ctx, kvImpApplied)
-		protected := map[string]bool{}
-		for k := range appliedKV {
-			protected[strings.TrimPrefix(k, kvImpApplied)] = true
+		protected := map[string]*appliedFields{}
+		for k, raw := range appliedKV {
+			var f appliedFields
+			if err := json.Unmarshal([]byte(raw), &f); err != nil {
+				return nil, nil, fmt.Errorf("applied improvement %s: %w", k, err)
+			}
+			protected[strings.TrimPrefix(k, kvImpApplied)] = &f
 		}
-		merged, mergedProjects, changed, kept, syncedApplied, err := mergeFileChangesProtected(cat, dbProjects, prevCat, prev, string(fileCat), fileProjects, protected)
+		merged, mergedProjects, changed, err := mergeFileChanges(cat, dbProjects, prevCat, prev, string(fileCat), fileProjects, protected)
 		if err == nil && len(changed) > 0 {
 			_, err = files.WithDocs([]byte(merged), docList(mergedProjects))
 		}
@@ -122,10 +126,17 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 		}
 		set := maps.Clone(baseline)
 		var del []string
-		for _, k := range syncedApplied {
-			del = append(del, kvImpApplied+k)
+		for _, k := range slices.Sorted(maps.Keys(protected)) {
+			f := protected[k]
+			if len(f.Fields) == 0 {
+				del = append(del, kvImpApplied+k) // the files caught up
+				continue
+			}
+			for _, path := range f.Conflicts {
+				report.Protected = append(report.Protected, k+" "+strings.Join(path, "."))
+			}
+			set[kvImpApplied+k] = f.json()
 		}
-		report.Protected = kept
 		if len(changed) > 0 {
 			set[kvCatalog] = merged
 			for name := range dbProjects {
@@ -157,28 +168,96 @@ func LoadStoredConfig(ctx context.Context, st *store.Store, files *config.Config
 	return next, report, nil
 }
 
-// mergeFileChanges applies to the database's documents every entry the files
-// changed between prev and now. It returns the merged documents and the
-// changed entries ("models gpt-6-luna", "projects web-games").
-func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string, prevProjects map[string]string, fileCat string, fileProjects map[string][]byte) (string, map[string]string, []string, error) {
-	merged, mergedProjects, changed, _, _, err := mergeFileChangesProtected(dbCat, dbProjects, prevCat, prevProjects, fileCat, fileProjects, nil)
-	return merged, mergedProjects, changed, err
+// appliedFields marks the fields of a config entry that applied improvement
+// proposals set, until the files carry the same values.
+type appliedFields struct {
+	ProposalIDs []string   `json:"proposal_ids"`
+	Fields      [][]string `json:"fields"`
+	// Conflicts are fields the files changed too: the applied value stands.
+	Conflicts [][]string `json:"conflicts,omitempty"`
 }
 
-func mergeFileChangesProtected(dbCat string, dbProjects map[string]string, prevCat string, prevProjects map[string]string, fileCat string, fileProjects map[string][]byte, protected map[string]bool) (string, map[string]string, []string, []string, []string, error) {
+func (f *appliedFields) json() string {
+	b, _ := json.Marshal(f)
+	return string(b)
+}
+
+func getField(doc any, path []string) any {
+	for _, k := range path {
+		m, ok := doc.(map[string]any)
+		if !ok {
+			return nil
+		}
+		doc = m[k]
+	}
+	return doc
+}
+
+// setField sets one field of a document, creating the mappings on the way.
+func setField(doc map[string]any, path []string, v any) {
+	for _, k := range path[:len(path)-1] {
+		m, ok := doc[k].(map[string]any)
+		if !ok {
+			m = map[string]any{}
+			doc[k] = m
+		}
+		doc = m
+	}
+	if last := path[len(path)-1]; v == nil {
+		delete(doc, last)
+	} else {
+		doc[last] = v
+	}
+}
+
+// keep carries the applied fields of the database's entry over to the files'
+// changed one, so only they resist the files. Fields the files now agree on
+// stop being marked; fields the files changed differently become conflicts.
+func (f *appliedFields) keep(db, prev, file any) any {
+	next, ok := file.(map[string]any)
+	if f == nil || !ok {
+		return file
+	}
+	var left [][]string
+	for _, path := range f.Fields {
+		dv, fv := getField(db, path), getField(next, path)
+		f.Conflicts = slices.DeleteFunc(f.Conflicts, func(c []string) bool { return slices.Equal(c, path) })
+		if sameJSON(dv, fv) {
+			continue
+		}
+		if !sameJSON(fv, getField(prev, path)) {
+			f.Conflicts = append(f.Conflicts, path)
+		}
+		setField(next, path, dv)
+		left = append(left, path)
+	}
+	f.Fields = left
+	return next
+}
+
+// mergeFileChanges applies to the database's documents every entry the files
+// changed between prev and now, except the protected fields (by
+// "section/name"). It returns the merged documents and the changed entries
+// ("models gpt-6-luna", "projects web-games").
+func mergeFileChanges(dbCat string, dbProjects map[string]string, prevCat string, prevProjects map[string]string, fileCat string, fileProjects map[string][]byte, protected map[string]*appliedFields) (string, map[string]string, []string, error) {
 	var db, prev, now map[string]any
 	for _, x := range []struct {
 		src string
 		dst *map[string]any
 	}{{dbCat, &db}, {prevCat, &prev}, {fileCat, &now}} {
 		if err := yaml.Unmarshal([]byte(x.src), x.dst); err != nil {
-			return "", nil, nil, nil, nil, err
+			return "", nil, nil, err
 		}
 		if *x.dst == nil {
 			*x.dst = map[string]any{}
 		}
 	}
-	var changed, kept, synced []string
+	var changed []string
+	dropped := func(key string) {
+		if f := protected[key]; f != nil {
+			f.Fields, f.Conflicts = nil, nil
+		}
+	}
 	for _, section := range CatalogSections {
 		d, _ := db[section].(map[string]any)
 		if d == nil {
@@ -192,18 +271,11 @@ func mergeFileChangesProtected(dbCat string, dbProjects map[string]string, prevC
 			if inPrev == inNow && sameJSON(pv, nv) {
 				continue
 			}
-			protKey := section + "/" + name
-			if protected[protKey] && inNow {
-				if dv, inDB := d[name]; inDB && !sameJSON(dv, nv) {
-					kept = append(kept, section+" "+name)
-					continue
-				}
-				synced = append(synced, protKey)
-			}
 			changed = append(changed, section+" "+name)
 			if inNow {
-				d[name] = nv
+				d[name] = protected[section+"/"+name].keep(d[name], pv, nv)
 			} else {
+				dropped(section + "/" + name)
 				delete(d, name)
 			}
 		}
@@ -217,18 +289,11 @@ func mergeFileChangesProtected(dbCat string, dbProjects map[string]string, prevC
 		if inPrev == inNow && sameJSON(pv, nv) {
 			continue
 		}
-		protKey := "settings/" + key
-		if protected[protKey] && inNow {
-			if dv, inDB := db[key]; inDB && !sameJSON(dv, nv) {
-				kept = append(kept, "settings "+key)
-				continue
-			}
-			synced = append(synced, protKey)
-		}
 		changed = append(changed, "settings "+key)
 		if inNow {
-			db[key] = nv
+			db[key] = protected["settings/"+key].keep(db[key], pv, nv)
 		} else {
+			dropped("settings/" + key)
 			delete(db, key)
 		}
 	}
@@ -246,26 +311,35 @@ func mergeFileChangesProtected(dbCat string, dbProjects map[string]string, prevC
 		if inPrev == inNow && sameYAML(pv, string(nv)) {
 			continue
 		}
-		protKey := "projects/" + name
-		if protected[protKey] && inNow {
-			if dv, inDB := merged[name]; inDB && !sameYAML(dv, string(nv)) {
-				kept = append(kept, "projects "+name)
-				continue
-			}
-			synced = append(synced, protKey)
-		}
 		changed = append(changed, "projects "+name)
-		if inNow {
-			merged[name] = string(nv)
-		} else {
+		if !inNow {
+			dropped("projects/" + name)
 			delete(merged, name)
+			continue
+		}
+		merged[name] = string(nv)
+		if f := protected["projects/"+name]; f != nil {
+			var dbDoc, prevDoc, fileDoc any
+			for _, x := range []struct {
+				src string
+				dst *any
+			}{{dbProjects[name], &dbDoc}, {pv, &prevDoc}, {string(nv), &fileDoc}} {
+				if err := yaml.Unmarshal([]byte(x.src), x.dst); err != nil {
+					return "", nil, nil, fmt.Errorf("project %s: %w", name, err)
+				}
+			}
+			out, err := yaml.Marshal(f.keep(dbDoc, prevDoc, fileDoc))
+			if err != nil {
+				return "", nil, nil, err
+			}
+			merged[name] = string(out)
 		}
 	}
 	if len(changed) == 0 {
-		return dbCat, dbProjects, nil, kept, synced, nil
+		return dbCat, dbProjects, nil, nil
 	}
 	out, err := yaml.Marshal(db)
-	return string(out), merged, changed, kept, synced, err
+	return string(out), merged, changed, err
 }
 
 func unionKeys(a, b map[string]any) []string {
@@ -301,11 +375,26 @@ func docList(m map[string]string) [][]byte {
 	return out
 }
 
-// FilesError is why changes in the config files were not applied at the
-// last start, if they were not.
+// FilesError is why changes in the config files were not (all) applied, if
+// they were not: an error at the last start, or fields where an applied
+// improvement proposal stands against a later file change.
 func (a *App) FilesError(ctx context.Context) string {
 	v, _ := a.Store.GetKV(ctx, kvFilesError)
-	return v
+	var msgs []string
+	if v != "" {
+		msgs = append(msgs, v)
+	}
+	applied, _ := a.Store.ListKV(ctx, kvImpApplied)
+	for _, k := range slices.Sorted(maps.Keys(applied)) {
+		var f appliedFields
+		if json.Unmarshal([]byte(applied[k]), &f) != nil {
+			continue
+		}
+		for _, path := range f.Conflicts {
+			msgs = append(msgs, fmt.Sprintf("%s: the config files changed %s, but an applied improvement also set it, and that value is in use; put the value you want in both", strings.TrimPrefix(k, kvImpApplied), strings.Join(path, ".")))
+		}
+	}
+	return strings.Join(msgs, "\n")
 }
 
 // SeededAt is when the database took over the catalog and projects (unix ms),

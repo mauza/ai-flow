@@ -140,7 +140,7 @@ export default function Settings() {
         <h1>Settings</h1>
         <span className="sub">The catalog and projects. Changes are checked first, then apply right away.</span>
       </div>
-      {d.files_error && <div className="warn-box">{d.files_error}</div>}
+      {d.files_error && <div className="warn-box" style={{ whiteSpace: "pre-line" }}>{d.files_error}</div>}
       <div className="tabs settings-tabs" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab${tab === t.id ? " active" : ""}`} onClick={() => setTab(t.id)}>

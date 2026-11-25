@@ -335,7 +335,7 @@ func (e *Engine) begin(ctx context.Context, r *store.Run) error {
 // ---- the state machine ----
 
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
-	if msg, err := e.runBudgetExceeded(ctx, r); err != nil {
+	if msg, err := e.wallExceeded(ctx, r); err != nil {
 		return err
 	} else if msg != "" {
 		return e.finish(ctx, r, store.RunFailed, msg)
@@ -670,6 +670,9 @@ func (e *Engine) stepParallel(ctx context.Context, r *store.Run, fv *store.Visit
 			}
 		case head.Status == store.VisitError:
 			err = e.advance(ctx, r, head)
+		case head.Status == store.VisitCanceled && n.FailFast:
+			// A fail_fast that could not stop every sibling's job last time;
+			// finished below.
 		default:
 			err = e.finish(ctx, r, store.RunCanceled, "canceled")
 		}
@@ -803,6 +806,15 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 	image, ok := snap.Images[n.Runtime]
 	if !ok || image == "" {
 		return e.visitError(ctx, r, v, fmt.Sprintf("unknown runtime %q", n.Runtime))
+	}
+	if v.LaunchState == "" && (n.Type == flow.TypeAgent || n.Type == flow.TypeLLM) {
+		// Checks and actions still run on a spent budget, so a change whose
+		// last model step used it up can reach its pull request.
+		if msg, err := e.TokenBudgetExceeded(ctx, r, res); err != nil {
+			return err
+		} else if msg != "" {
+			return e.visitError(ctx, r, v, msg)
+		}
 	}
 	spec := LaunchSpec{RunID: r.ID, Project: r.Project, Seq: v.Seq, Node: n.ID, Visit: v.Visit, Type: n.Type, Image: image, Timeout: n.Timeout.Duration}
 	if n.Retry != nil {
@@ -1328,22 +1340,69 @@ func visitDone(s string) bool {
 	return s == store.VisitSucceeded || s == store.VisitError || s == store.VisitCanceled
 }
 
-// runBudgetExceeded enforces flow wall-clock and run-level token caps.
-func (e *Engine) runBudgetExceeded(ctx context.Context, r *store.Run) (string, error) {
-	res, err := e.Resolved(ctx, r)
-	if err != nil {
-		return "", nil // let normal reconciliation surface drift/validation errors
-	}
+// TokenBudgetExceeded says which token budget the run has used up, if any.
+// Cached prompt tokens don't count.
+func (e *Engine) TokenBudgetExceeded(ctx context.Context, r *store.Run, res *resolve.Resolved) (string, error) {
+	var flowCap, projCap int64
 	if bd := res.Flow.Spec.Budget; bd != nil {
-		if bd.Wall.Duration > 0 && r.StartedAt > 0 && store.Now() > r.StartedAt+bd.Wall.Duration.Milliseconds() {
-			return fmt.Sprintf("flow wall-clock budget %s exceeded", shortDuration(bd.Wall.Duration)), nil
+		flowCap = bd.Tokens
+	}
+	if p := res.Project; p != nil && p.Spec.Budget != nil {
+		projCap = p.Spec.Budget.TokensPerRun
+	}
+	if flowCap <= 0 && projCap <= 0 {
+		return "", nil
+	}
+	used, err := e.store.BudgetTokens(ctx, r)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case flowCap > 0 && used >= flowCap:
+		return fmt.Sprintf("flow token budget of %d is used up (%d used, cached tokens excluded)", flowCap, used), nil
+	case projCap > 0 && used >= projCap:
+		return fmt.Sprintf("project cap of %d tokens per run is used up (%d used, cached tokens excluded)", projCap, used), nil
+	}
+	return "", nil
+}
+
+// wallExceeded enforces the flow's wall-clock budget: time since the run
+// started or was last resumed, less the time it waited for people at gates.
+func (e *Engine) wallExceeded(ctx context.Context, r *store.Run) (string, error) {
+	snap, err := e.loadSnapshot(ctx, r)
+	if err != nil {
+		return "", nil // let normal reconciliation surface it
+	}
+	bd := snap.Resolved.Flow.Spec.Budget
+	if bd == nil || bd.Wall.Duration <= 0 || r.StartedAt == 0 {
+		return "", nil
+	}
+	now := store.Now()
+	if r.ResumeSeq == 0 && now <= r.StartedAt+bd.Wall.Duration.Milliseconds() {
+		return "", nil
+	}
+	vs, err := e.store.Visits(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
+	start, waited, resumed := r.StartedAt, int64(0), r.ResumeSeq > 0
+	for _, v := range vs {
+		if v.Seq <= r.ResumeSeq {
+			continue
 		}
-		if bd.Tokens > 0 && r.Tokens >= bd.Tokens {
-			return fmt.Sprintf("flow token budget %d exceeded (%d used)", bd.Tokens, r.Tokens), nil
+		if resumed {
+			start, resumed = max(start, v.CreatedAt), false
+		}
+		if v.Type == flow.TypeGate && v.StartedAt > 0 {
+			end := v.FinishedAt
+			if end == 0 {
+				end = now
+			}
+			waited += max(end-v.StartedAt, 0)
 		}
 	}
-	if p := res.Project; p != nil && p.Spec.Budget != nil && p.Spec.Budget.TokensPerRun > 0 && r.Tokens >= p.Spec.Budget.TokensPerRun {
-		return fmt.Sprintf("project token cap %d per run exceeded (%d used)", p.Spec.Budget.TokensPerRun, r.Tokens), nil
+	if now-start-waited > bd.Wall.Duration.Milliseconds() {
+		return fmt.Sprintf("flow wall-clock budget %s exceeded", shortDuration(bd.Wall.Duration)), nil
 	}
 	return "", nil
 }
@@ -1416,9 +1475,11 @@ func (e *Engine) cancelSiblingLanes(ctx context.Context, r *store.Run, fv *store
 		return err
 	}
 	for _, v := range vs {
-		if v.ForkSeq != fv.Seq || v.Lane == winnerLane || visitDone(v.Status) {
+		if v.ForkSeq != fv.Seq || v.Lane == winnerLane || (visitDone(v.Status) && v.Status != store.VisitCanceled) {
 			continue
 		}
+		// Canceled first, so a job that dies can't be read as a failed step. A
+		// failed Kill leaves the parallel visit open and comes back here.
 		if _, err := e.store.UpdateVisitIf(ctx, r.ID, v.Seq, []string{store.VisitPending, store.VisitRunning, store.VisitWaiting},
 			map[string]any{"status": store.VisitCanceled, "error": reason, "finished_at": store.Now()}); err != nil {
 			return err

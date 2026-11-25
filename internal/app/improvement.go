@@ -1438,21 +1438,63 @@ func (a *App) ApplyProposal(ctx context.Context, id, by, note, editedAfterText s
 	if err != nil {
 		return nil, warnings, err
 	}
-	// Mark this config entry as protected so a routine redeploy with an unrelated
-	// file change won't silently clobber an applied improvement proposal.
-	if b, err := json.Marshal(map[string]any{
-		"proposal_id": prop.ID,
-		"target_kind": prop.TargetKind,
-		"target":      prop.Target,
-		"after_hash":  finalHash,
-		"applied_at":  store.Now(),
-	}); err == nil {
-		_ = a.Store.SetKV(ctx, kvImpApplied+edit.Section+"/"+edit.Name, string(b))
+	if err := a.markApplied(ctx, cfg, edit, prop); err != nil {
+		return updated, warnings, err
 	}
 	if a.Hub != nil {
 		a.Hub.Publish(hub.Event{Type: "improvement", ID: id})
 	}
 	return updated, warnings, nil
+}
+
+// markApplied protects the fields a proposal changed, and only those, from
+// later config file changes to the same entry.
+func (a *App) markApplied(ctx context.Context, before *config.Config, edit ConfigEdit, prop *store.ImprovementProposal) error {
+	var fields [][]string
+	switch prop.TargetKind {
+	case TargetPreset:
+		fields = [][]string{{"prompt"}}
+	case TargetPresetConfig:
+		old, _ := presetConfigYAML(before, prop.Target)
+		now, _ := presetConfigYAML(a.Cfg.Current(), prop.Target)
+		var o, n map[string]any
+		if err := errors.Join(yaml.Unmarshal([]byte(old), &o), yaml.Unmarshal([]byte(now), &n)); err != nil {
+			return err
+		}
+		for _, k := range presetConfigKeys {
+			if !sameJSON(o[k], n[k]) {
+				fields = append(fields, []string{k})
+			}
+		}
+	case TargetSkill:
+		fields = [][]string{{"files", "SKILL.md"}}
+	case TargetHarness:
+		fields = [][]string{{"instructions"}}
+	case TargetPlanner:
+		fields = [][]string{{"guidance"}}
+	case TargetProjectAgent:
+		fields = [][]string{{"spec", "agent", "instructions"}}
+	case TargetProjectPlanner:
+		fields = [][]string{{"spec", "planner", "guidance"}}
+	}
+	key := kvImpApplied + edit.Section + "/" + edit.Name
+	var f appliedFields
+	raw, err := a.Store.GetKV(ctx, key)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &f); err != nil {
+			return err
+		}
+	}
+	f.ProposalIDs = append(f.ProposalIDs, prop.ID)
+	for _, path := range fields {
+		if !slices.ContainsFunc(f.Fields, func(p []string) bool { return slices.Equal(p, path) }) {
+			f.Fields = append(f.Fields, path)
+		}
+	}
+	return a.Store.SetKV(ctx, key, f.json())
 }
 
 // ExportAppliedImprovements renders a YAML overlay of catalog and project

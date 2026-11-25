@@ -9,7 +9,7 @@ import (
 	"github.com/mauza/ai-flow/internal/store"
 )
 
-func TestRunWallAndTokenBudgetsEnforced(t *testing.T) {
+func TestRunWallBudgetEnforced(t *testing.T) {
 	t.Run("wall", func(t *testing.T) {
 		h := newHarness(t)
 		id := h.flow(header + `  budget: { wall: 1m }
@@ -27,24 +27,6 @@ func TestRunWallAndTokenBudgetsEnforced(t *testing.T) {
 		r := h.run(id)
 		if r.Status != store.RunFailed || !strings.Contains(r.Error, "wall-clock budget") {
 			t.Fatalf("expected wall budget failure, got %s: %q", r.Status, r.Error)
-		}
-	})
-
-	t.Run("tokens", func(t *testing.T) {
-		h := newHarness(t)
-		id := h.flow(header + `  budget: { tokens: 100000 }
-  start: step
-  nodes:
-    step:
-      type: check
-      run: make test
-      next: { pass: $success, fail: $fail }
-`)
-		must(t, h.st.UpdateRun(h.ctx, id, map[string]any{"tokens": 120000}))
-		h.e.Tick(h.ctx)
-		r := h.run(id)
-		if r.Status != store.RunFailed || !strings.Contains(r.Error, "token budget") {
-			t.Fatalf("expected token budget failure, got %s: %q", r.Status, r.Error)
 		}
 	})
 }
