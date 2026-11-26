@@ -8,6 +8,7 @@ import { useToast } from "../ui";
 
 function target(s: Schedule): string {
   if (s.storymap) return `Next card from ${s.storymap.map || "every story map"}`;
+  if (s.hone_maps) return `Hone ${s.hone_maps.active_maps || 2} story maps`;
   return s.flow ? `Flow ${s.flow}` : s.task_title || "Task";
 }
 

@@ -116,6 +116,7 @@ acceptance:
   - the grid works on a phone
 metrics: [weekly-players]   # metrics this task should move
 status: todo                # todo | in_progress | done | blocked
+depends_on: [other-task]    # optional prerequisite task ids in the same map
 hypothesis: Showing all games up front increases trial plays.
 value: high                 # high | medium | low
 confidence: medium          # high | medium | low

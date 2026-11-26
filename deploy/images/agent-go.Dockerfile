@@ -6,7 +6,7 @@ FROM golang:1.26-bookworm AS go
 FROM ${BASE}
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && apt-get install -y --no-install-recommends gcc libc6-dev make \
  && rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 COPY --from=go /usr/local/go /usr/local/go

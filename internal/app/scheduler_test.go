@@ -157,3 +157,83 @@ releases:
 		t.Fatalf("expected skipped when no ready cards remain, got %+v", st3)
 	}
 }
+
+func TestStoryMapScheduleRespectsDependsOn(t *testing.T) {
+	ctx := context.Background()
+	cfg, err := config.Load("../../deploy/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Projects["sandbox"].Spec.Schedules = []config.ProjectSchedule{{
+		Name:         "storymap-deps",
+		Every:        flow.Duration{Duration: 2 * time.Hour},
+		StoryMap:     &config.ScheduleStoryMap{Map: "core", MaxPerTick: 1},
+		AutoStart:    true,
+		MaxOpenTasks: 5,
+	}}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ws := workspace.New(t.TempDir(), nil, store.Now)
+	mapDir := filepath.Join(ws.WorkDir("sandbox"), "product", "user-story-maps", "core")
+	if err := os.MkdirAll(filepath.Join(mapDir, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(mapDir, "map.yaml"), []byte(`title: Core
+journey:
+  - id: p1
+    title: P1
+    activities:
+      - id: a1
+        title: A1
+releases:
+  - id: r1
+    title: R1
+    status: in_progress
+`), 0o644)
+	os.WriteFile(filepath.Join(mapDir, "tasks", "prereq.yaml"), []byte("title: Prereq\nactivity: a1\nrelease: r1\norder: 1\nstatus: todo\n"), 0o644)
+	os.WriteFile(filepath.Join(mapDir, "tasks", "dependent.yaml"), []byte("title: Dependent\nactivity: a1\nrelease: r1\norder: 2\nstatus: todo\ndepends_on: [prereq]\n"), 0o644)
+
+	a := &app.App{Cfg: cfg, Store: st, Hub: hub.New(), Workspaces: ws}
+
+	// First trigger picks prereq.
+	st1, err := a.TriggerSchedule(ctx, "sandbox", "storymap-deps", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for a.Planning(st1.LastTaskID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(st1.LastReason, "core/prereq") {
+		t.Fatalf("expected prereq first, got %+v", st1)
+	}
+
+	// While prereq has not succeeded, dependent must NOT be picked.
+	st2, err := a.TriggerSchedule(ctx, "sandbox", "storymap-deps", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st2.LastStatus != "skipped" {
+		t.Fatalf("dependent should stay blocked until prereq succeeds, got %+v", st2)
+	}
+
+	// Once prereq has a succeeded run, dependent unblocks and is picked.
+	if err := st.CreateRun(ctx, &store.Run{ID: "r-prereq", FlowName: "prereq", FlowVersion: 1, TaskID: st1.LastTaskID, Project: "sandbox", Status: store.RunSucceeded, Branch: "b", Base: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	st3, err := a.TriggerSchedule(ctx, "sandbox", "storymap-deps", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for a.Planning(st3.LastTaskID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st3.LastStatus != "started" || !strings.Contains(st3.LastReason, "core/dependent") {
+		t.Fatalf("dependent should unblock after prereq succeeds, got %+v", st3)
+	}
+}

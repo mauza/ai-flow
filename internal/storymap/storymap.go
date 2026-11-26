@@ -110,6 +110,7 @@ type Task struct {
 	Acceptance    []string `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
 	Metrics       []string `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Status        string   `yaml:"status,omitempty" json:"status,omitempty"`
+	DependsOn     []string `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
 	Hypothesis    string   `yaml:"hypothesis,omitempty" json:"hypothesis,omitempty"`
 	OpenQuestions []string `yaml:"open_questions,omitempty" json:"open_questions,omitempty"`
 	Value         string   `yaml:"value,omitempty" json:"value,omitempty"`           // high | medium | low
@@ -221,8 +222,59 @@ func Load(work, mapID string) (*Loaded, error) {
 		l.Problems = append(l.Problems, l.Map.checkTask(&t)...)
 		l.Tasks = append(l.Tasks, t)
 	}
+	l.Problems = append(l.Problems, checkTaskDeps(l.Tasks)...)
 	sort.SliceStable(l.Tasks, func(i, j int) bool { return l.Tasks[i].Order < l.Tasks[j].Order })
 	return l, nil
+}
+
+func checkTaskDeps(tasks []Task) []string {
+	byID := make(map[string]Task, len(tasks))
+	for _, t := range tasks {
+		byID[t.ID] = t
+	}
+	var out []string
+	for _, t := range tasks {
+		seen := map[string]bool{}
+		for _, dep := range t.DependsOn {
+			if dep == t.ID {
+				out = append(out, fmt.Sprintf("task %s: cannot depend on itself", t.ID))
+				continue
+			}
+			if seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			if _, ok := byID[dep]; !ok {
+				out = append(out, fmt.Sprintf("task %s: unknown depends_on task %q", t.ID, dep))
+			}
+		}
+	}
+	// Detect dependency cycles (DFS 3-color).
+	color := map[string]int{} // 0=unvisited, 1=visiting, 2=done
+	var dfs func(id string) bool
+	dfs = func(id string) bool {
+		color[id] = 1
+		for _, dep := range byID[id].DependsOn {
+			if _, ok := byID[dep]; !ok || dep == id {
+				continue
+			}
+			if color[dep] == 1 {
+				out = append(out, fmt.Sprintf("task %s: dependency cycle involving %q", id, dep))
+				return true
+			}
+			if color[dep] == 0 && dfs(dep) {
+				return true
+			}
+		}
+		color[id] = 2
+		return false
+	}
+	for _, t := range tasks {
+		if color[t.ID] == 0 {
+			dfs(t.ID)
+		}
+	}
+	return out
 }
 
 func decode(b []byte, v any) error {

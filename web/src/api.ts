@@ -586,6 +586,7 @@ export interface Schedule {
   flow?: string;
   task_title?: string;
   storymap?: { map?: string; release?: string };
+  hone_maps?: { active_maps?: number; min_ready_tasks?: number; max_new_tasks?: number; model?: string; commit?: boolean };
   auto_start?: boolean;
   max_active_runs: number;
   max_open_tasks: number;

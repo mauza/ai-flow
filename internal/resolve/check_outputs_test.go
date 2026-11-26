@@ -105,3 +105,20 @@ func TestCIConflictSwitchValidates(t *testing.T) {
 		t.Fatalf("issues: %v", issues)
 	}
 }
+
+func TestOutputSchemaAcceptsQuotedListShorthand(t *testing.T) {
+	s, err := OutputSchema("[string]")
+	if err != nil {
+		t.Fatalf("quoted [string] should be accepted: %v", err)
+	}
+	if s["type"] != "array" {
+		t.Fatalf("want array schema, got %+v", s)
+	}
+	items, _ := s["items"].(map[string]any)
+	if items["type"] != "string" {
+		t.Fatalf("want string items, got %+v", s)
+	}
+	if _, err := OutputSchema("[unknown]"); err == nil {
+		t.Fatal("invalid inner type must still fail")
+	}
+}

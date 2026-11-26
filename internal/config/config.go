@@ -493,10 +493,47 @@ type ProjectSchedule struct {
 	Flow          string            `json:"flow,omitempty"`
 	Task          *ScheduleTask     `json:"task,omitempty"`
 	StoryMap      *ScheduleStoryMap `json:"storymap,omitempty"`
+	HoneMaps      *ScheduleHoneMaps `json:"hone_maps,omitempty"`
 	AutoStart     bool              `json:"auto_start,omitempty"`      // start planned run automatically even when project.start is manual
 	MaxActiveRuns int               `json:"max_active_runs,omitempty"` // default 1
 	MaxOpenTasks  int               `json:"max_open_tasks,omitempty"`  // default 5
 	MaxOpenPRs    int               `json:"max_open_prs,omitempty"`    // default 2: unmerged ai-flow PRs on the project's repo
+}
+
+// ScheduleHoneMaps runs a continuous product-refinement loop that closes out
+// shipped story-map cards and hones the project's active user story maps using
+// the project's mission/vision, recent commits & runs, codebase map, and metrics.
+type ScheduleHoneMaps struct {
+	ActiveMaps    int    `json:"active_maps,omitempty"`     // target number of active story maps; default 2
+	MinReadyTasks int    `json:"min_ready_tasks,omitempty"` // minimum ready todo cards per active map; default 2
+	MaxNewTasks   int    `json:"max_new_tasks,omitempty"`   // cap on new tasks added per map per tick; default 3
+	Model         string `json:"model,omitempty"`           // model override; defaults to catalog.planner.model
+	Commit        *bool  `json:"commit,omitempty"`          // commit & push validated changes to base branch; default true
+}
+
+func (s ScheduleHoneMaps) EffectiveActiveMaps() int {
+	if s.ActiveMaps <= 0 {
+		return 2
+	}
+	return s.ActiveMaps
+}
+
+func (s ScheduleHoneMaps) EffectiveMinReadyTasks() int {
+	if s.MinReadyTasks <= 0 {
+		return 2
+	}
+	return s.MinReadyTasks
+}
+
+func (s ScheduleHoneMaps) EffectiveMaxNewTasks() int {
+	if s.MaxNewTasks <= 0 {
+		return 3
+	}
+	return s.MaxNewTasks
+}
+
+func (s ScheduleHoneMaps) ShouldCommit() bool {
+	return s.Commit == nil || *s.Commit
 }
 
 // ScheduleStoryMap pulls the next ready "todo" card from a project's user story
@@ -1169,6 +1206,7 @@ func (c *Config) check() error {
 			hasFlow := strings.TrimSpace(sc.Flow) != ""
 			hasTask := sc.Task != nil && strings.TrimSpace(sc.Task.Title) != ""
 			hasStoryMap := sc.StoryMap != nil
+			hasHoneMaps := sc.HoneMaps != nil
 			targets := 0
 			if hasFlow {
 				targets++
@@ -1179,8 +1217,14 @@ func (c *Config) check() error {
 			if hasStoryMap {
 				targets++
 			}
+			if hasHoneMaps {
+				targets++
+			}
 			if targets != 1 {
-				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow, task.title, or storymap", name, sname))
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q must set exactly one of flow, task.title, storymap, or hone_maps", name, sname))
+			}
+			if sc.HoneMaps != nil && sc.HoneMaps.Model != "" && c.Catalog.Models[sc.HoneMaps.Model] == nil {
+				errs = append(errs, fmt.Sprintf("project %s: schedule %q hone_maps.model %q is not in catalog", name, sname, sc.HoneMaps.Model))
 			}
 			if sc.MaxActiveRuns < 0 || sc.MaxOpenTasks < 0 || sc.MaxOpenPRs < 0 {
 				errs = append(errs, fmt.Sprintf("project %s: schedule %q limits must be non-negative", name, sname))

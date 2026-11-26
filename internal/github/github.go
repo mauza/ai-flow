@@ -380,6 +380,46 @@ func (c *Client) actionsJobs(ctx context.Context, r Repo, ref string) ([]checkRu
 	return out, nil
 }
 
+// CommitSummary is a brief entry from a branch's commit history.
+type CommitSummary struct {
+	SHA     string
+	Message string
+	Date    string
+}
+
+// RecentCommits returns up to limit recent commits on branch, newest first.
+func (c *Client) RecentCommits(ctx context.Context, r Repo, branch string, limit int) ([]CommitSummary, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var raw []struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Message   string `json:"message"`
+			Committer struct {
+				Date string `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	p := fmt.Sprintf("/repos/%s/%s/commits?sha=%s&per_page=%d", r.Owner, r.Name, url.QueryEscape(branch), limit)
+	if err := c.do(ctx, "GET", p, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]CommitSummary, 0, len(raw))
+	for _, it := range raw {
+		msg := strings.TrimSpace(it.Commit.Message)
+		if nl := strings.IndexByte(msg, '\n'); nl >= 0 {
+			msg = strings.TrimSpace(msg[:nl])
+		}
+		sha := it.SHA
+		if len(sha) > 7 {
+			sha = sha[:7]
+		}
+		out = append(out, CommitSummary{SHA: sha, Message: msg, Date: it.Commit.Committer.Date})
+	}
+	return out, nil
+}
+
 // FirstParent returns a commit's first parent: for a merge commit, the tip
 // of the branch it was merged into (what was deployed before the merge).
 func (c *Client) FirstParent(ctx context.Context, r Repo, sha string) (string, error) {

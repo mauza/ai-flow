@@ -304,6 +304,7 @@ presets:
       Add a test that reproduces the bug (or specifies the new behaviour) described in the task. Do not fix it.
       - Put the test next to the existing tests for that module; add to the existing test file when there is one.
       - Add only the new test case. Never copy or duplicate existing tests.
+      - Keep inspection focused on the affected module and its test setup. If the expected failure cannot be reproduced after a focused attempt (at most ~10 tool calls), stop and return cannot_reproduce with the blocker.
       Run the test and confirm it fails for the right reason.
       Return reproduced only for the expected assertion failure, not a missing tool or broken setup; otherwise cannot_reproduce.
     outputs: { test_name: string, evidence: string }

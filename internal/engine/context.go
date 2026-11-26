@@ -468,6 +468,25 @@ func (e *Engine) evalSwitch(ctx context.Context, r *store.Run, res *resolve.Reso
 	if len(n.Cases) == 0 {
 		return n.Default, "All branches finished", nil
 	}
+	// Pre-populate declared nodes that have not succeeded yet so CEL checks
+	// like size(nodes.<id>.history) or nodes.<id>.outcome never fail with
+	// "no such key" on an initial pass (template ?? fallbacks keep missing keys).
+	if rawNodes, ok := c["nodes"].(map[string]any); ok && res != nil {
+		celNodes := make(map[string]any, len(res.Nodes))
+		for id := range res.Nodes {
+			if v, exists := rawNodes[id]; exists {
+				celNodes[id] = v
+			} else {
+				celNodes[id] = map[string]any{"outcome": "", "summary": "", "outputs": map[string]any{}, "visit": 0, "history": []any{}}
+			}
+		}
+		for id, v := range rawNodes {
+			if _, exists := celNodes[id]; !exists {
+				celNodes[id] = v
+			}
+		}
+		c["nodes"] = celNodes
+	}
 	for _, cs := range n.Cases {
 		ok, err := resolve.EvalCEL(cs.When, c)
 		if err != nil {

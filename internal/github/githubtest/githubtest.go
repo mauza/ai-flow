@@ -100,6 +100,21 @@ func (r *Repo) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case req.Method == "GET" && p == "/branches/main":
 		json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"sha": r.head}})
+	case req.Method == "GET" && strings.HasPrefix(p, "/contents/"):
+		fp := strings.TrimPrefix(p, "/contents/")
+		if content, ok := r.commits[r.head][fp]; ok {
+			json.NewEncoder(w).Encode(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))})
+			return
+		}
+		http.NotFound(w, req)
+	case req.Method == "GET" && p == "/commits":
+		json.NewEncoder(w).Encode([]map[string]any{{
+			"sha": r.head,
+			"commit": map[string]any{
+				"message":   "Latest commit on main",
+				"committer": map[string]any{"date": "2026-11-26T12:00:00Z"},
+			},
+		}})
 	case req.Method == "GET" && strings.HasPrefix(p, "/git/trees/"):
 		files := r.commits[strings.TrimPrefix(p, "/git/trees/")]
 		var tree []map[string]any

@@ -19,6 +19,11 @@ func OutputSchema(typ any) (map[string]any, error) {
 		case "bool", "boolean":
 			return map[string]any{"type": "boolean"}, nil
 		}
+		if len(t) > 2 && t[0] == '[' && t[len(t)-1] == ']' {
+			if item, err := OutputSchema(t[1 : len(t)-1]); err == nil {
+				return map[string]any{"type": "array", "items": item}, nil
+			}
+		}
 		return nil, fmt.Errorf("unknown type %q (string, number, integer, bool, object, [string] or a JSON Schema)", t)
 	case []any:
 		if len(t) != 1 {

@@ -75,6 +75,7 @@ type ScheduleView struct {
 	Flow          string                   `json:"flow,omitempty"`
 	TaskTitle     string                   `json:"task_title,omitempty"`
 	StoryMap      *config.ScheduleStoryMap `json:"storymap,omitempty"`
+	HoneMaps      *config.ScheduleHoneMaps `json:"hone_maps,omitempty"`
 	AutoStart     bool                     `json:"auto_start,omitempty"`
 	MaxActiveRuns int                      `json:"max_active_runs"`
 	MaxOpenTasks  int                      `json:"max_open_tasks"`
@@ -177,6 +178,7 @@ func (a *App) ListSchedules(ctx context.Context, project string) []ScheduleView 
 				Every:         sc.Every.Duration.String(),
 				Flow:          sc.Flow,
 				StoryMap:      sc.StoryMap,
+				HoneMaps:      sc.HoneMaps,
 				AutoStart:     sc.AutoStart,
 				MaxActiveRuns: sc.EffectiveMaxActiveRuns(),
 				MaxOpenTasks:  sc.EffectiveMaxOpenTasks(),
@@ -234,6 +236,9 @@ func (a *App) TriggerSchedule(ctx context.Context, project, name string, force b
 // runSchedule does one trigger's work. LastRunAt is set when the interval was
 // used: work was queued, or there was none to queue.
 func (a *App) runSchedule(ctx context.Context, project string, sc config.ProjectSchedule, force bool) (ScheduleState, error) {
+	if sc.HoneMaps != nil {
+		return a.runHoneMapsSchedule(ctx, project, sc)
+	}
 	slots := math.MaxInt
 	if !force {
 		reason, free, err := a.scheduleBlockedReason(ctx, project, sc)
@@ -281,7 +286,7 @@ func (a *App) runSchedule(ctx context.Context, project string, sc config.Project
 		return ScheduleState{LastRunAt: now, LastStatus: "started", LastTaskID: t.ID,
 			LastReason: "Created scheduled task " + t.ID}, nil
 	}
-	return ScheduleState{}, fmt.Errorf("schedule %q has neither flow, task, nor storymap", sc.Name)
+	return ScheduleState{}, fmt.Errorf("schedule %q has neither flow, task, storymap, nor hone_maps", sc.Name)
 }
 
 // createScheduledTask creates and plans t. The record goes first: planning may
@@ -350,8 +355,13 @@ func (a *App) runStoryMapSchedule(ctx context.Context, project string, sc config
 		if err != nil {
 			return ScheduleState{}, err
 		}
-		handled, failed := cardHistory(works, sc.StoryMap.EffectiveMaxAttempts(), now-sc.Every.Duration.Milliseconds())
-		for _, card := range selectNextStoryMapTasks(loaded, sc.StoryMap.Release, handled, sc.StoryMap.ShouldSkipOpenQuestions(), maxPick-len(created)) {
+		handled, completed, failed := cardHistory(works, sc.StoryMap.EffectiveMaxAttempts(), now-sc.Every.Duration.Milliseconds())
+		for _, t := range loaded.Tasks {
+			if t.Status == "done" {
+				completed[t.ID] = true
+			}
+		}
+		for _, card := range selectNextStoryMapTasks(loaded, sc.StoryMap.Release, handled, completed, sc.StoryMap.ShouldSkipOpenQuestions(), maxPick-len(created)) {
 			t, err := a.sendToFlow(ctx, project, mapID, "task", card.ID, "", true, rec, retryNote(failed[card.ID]))
 			if err != nil {
 				return ScheduleState{}, err
@@ -370,17 +380,23 @@ func (a *App) runStoryMapSchedule(ctx context.Context, project string, sc config
 // cardHistory sorts a map's cards by what earlier work on them means for the
 // next pick. A card is handled while any work on it is open or succeeded, when
 // a human canceled it, when its last failure is newer than retryBefore (leaving
-// time to resume it), or after maxAttempts failures. failed holds the newest
-// failure of every card.
-func cardHistory(works []*MapWork, maxAttempts int, retryBefore int64) (handled map[string]bool, failed map[string]*MapWork) {
-	handled, failed = map[string]bool{}, map[string]*MapWork{}
+// time to resume it), or after maxAttempts failures. completed holds cards
+// whose run succeeded (so depends_on checks can unblock downstream cards even
+// before the YAML status is flipped to done). failed holds the newest failure
+// of every card.
+func cardHistory(works []*MapWork, maxAttempts int, retryBefore int64) (handled, completed map[string]bool, failed map[string]*MapWork) {
+	handled, completed, failed = map[string]bool{}, map[string]bool{}, map[string]*MapWork{}
 	attempts := map[string]int{}
 	for _, w := range works { // newest first
+		succeeded := w.Run != nil && w.Run.Status == store.RunSucceeded
 		failure := w.Task.Status == store.TaskFailed || w.Task.Status == store.TaskPlanFailed
 		if w.Run != nil && w.Run.Status == store.RunCanceled {
 			failure = false
 		}
 		for _, id := range w.Scope.Tasks {
+			if succeeded {
+				completed[id] = true
+			}
 			if !failure || w.Task.UpdatedAt > retryBefore {
 				handled[id] = true
 				continue
@@ -393,7 +409,7 @@ func cardHistory(works []*MapWork, maxAttempts int, retryBefore int64) (handled 
 			}
 		}
 	}
-	return handled, failed
+	return handled, completed, failed
 }
 
 // retryNote tells the planner what went wrong the last time.
@@ -412,7 +428,9 @@ func retryNote(w *MapWork) string {
 
 // selectNextStoryMapTasks picks up to limit ready "todo" user tasks ordered by
 // release slice (in map.Releases order), then journey backbone order, then card order.
-func selectNextStoryMapTasks(l *storymap.Loaded, releaseFilter string, handled map[string]bool, skipOpenQuestions bool, limit int) []storymap.Task {
+// Tasks with unmet depends_on prerequisites are skipped until their prerequisites
+// are completed.
+func selectNextStoryMapTasks(l *storymap.Loaded, releaseFilter string, handled, completed map[string]bool, skipOpenQuestions bool, limit int) []storymap.Task {
 	if l == nil || limit <= 0 {
 		return nil
 	}
@@ -436,6 +454,14 @@ func selectNextStoryMapTasks(l *storymap.Loaded, releaseFilter string, handled m
 			idx++
 		}
 	}
+	depsMet := func(t storymap.Task) bool {
+		for _, dep := range t.DependsOn {
+			if !completed[dep] {
+				return false
+			}
+		}
+		return true
+	}
 	var out []storymap.Task
 	for _, rel := range releases {
 		var sliceCards []storymap.Task
@@ -450,6 +476,9 @@ func selectNextStoryMapTasks(l *storymap.Loaded, releaseFilter string, handled m
 				continue
 			}
 			if skipOpenQuestions && len(t.OpenQuestions) > 0 {
+				continue
+			}
+			if !depsMet(t) {
 				continue
 			}
 			sliceCards = append(sliceCards, t)

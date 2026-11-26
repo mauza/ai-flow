@@ -78,3 +78,32 @@ func TestNoLoopHistoryWithoutRepeats(t *testing.T) {
 		t.Errorf("a straight path has no loop history:\n%s", md)
 	}
 }
+
+// Regression: a switch/join referencing size(nodes.<self>.history) on its first
+// visit previously crashed with "no such key: <self>" because unvisited nodes
+// were omitted from the CEL nodes map.
+func TestSwitchCELHandlesUnvisitedNodeHistory(t *testing.T) {
+	h := newHarness(t)
+	id := h.flow(header + `  start: work
+  nodes:
+    work:
+      type: agent
+      model: ` + testModel + `
+      prompt: work
+      outcomes: [done]
+      next: { done: verified }
+    verified:
+      type: switch
+      cases:
+        - when: "size(nodes.work.history) < size(nodes.verified.history) + 1"
+          outcome: stale
+        - when: "nodes.work.outcome == \"done\""
+          outcome: passed
+      default: failed
+      next: { stale: $fail, passed: $success, failed: $fail }
+`)
+	h.finish(id, "done", nil)
+	if r := h.run(id); r.Status != store.RunSucceeded {
+		t.Fatalf("want succeeded without no-such-key error, got %s %q (%s)", r.Status, r.Error, h.path(id))
+	}
+}

@@ -153,3 +153,43 @@ func TestMarshalKeepsFieldOrder(t *testing.T) {
 		t.Fatalf("%v %+v", err, back)
 	}
 }
+
+func TestDependsOnValidation(t *testing.T) {
+	dir := t.TempDir()
+	mapDir := filepath.Join(dir, filepath.FromSlash(storymap.Dir("deps")))
+	os.MkdirAll(filepath.Join(mapDir, "tasks"), 0o755)
+	os.WriteFile(filepath.Join(mapDir, "map.yaml"), []byte(`title: Deps
+journey:
+  - id: p1
+    title: P1
+    activities:
+      - id: a1
+        title: A1
+releases:
+  - id: r1
+    title: R1
+    status: in_progress
+`), 0o644)
+	writeTask := func(id, body string) {
+		os.WriteFile(filepath.Join(mapDir, "tasks", id+".yaml"), []byte(body), 0o644)
+	}
+	writeTask("first", "title: First\nactivity: a1\nrelease: r1\nstatus: todo\n")
+	writeTask("second", "title: Second\nactivity: a1\nrelease: r1\nstatus: todo\ndepends_on: [first]\n")
+	l, err := storymap.Load(dir, "deps")
+	if err != nil || len(l.Problems) != 0 {
+		t.Fatalf("valid depends_on should have no problems: %v %v", err, l.Problems)
+	}
+
+	writeTask("bad", "title: Bad\nactivity: a1\nrelease: r1\nstatus: todo\ndepends_on: [missing, bad]\n")
+	writeTask("first", "title: First\nactivity: a1\nrelease: r1\nstatus: todo\ndepends_on: [second]\n")
+	l, err = storymap.Load(dir, "deps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.Problems, "\n")
+	for _, want := range []string{"unknown depends_on task", "cannot depend on itself", "dependency cycle"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in problems:\n%s", want, joined)
+		}
+	}
+}
