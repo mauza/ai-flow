@@ -53,7 +53,7 @@ func TestMigrateOriginalDatabaseAndReopen(t *testing.T) {
 		}
 		var version int
 		check(t, s.db.QueryRow(`PRAGMA user_version`).Scan(&version))
-		if version != 7 {
+		if version != 8 {
 			t.Fatalf("version %d", version)
 		}
 		check(t, s.Ping(ctx))
@@ -61,6 +61,35 @@ func TestMigrateOriginalDatabaseAndReopen(t *testing.T) {
 		if s.Ping(ctx) == nil {
 			t.Fatal("closed database is ready")
 		}
+	}
+}
+
+func TestLLMUsageLedgerAndPruning(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	r := &Run{ID: "r1", FlowName: "f", Status: RunRunning}
+	check(t, s.CreateRun(ctx, r))
+	v, err := s.AddVisit(ctx, r.ID, "impl", "agent")
+	check(t, err)
+	check(t, s.AddUsage(ctx, r.ID, v.Seq, "gpt-6.2-sol", 1000, 200, 600, 0))
+	check(t, s.RecordLLMUsage(ctx, "gpt-6.2-sol", 500, 100, 0, "control-plane"))
+	check(t, s.RecordLLMUsage(ctx, "gemini-4-neon-high", 2000, 300, 1500, "control-plane"))
+
+	got, err := s.ModelUsageSince(ctx, Now()-60_000)
+	check(t, err)
+	sol := got["gpt-6.2-sol"]
+	if sol.TokensIn != 1500 || sol.TokensOut != 300 || sol.TokensCached != 600 || sol.Calls != 2 || sol.Uncached() != 1200 {
+		t.Fatalf("unexpected sol usage: %+v", sol)
+	}
+	gem := got["gemini-4-neon-high"]
+	if gem.TokensIn != 2000 || gem.TokensOut != 300 || gem.TokensCached != 1500 || gem.Uncached() != 800 {
+		t.Fatalf("unexpected gemini usage: %+v", gem)
+	}
+	check(t, s.PruneLLMUsage(ctx, Now()+60_000))
+	got, err = s.ModelUsageSince(ctx, 0)
+	check(t, err)
+	if len(got) != 0 {
+		t.Fatalf("expected pruned ledger, got %+v", got)
 	}
 }
 

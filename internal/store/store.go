@@ -674,7 +674,67 @@ func (s *Store) AddUsage(ctx context.Context, runID string, seq int, model strin
 	} else if n != 1 {
 		return ErrNotFound
 	}
+	if model != "" && (in > 0 || out > 0) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO llm_usage (ts, model, tokens_in, tokens_out, tokens_cached, calls, source) VALUES (?,?,?,?,?,1,'visit')`,
+			now(), model, in, out, cached); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+// ModelUsage aggregates recorded token consumption for one catalog model.
+type ModelUsage struct {
+	TokensIn     int64
+	TokensOut    int64
+	TokensCached int64
+	Calls        int64
+}
+
+// Uncached returns output tokens plus prompt tokens not served from cache.
+func (u ModelUsage) Uncached() int64 {
+	prompt := u.TokensIn - u.TokensCached
+	if prompt < 0 {
+		prompt = 0
+	}
+	return prompt + u.TokensOut
+}
+
+// RecordLLMUsage records a control-plane LLM call (planner, grader, map hone)
+// in the rolling usage ledger so 5h/weekly token totals include it alongside runs.
+func (s *Store) RecordLLMUsage(ctx context.Context, model string, in, out, cached int64, source string) error {
+	if model == "" || (in <= 0 && out <= 0) {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO llm_usage (ts, model, tokens_in, tokens_out, tokens_cached, calls, source) VALUES (?,?,?,?,?,1,?)`,
+		now(), model, in, out, cached, source)
+	return err
+}
+
+// ModelUsageSince returns per-model token totals recorded at or after sinceMS.
+func (s *Store) ModelUsageSince(ctx context.Context, sinceMS int64) (map[string]ModelUsage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT model, COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0), COALESCE(SUM(tokens_cached),0), COALESCE(SUM(calls),0)
+		FROM llm_usage WHERE ts >= ? GROUP BY model`, sinceMS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ModelUsage{}
+	for rows.Next() {
+		var model string
+		var u ModelUsage
+		if err := rows.Scan(&model, &u.TokensIn, &u.TokensOut, &u.TokensCached, &u.Calls); err != nil {
+			return nil, err
+		}
+		out[model] = u
+	}
+	return out, rows.Err()
+}
+
+// PruneLLMUsage deletes rolling usage entries older than beforeMS.
+func (s *Store) PruneLLMUsage(ctx context.Context, beforeMS int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM llm_usage WHERE ts < ?`, beforeMS)
+	return err
 }
 
 // ---- events ----

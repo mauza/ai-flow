@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,8 +29,10 @@ type Usage struct {
 }
 
 type Client struct {
-	cfg  *config.Config
-	http *http.Client
+	cfg     *config.Config
+	http    *http.Client
+	OnUsage func(ctx context.Context, model string, in, out, cached int64)
+	OnLimit func(upstream string, retryAfter time.Duration)
 }
 
 func New(cfg *config.Config) *Client {
@@ -95,7 +98,11 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 		if opt.Stream {
 			if resp.StatusCode >= 300 {
 				// Error bodies can contain credentials or echoed prompt content.
+				ra := parseRetryAfter(resp.Header.Get("Retry-After"))
 				resp.Body.Close()
+				if resp.StatusCode == 429 && c.OnLimit != nil {
+					c.OnLimit(m.Upstream, ra)
+				}
 				lastErr = fmt.Errorf("%s: HTTP %d", model, resp.StatusCode)
 				if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 					continue
@@ -107,10 +114,17 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 			if err != nil {
 				return "", Usage{}, fmt.Errorf("%s: %w", model, err)
 			}
+			if c.OnUsage != nil {
+				c.OnUsage(ctx, model, usage.PromptTokens, usage.CompletionTokens, 0)
+			}
 			return reply, usage, nil
 		}
+		ra := parseRetryAfter(resp.Header.Get("Retry-After"))
 		data, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode == 429 && c.OnLimit != nil {
+			c.OnLimit(m.Upstream, ra)
+		}
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("%s: HTTP %d: %s", model, resp.StatusCode, truncate(string(data), 300))
 			continue
@@ -134,6 +148,9 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 		}
 		if len(out.Choices) == 0 {
 			return "", out.Usage, fmt.Errorf("%s: no choices in response", model)
+		}
+		if c.OnUsage != nil {
+			c.OnUsage(ctx, model, out.Usage.PromptTokens, out.Usage.CompletionTokens, 0)
 		}
 		return out.Choices[0].Message.Content, out.Usage, nil
 	}
@@ -163,6 +180,9 @@ func (c *Client) chatAntigravity(ctx context.Context, model string, m *config.Mo
 		}
 		resp, err := antigravity.Complete(ctx, req)
 		if err == nil {
+			if c.OnUsage != nil {
+				c.OnUsage(ctx, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.CachedTokens)
+			}
 			return resp.Content, Usage{
 				PromptTokens:     resp.Usage.PromptTokens,
 				CompletionTokens: resp.Usage.CompletionTokens,
@@ -172,12 +192,26 @@ func (c *Client) chatAntigravity(ctx context.Context, model string, m *config.Mo
 			return "", Usage{}, ctx.Err()
 		}
 		var aerr *antigravity.Error
-		if errors.As(err, &aerr) && (aerr.AuthError || (!aerr.RateLimit && !aerr.QuotaLimit && aerr.Status != "")) {
-			return "", Usage{}, fmt.Errorf("%s: %w", model, err)
+		if errors.As(err, &aerr) {
+			if (aerr.RateLimit || aerr.QuotaLimit) && c.OnLimit != nil {
+				c.OnLimit(m.Upstream, 0)
+			}
+			if aerr.AuthError || (!aerr.RateLimit && !aerr.QuotaLimit && aerr.Status != "") {
+				return "", Usage{}, fmt.Errorf("%s: %w", model, err)
+			}
 		}
 		lastErr = fmt.Errorf("%s: %w", model, err)
 	}
 	return "", Usage{}, lastErr
+}
+
+func parseRetryAfter(h string) time.Duration {
+	if s := strings.TrimSpace(h); s != "" {
+		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 0
 }
 
 func truncate(s string, n int) string {

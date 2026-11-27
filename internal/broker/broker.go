@@ -61,6 +61,14 @@ type Broker struct {
 
 	graceMu sync.Mutex
 	grace   map[string]int // run/seq → calls left after the run's own budget ran out
+
+	onLimit func(upstream string, retryAfter time.Duration)
+}
+
+// SetLimitHook registers a callback fired when an upstream returns 429 or
+// reports rate/quota exhaustion.
+func (b *Broker) SetLimitHook(fn func(upstream string, retryAfter time.Duration)) {
+	b.onLimit = fn
 }
 
 func New(cfg *config.Config, st *store.Store, e *engine.Engine, s *grant.Signer, obj objstore.Store, h *hub.Hub, pods PodIdentifier, mcp *mcpx.Pool) *Broker {

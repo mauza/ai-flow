@@ -137,6 +137,91 @@ type Runs struct {
 
 type LLM struct {
 	Upstreams map[string]Upstream `json:"upstreams"`
+	Pacing    Pacing              `json:"pacing,omitzero"`
+}
+
+// Pacing controls how ai-flow speeds up, throttles, or holds autonomous
+// schedules based on 5-hour and weekly subscription quota headroom.
+type Pacing struct {
+	Enabled             *bool         `json:"enabled,omitempty"`
+	PollInterval        flow.Duration `json:"pollInterval,omitzero"`
+	HoldPercent         float64       `json:"holdPercent,omitempty"`         // default 85
+	ThrottlePercent     float64       `json:"throttlePercent,omitempty"`     // default 65
+	MinIntervalFactor   float64       `json:"minIntervalFactor,omitempty"`   // default 0.35 (fastest boost)
+	MaxIntervalFactor   float64       `json:"maxIntervalFactor,omitempty"`   // default 3.0 (slowest throttle)
+	MaxBoostConcurrency int           `json:"maxBoostConcurrency,omitempty"` // default 3 (bounded by runs.maxConcurrent)
+}
+
+func (p Pacing) IsEnabled(hasQuota bool) bool {
+	if p.Enabled != nil {
+		return *p.Enabled
+	}
+	return hasQuota
+}
+
+func (p Pacing) EffectivePollInterval() time.Duration {
+	if p.PollInterval.Duration > 0 {
+		return p.PollInterval.Duration
+	}
+	return 2 * time.Minute
+}
+
+func (p Pacing) EffectiveHoldPercent() float64 {
+	if p.HoldPercent > 0 {
+		return p.HoldPercent
+	}
+	return 85
+}
+
+func (p Pacing) EffectiveThrottlePercent() float64 {
+	if p.ThrottlePercent > 0 {
+		return p.ThrottlePercent
+	}
+	return 65
+}
+
+func (p Pacing) EffectiveMinIntervalFactor() float64 {
+	if p.MinIntervalFactor > 0 {
+		return p.MinIntervalFactor
+	}
+	return 0.35
+}
+
+func (p Pacing) EffectiveMaxIntervalFactor() float64 {
+	if p.MaxIntervalFactor > 0 {
+		return p.MaxIntervalFactor
+	}
+	return 3.0
+}
+
+func (p Pacing) EffectiveMaxBoostConcurrency() int {
+	if p.MaxBoostConcurrency > 0 {
+		return p.MaxBoostConcurrency
+	}
+	return 3
+}
+
+// UpstreamQuota configures optional live quota probing and/or local rolling
+// 5-hour and weekly token ceilings for one LLM upstream.
+type UpstreamQuota struct {
+	URL          string `json:"url,omitempty"`
+	APIKeyEnv    string `json:"apiKeyEnv,omitempty"`
+	Tokens5h     int64  `json:"tokens5h,omitempty"`
+	TokensWeekly int64  `json:"tokensWeekly,omitempty"`
+	// CostClasses filters which catalog model cost classes count toward local
+	// rolling token totals (default ["subscription"]; "*" counts every model).
+	CostClasses []string `json:"costClasses,omitempty"`
+}
+
+func (q *UpstreamQuota) EffectiveCostClasses() []string {
+	if q == nil || len(q.CostClasses) == 0 {
+		return []string{"subscription"}
+	}
+	return q.CostClasses
+}
+
+func (q *UpstreamQuota) Configured() bool {
+	return q != nil && (strings.TrimSpace(q.URL) != "" || q.Tokens5h > 0 || q.TokensWeekly > 0)
 }
 
 const (
@@ -160,6 +245,8 @@ type Upstream struct {
 	// PodSecret names a Kubernetes Secret in the runs namespace mounted into
 	// agent pods that use this antigravity upstream.
 	PodSecret *SecretRef `json:"podSecret,omitempty"`
+	// Quota configures live quota polling and/or rolling 5h/weekly token budgets.
+	Quota *UpstreamQuota `json:"quota,omitempty"`
 }
 
 // IsAntigravity reports whether u runs through the Google Antigravity CLI (`agy`).
@@ -513,6 +600,7 @@ type ProjectSchedule struct {
 	StoryMap      *ScheduleStoryMap `json:"storymap,omitempty"`
 	HoneMaps      *ScheduleHoneMaps `json:"hone_maps,omitempty"`
 	AutoStart     bool              `json:"auto_start,omitempty"`      // start planned run automatically even when project.start is manual
+	Pacing        *bool             `json:"pacing,omitempty"`          // default true: scale interval & active runs with quota headroom
 	MaxActiveRuns int               `json:"max_active_runs,omitempty"` // default 1
 	MaxOpenTasks  int               `json:"max_open_tasks,omitempty"`  // default 5
 	MaxOpenPRs    int               `json:"max_open_prs,omitempty"`    // default 2: unmerged ai-flow PRs on the project's repo
@@ -583,6 +671,8 @@ func (s ScheduleStoryMap) ShouldSkipOpenQuestions() bool {
 }
 
 func (s ProjectSchedule) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+func (s ProjectSchedule) PacingEnabled() bool { return s.Pacing == nil || *s.Pacing }
 
 func (s ProjectSchedule) EffectiveMaxActiveRuns() int {
 	if s.MaxActiveRuns <= 0 {
@@ -1083,6 +1173,31 @@ func (c *Config) check() error {
 			}
 		default:
 			errs = append(errs, fmt.Sprintf("llm upstream %s: unknown type %q (expected \"\" or %q)", name, u.Type, UpstreamAntigravity))
+		}
+		if q := u.Quota; q != nil {
+			if q.Tokens5h < 0 || q.TokensWeekly < 0 {
+				errs = append(errs, fmt.Sprintf("llm upstream %s: quota token limits must be non-negative", name))
+			}
+		}
+	}
+	if pc := c.Env.LLM.Pacing; true {
+		if pc.HoldPercent < 0 || pc.HoldPercent > 100 {
+			errs = append(errs, "llm.pacing.holdPercent: must be between 0 and 100")
+		}
+		if pc.ThrottlePercent < 0 || pc.ThrottlePercent > 100 {
+			errs = append(errs, "llm.pacing.throttlePercent: must be between 0 and 100")
+		}
+		if pc.ThrottlePercent > 0 && pc.ThrottlePercent >= pc.EffectiveHoldPercent() {
+			errs = append(errs, "llm.pacing.throttlePercent: must be less than holdPercent")
+		}
+		if pc.MinIntervalFactor < 0 || pc.MinIntervalFactor > 1 {
+			errs = append(errs, "llm.pacing.minIntervalFactor: must be between 0 and 1")
+		}
+		if pc.MaxIntervalFactor < 0 || (pc.MaxIntervalFactor > 0 && pc.MaxIntervalFactor < 1) {
+			errs = append(errs, "llm.pacing.maxIntervalFactor: must be >= 1")
+		}
+		if pc.MaxBoostConcurrency < 0 {
+			errs = append(errs, "llm.pacing.maxBoostConcurrency: must be non-negative")
 		}
 	}
 	for name, m := range c.Catalog.Models {

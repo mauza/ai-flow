@@ -20,6 +20,7 @@ import (
 	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
+	"github.com/mauza/ai-flow/internal/quota"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/store"
 	"github.com/mauza/ai-flow/internal/workspace"
@@ -46,6 +47,8 @@ type App struct {
 	Obj objstore.Store
 	// Notifier pushes run summaries and digests to a project's owner.
 	Notifier notify.Sender
+	// Quota tracks 5-hour and weekly subscription usage and paces schedules.
+	Quota *quota.Tracker
 
 	notifiers  []Notifier
 	planning   sync.Map   // task id → struct{}

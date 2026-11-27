@@ -142,6 +142,13 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests && b.onLimit != nil {
+		var ra time.Duration
+		if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && secs > 0 {
+			ra = time.Duration(secs) * time.Second
+		}
+		b.onLimit(model.Upstream, ra)
+	}
 	for _, h := range []string{"Content-Type", "Retry-After", "X-Ratelimit-Reset-Requests", "X-Ratelimit-Reset-Tokens", "X-Ratelimit-Remaining-Requests"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -219,9 +226,15 @@ func (b *Broker) llmAntigravity(w http.ResponseWriter, ctx context.Context, c *g
 		if errors.As(err, &aerr) {
 			switch {
 			case aerr.RateLimit:
+				if b.onLimit != nil {
+					b.onLimit(model.Upstream, 0)
+				}
 				limitErr(w, 429, flow.LimitRateLimited, aerr.Message)
 				return
 			case aerr.QuotaLimit:
+				if b.onLimit != nil {
+					b.onLimit(model.Upstream, 0)
+				}
 				limitErr(w, 429, flow.LimitQuotaExhausted, aerr.Message)
 				return
 			case aerr.AuthError:

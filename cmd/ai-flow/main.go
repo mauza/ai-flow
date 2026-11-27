@@ -40,6 +40,7 @@ import (
 	"github.com/mauza/ai-flow/internal/notify"
 	"github.com/mauza/ai-flow/internal/objstore"
 	"github.com/mauza/ai-flow/internal/planner"
+	"github.com/mauza/ai-flow/internal/quota"
 	"github.com/mauza/ai-flow/internal/resolve"
 	"github.com/mauza/ai-flow/internal/runner"
 	"github.com/mauza/ai-flow/internal/server"
@@ -222,8 +223,17 @@ func serverCmd(ctx context.Context, args []string) error {
 		eng.SetNotifier(n)
 		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events)
 	}
+	qt := quota.New(cfg, st)
 	llmc := llm.New(cfg)
-	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: planner.New(cfg, llmc, gh), Hub: h, LLM: llmc, GitHub: gh, Obj: obj,
+	llmc.OnUsage = func(ctx context.Context, model string, in, out, cached int64) {
+		if err := st.RecordLLMUsage(context.WithoutCancel(ctx), model, in, out, cached, "control-plane"); err != nil {
+			slog.Warn("record control-plane llm usage", "model", model, "err", err)
+		}
+	}
+	llmc.OnLimit = qt.RecordLimitHit
+	pl := planner.New(cfg, llmc, gh)
+	pl.SetQuotaSummary(qt.PlannerSummary)
+	a := &app.App{Cfg: cfg, Store: st, Engine: eng, Planner: pl, Hub: h, LLM: llmc, GitHub: gh, Obj: obj, Quota: qt,
 		Workspaces: workspace.New(filepath.Join(env.Server.DataDir, "workspaces"), gh, store.Now)}
 	if n := notify.New(env.Notify); n != nil {
 		a.Notifier = n
@@ -231,6 +241,7 @@ func serverCmd(ctx context.Context, args []string) error {
 	eng.SetTaskCreator(a.CreateTaskFromFlow)
 	eng.OnRunDone(a.OnRunFinished)
 	br := broker.New(cfg, st, eng, signer, obj, h, pods, mcpx.NewPool(env.MCP.Servers))
+	br.SetLimitHook(qt.RecordLimitHit)
 
 	ui, err := server.New(a, obj, web.FS())
 	if err != nil {
@@ -275,6 +286,7 @@ func serverCmd(ctx context.Context, args []string) error {
 		errc <- err
 	}()
 	go eng.Loop(ctx)
+	go qt.Run(ctx)
 	go a.RunImprovementLoop(ctx)
 	go a.RunScheduleLoop(ctx)
 	slog.Info("ai-flow started", "version", version, "ui", env.Server.Listen, "pods", env.Server.PodListen, "runs", ternary(env.Runs.Local, "local", env.Runs.Namespace))

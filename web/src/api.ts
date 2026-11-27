@@ -236,6 +236,61 @@ export interface Overview {
       failures: Partial<Record<"error" | "timeout" | "canceled" | "fail_outcome", number>>;
     }[];
   };
+  quota?: QuotaSnapshot;
+}
+
+export type QuotaMode = "boost" | "normal" | "throttle" | "hold";
+
+export interface QuotaWindow {
+  name: string;
+  source: "upstream" | "local";
+  window_seconds: number;
+  used_percent: number;
+  remaining_percent: number;
+  reset_at?: number;
+  reset_after_seconds?: number;
+  tokens_used?: number;
+  tokens_limit?: number;
+  elapsed_percent?: number;
+  pace_ratio?: number;
+  mode: QuotaMode;
+  interval_factor: number;
+}
+
+export interface QuotaUpstream {
+  name: string;
+  provider?: string;
+  plan_type?: string;
+  allowed: boolean;
+  limit_reached?: boolean;
+  cooldown_until?: number;
+  fetched_at?: number;
+  stale?: boolean;
+  error?: string;
+  windows: QuotaWindow[];
+  local: {
+    tokens_5h: number;
+    tokens_uncached_5h: number;
+    tokens_weekly: number;
+    tokens_uncached_weekly: number;
+    calls_5h: number;
+    calls_weekly: number;
+  };
+  mode: QuotaMode;
+  interval_factor: number;
+  concurrency_cap: number;
+  reason?: string;
+}
+
+export interface QuotaSnapshot {
+  enabled: boolean;
+  updated_at: number;
+  hold_percent: number;
+  throttle_percent: number;
+  mode: QuotaMode;
+  interval_factor: number;
+  reason?: string;
+  upstreams: QuotaUpstream[];
 }
 
 export interface ChatResult {
@@ -583,14 +638,18 @@ export interface Schedule {
   enabled: boolean;
   paused: boolean;
   every: string;
+  effective_every?: string;
   flow?: string;
   task_title?: string;
   storymap?: { map?: string; release?: string };
   hone_maps?: { active_maps?: number; min_ready_tasks?: number; max_new_tasks?: number; model?: string; commit?: boolean };
   auto_start?: boolean;
   max_active_runs: number;
+  effective_max_active_runs?: number;
   max_open_tasks: number;
   max_open_prs: number;
+  pacing_mode?: QuotaMode;
+  pacing_reason?: string;
   next_due_at?: number;
   state: { last_run_at?: number; retry_at?: number; last_status?: string; last_reason?: string; last_run_id?: string; last_task_id?: string };
 }
@@ -857,6 +916,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   overview: () => request<Overview>("GET", "/api/overview"),
+  quota: (refresh = false) => request<QuotaSnapshot>("GET", refresh ? "/api/quota?refresh=1" : "/api/quota"),
   attention: (project = "") => request<AttentionReport>("GET", project ? `/api/attention?project=${encodeURIComponent(project)}` : "/api/attention"),
   schedules: (project: string) => request<Schedule[]>("GET", `/api/projects/${encodeURIComponent(project)}/schedules`),
   runSchedule: (project: string, name: string) =>

@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(h)) }
 
 	api("GET /api/overview", s.overview)
+	api("GET /api/quota", s.getQuota)
 	api("GET /api/attention", s.attention)
 	api("GET /api/tasks", s.listTasks)
 	api("POST /api/tasks", s.createTask)
@@ -198,7 +199,7 @@ func (s *Server) overviewData(ctx context.Context) (any, error) {
 	for _, name := range sortedKeys(cat.Runtimes) {
 		runtimes = append(runtimes, map[string]any{"name": name, "image": cat.Runtimes[name].Image, "description": cat.Runtimes[name].Description})
 	}
-	return map[string]any{
+	out := map[string]any{
 		"projects": projects, "models": models, "runtimes": runtimes, "grants": grants, "skills": skills, "presets": presets, "templates": nonNil(templates),
 		"planner": map[string]any{"model": cat.Planner.Model, "guidance": cat.Planner.Guidance},
 		"actions": cat.Actions, "node_types": flow.NodeTypes,
@@ -206,7 +207,22 @@ func (s *Server) overviewData(ctx context.Context) (any, error) {
 		"mcp":         map[string]any{"endpoint": "/mcp", "allow_steer": cfg.Env.Server.MCPAllowSteer},
 		"operations":  operations,
 		"projectless": planner.ProjectEligibility(cfg, nil),
-	}, nil
+	}
+	if s.app.Quota != nil {
+		out["quota"] = s.app.Quota.Snapshot(ctx)
+	}
+	return out, nil
+}
+
+func (s *Server) getQuota(w http.ResponseWriter, r *http.Request) {
+	if s.app.Quota == nil {
+		writeJSON(w, 200, map[string]any{"enabled": false, "mode": "normal", "interval_factor": 1.0, "upstreams": []any{}})
+		return
+	}
+	if r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true" {
+		s.app.Quota.Refresh(r.Context())
+	}
+	writeJSON(w, 200, s.app.Quota.Snapshot(r.Context()))
 }
 
 func (s *Server) attention(w http.ResponseWriter, r *http.Request) {

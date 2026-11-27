@@ -23,13 +23,20 @@ import (
 )
 
 type Planner struct {
-	cfg *config.Config
-	llm *llm.Client
-	gh  *github.Client
+	cfg          *config.Config
+	llm          *llm.Client
+	gh           *github.Client
+	quotaSummary func(ctx context.Context, project string) string
 }
 
 func New(cfg *config.Config, c *llm.Client, gh *github.Client) *Planner {
 	return &Planner{cfg: cfg, llm: c, gh: gh}
+}
+
+// SetQuotaSummary attaches a callback that injects live 5h/weekly subscription
+// quota headroom into the planner's system prompt.
+func (p *Planner) SetQuotaSummary(fn func(ctx context.Context, project string) string) {
+	p.quotaSummary = fn
 }
 
 type Request struct {
@@ -67,7 +74,7 @@ func (p *Planner) Plan(ctx context.Context, req Request) (*Result, error) {
 	user := fmt.Sprintf("Design a flow for this task.\n\nFlow name: %s\nProject: %s\n\n## Task: %s\n\n%s\n\n%s",
 		req.FlowName, req.Project, req.Title, strings.TrimSpace(req.Body), repoCtx)
 	msgs := []llm.Message{
-		{Role: "system", Content: p.systemPrompt(proj)},
+		{Role: "system", Content: p.systemPromptCtx(ctx, proj)},
 		{Role: "user", Content: user},
 	}
 	return p.converge(ctx, msgs, req)
@@ -79,7 +86,7 @@ func (p *Planner) Revise(ctx context.Context, req Request, current string, histo
 	if proj == nil {
 		return nil, fmt.Errorf("unknown project %q", req.Project)
 	}
-	msgs := []llm.Message{{Role: "system", Content: p.systemPrompt(proj)}}
+	msgs := []llm.Message{{Role: "system", Content: p.systemPromptCtx(ctx, proj)}}
 	if len(history) > 6 {
 		history = history[len(history)-6:]
 	}
@@ -451,6 +458,10 @@ func (p *Planner) repoContext(ctx context.Context, proj *config.Project) string 
 }
 
 func (p *Planner) systemPrompt(proj *config.Project) string {
+	return p.systemPromptCtx(context.Background(), proj)
+}
+
+func (p *Planner) systemPromptCtx(ctx context.Context, proj *config.Project) string {
 	cat := &p.cfg.Current().Catalog
 	var sb strings.Builder
 	sb.WriteString(rules)
@@ -527,6 +538,12 @@ func (p *Planner) systemPrompt(proj *config.Project) string {
 	}
 	if rv := proj.Spec.Review; rv != nil && rv.Required {
 		sb.WriteString("\nai-flow merges only when, after the last step that wrote code, a review preset (category review, outcome approve) on a different model than every author's approved, and no review of the final code ended otherwise. Put such a review on every path to a merge, after the fix loop, and route deploy's blocked outcome to a report.\n")
+	}
+	if p.quotaSummary != nil {
+		if qs := strings.TrimSpace(p.quotaSummary(ctx, proj.Metadata.Name)); qs != "" {
+			sb.WriteString("\n# Quota & pacing\n\n")
+			sb.WriteString(qs + "\n")
+		}
 	}
 	sb.WriteString("\n# Planning guidance\n\n")
 	if g := strings.TrimSpace(cat.Planner.Guidance); g != "" {

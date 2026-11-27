@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Play } from "lucide-react";
-import { api, type Overview, type Run } from "../api";
+import { Play, RefreshCw } from "lucide-react";
+import { api, type Overview, type QuotaMode, type QuotaSnapshot, type Run } from "../api";
 import { useNow, useResource } from "../hooks";
 import { duration, timeAgo, tokens, usd } from "../format";
 import { Empty, PRLink, Pill, Spinner } from "../ui";
@@ -8,6 +9,16 @@ import { Empty, PRLink, Pill, Spinner } from "../ui";
 export default function Runs() {
   const runs = useResource(() => api.runs(), [], (e) => e.type === "run");
   const overview = useResource(() => api.overview(), [], (e) => e.type === "run" || e.type === "visit");
+  const [refreshingQuota, setRefreshingQuota] = useState(false);
+  const refreshQuota = async () => {
+    setRefreshingQuota(true);
+    try {
+      await api.quota(true);
+      overview.reload();
+    } finally {
+      setRefreshingQuota(false);
+    }
+  };
   return (
     <div className="page">
       <div className="page-head">
@@ -16,6 +27,9 @@ export default function Runs() {
       </div>
       {overview.error && <div className="warn-box mb">Operations unavailable: {overview.error}</div>}
       {overview.data?.operations && <Operations data={overview.data.operations} />}
+      {overview.data?.quota && overview.data.quota.upstreams.length > 0 && (
+        <QuotaCard data={overview.data.quota} refreshing={refreshingQuota} onRefresh={refreshQuota} />
+      )}
       {runs.error && <div className="error-box mb">{runs.error}</div>}
       {!runs.data ? (
         <Spinner lg />
@@ -54,6 +68,112 @@ function Operations({ data }: { data: Overview["operations"] }) {
       <p className="small muted">Recorded step failures can be recovered by later steps; they do not necessarily mean the run failed.</p>
     </details>}
   </section>;
+}
+
+function quotaPillClass(mode: QuotaMode): string {
+  switch (mode) {
+    case "boost":
+      return "succeeded";
+    case "throttle":
+      return "warning";
+    case "hold":
+      return "failed";
+    default:
+      return "canceled";
+  }
+}
+
+function quotaBarColor(mode: QuotaMode): string | undefined {
+  switch (mode) {
+    case "hold":
+      return "var(--danger)";
+    case "throttle":
+      return "var(--warn)";
+    case "boost":
+      return "var(--success)";
+    default:
+      return undefined;
+  }
+}
+
+function formatReset(sec?: number): string {
+  if (!sec || sec <= 0) return "";
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.max(1, Math.floor((sec % 3600) / 60));
+  if (d > 0) return `resets in ${d}d ${h}h`;
+  if (h > 0) return `resets in ${h}h ${m}m`;
+  return `resets in ${m}m`;
+}
+
+function QuotaCard({ data, refreshing, onRefresh }: { data: QuotaSnapshot; refreshing: boolean; onRefresh: () => void }) {
+  const now = useNow(30000);
+  const speedText =
+    data.mode === "hold"
+      ? `autonomous schedules held (reserve ≥${Math.round(data.hold_percent)}%)`
+      : data.mode === "boost" && data.interval_factor > 0
+        ? `pacing ${(1 / data.interval_factor).toFixed(1)}× faster`
+        : data.mode === "throttle" && data.interval_factor > 1
+          ? `pacing ${data.interval_factor.toFixed(1)}× slower`
+          : data.enabled
+            ? "pacing normal"
+            : "pacing off";
+  return (
+    <section aria-label="Quota and pacing" className="card card-pad mb stack" style={{ gap: 12 }}>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <b>Quota &amp; pacing</b>
+        <span className={`pill ${quotaPillClass(data.mode)}`}>
+          <span className="dot" />
+          {data.mode}
+        </span>
+        <span className="small muted">{data.reason || speedText}</span>
+        <span className="spacer" />
+        <span className="small muted">Updated {timeAgo(data.updated_at, now)}</span>
+        <button className="btn sm" disabled={refreshing} onClick={onRefresh} title="Refresh upstream quota">
+          <RefreshCw size={12} />
+          Refresh
+        </button>
+      </div>
+      <div className="kpi-grid">
+        {data.upstreams.map((u) => (
+          <div key={u.name} className="card card-pad stack" style={{ gap: 8 }}>
+            <div className="row wrap" style={{ gap: 6 }}>
+              <b className="mono">{u.name}</b>
+              {u.plan_type && <span className="chip">{u.plan_type}</span>}
+              <span className={`pill ${quotaPillClass(u.mode)}`}>{u.mode}</span>
+              {u.stale && <span className="chip">stale</span>}
+            </div>
+            {u.error && <div className="small muted">probe: {u.error}</div>}
+            {u.windows.map((w) => (
+              <div key={`${w.source}-${w.name}`} className="stack" style={{ gap: 3 }}>
+                <div className="row small">
+                  <span className="mono">{w.name}</span>
+                  <span className="spacer" />
+                  <span>{Math.round(w.used_percent)}%</span>
+                  {w.reset_after_seconds ? (
+                    <span className="muted">· {formatReset(w.reset_after_seconds)}</span>
+                  ) : w.tokens_limit ? (
+                    <span className="muted">
+                      · {tokens(w.tokens_used ?? 0)} / {tokens(w.tokens_limit)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="progress" title={`${w.used_percent}% used (${w.mode})`}>
+                  <span style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%`, background: quotaBarColor(w.mode) }} />
+                </div>
+              </div>
+            ))}
+            <div
+              className="small faint"
+              title={`Uncached: ${tokens(u.local.tokens_uncached_5h)} (5h) · ${tokens(u.local.tokens_uncached_weekly)} (7d)`}
+            >
+              ai-flow: {tokens(u.local.tokens_5h)} (5h) · {tokens(u.local.tokens_weekly)} (7d)
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 export function RunsTable({ runs, compact }: { runs: Run[]; compact?: boolean }) {

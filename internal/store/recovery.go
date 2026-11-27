@@ -21,7 +21,7 @@ func migrate(db *sql.DB) error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 7 {
+	if version > 8 {
 		return fmt.Errorf("unsupported database version %d", version)
 	}
 	if version == 0 {
@@ -169,6 +169,32 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS prompt_revisions_target ON prompt_revisions(target_kind, target, created_at);
 		PRAGMA user_version = 7;`); err != nil {
+			return err
+		}
+	}
+	if version < 8 {
+		// Rolling LLM usage ledger for 5-hour and weekly quota awareness across
+		// both step visits and control-plane calls (planner, grader, map hone).
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS llm_usage (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			tokens_in INTEGER NOT NULL DEFAULT 0,
+			tokens_out INTEGER NOT NULL DEFAULT 0,
+			tokens_cached INTEGER NOT NULL DEFAULT 0,
+			calls INTEGER NOT NULL DEFAULT 1,
+			source TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS llm_usage_ts ON llm_usage(ts);
+		INSERT INTO llm_usage (ts, model, tokens_in, tokens_out, tokens_cached, calls, source)
+			SELECT COALESCE(NULLIF(finished_at, 0), NULLIF(started_at, 0), created_at),
+				model, tokens_in, tokens_out, tokens_cached,
+				CASE WHEN llm_calls > 0 THEN llm_calls ELSE 1 END,
+				'backfill'
+			FROM visits
+			WHERE model != '' AND (tokens_in > 0 OR tokens_out > 0)
+			  AND COALESCE(NULLIF(finished_at, 0), NULLIF(started_at, 0), created_at) >= ?;
+		PRAGMA user_version = 8;`, now()-14*24*3600*1000); err != nil {
 			return err
 		}
 	}

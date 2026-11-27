@@ -17,6 +17,7 @@ import (
 	"github.com/mauza/ai-flow/internal/engine"
 	"github.com/mauza/ai-flow/internal/hub"
 	"github.com/mauza/ai-flow/internal/ids"
+	"github.com/mauza/ai-flow/internal/quota"
 	"github.com/mauza/ai-flow/internal/store"
 	"github.com/mauza/ai-flow/internal/storymap"
 )
@@ -67,21 +68,25 @@ type ScheduleState struct {
 
 // ScheduleView combines a configured ProjectSchedule with its live runtime state.
 type ScheduleView struct {
-	Project       string                   `json:"project"`
-	Name          string                   `json:"name"`
-	Enabled       bool                     `json:"enabled"`
-	Paused        bool                     `json:"paused"`
-	Every         string                   `json:"every"`
-	Flow          string                   `json:"flow,omitempty"`
-	TaskTitle     string                   `json:"task_title,omitempty"`
-	StoryMap      *config.ScheduleStoryMap `json:"storymap,omitempty"`
-	HoneMaps      *config.ScheduleHoneMaps `json:"hone_maps,omitempty"`
-	AutoStart     bool                     `json:"auto_start,omitempty"`
-	MaxActiveRuns int                      `json:"max_active_runs"`
-	MaxOpenTasks  int                      `json:"max_open_tasks"`
-	MaxOpenPRs    int                      `json:"max_open_prs"`
-	NextDueAt     int64                    `json:"next_due_at,omitempty"`
-	State         ScheduleState            `json:"state"`
+	Project                string                   `json:"project"`
+	Name                   string                   `json:"name"`
+	Enabled                bool                     `json:"enabled"`
+	Paused                 bool                     `json:"paused"`
+	Every                  string                   `json:"every"`
+	EffectiveEvery         string                   `json:"effective_every,omitempty"`
+	Flow                   string                   `json:"flow,omitempty"`
+	TaskTitle              string                   `json:"task_title,omitempty"`
+	StoryMap               *config.ScheduleStoryMap `json:"storymap,omitempty"`
+	HoneMaps               *config.ScheduleHoneMaps `json:"hone_maps,omitempty"`
+	AutoStart              bool                     `json:"auto_start,omitempty"`
+	MaxActiveRuns          int                      `json:"max_active_runs"`
+	EffectiveMaxActiveRuns int                      `json:"effective_max_active_runs,omitempty"`
+	MaxOpenTasks           int                      `json:"max_open_tasks"`
+	MaxOpenPRs             int                      `json:"max_open_prs"`
+	PacingMode             quota.Mode               `json:"pacing_mode,omitempty"`
+	PacingReason           string                   `json:"pacing_reason,omitempty"`
+	NextDueAt              int64                    `json:"next_due_at,omitempty"`
+	State                  ScheduleState            `json:"state"`
 }
 
 func scheduleKVKey(project, name string) string {
@@ -159,6 +164,28 @@ func (st ScheduleState) nextDue(every time.Duration) int64 {
 	return st.LastRunAt + every.Milliseconds()
 }
 
+func (a *App) schedulePacing(ctx context.Context, project string, sc config.ProjectSchedule) (time.Duration, int, quota.Decision) {
+	baseEvery := sc.Every.Duration
+	baseMax := sc.EffectiveMaxActiveRuns()
+	dec := quota.Decision{
+		Mode:               quota.ModeNormal,
+		IntervalFactor:     1.0,
+		EffectiveMaxActive: baseMax,
+	}
+	if a.Quota == nil || !sc.PacingEnabled() {
+		return baseEvery, baseMax, dec
+	}
+	dec = a.Quota.ScheduleDecision(ctx, project, baseMax)
+	if !dec.Enabled {
+		return baseEvery, baseMax, dec
+	}
+	effEvery := baseEvery
+	if !dec.Hold && dec.IntervalFactor > 0 {
+		effEvery = quota.EffectiveInterval(baseEvery, dec.IntervalFactor)
+	}
+	return effEvery, dec.EffectiveMaxActive, dec
+}
+
 // ListSchedules returns every configured schedule (optionally filtered to one
 // project) together with its last execution state and next due timestamp.
 func (a *App) ListSchedules(ctx context.Context, project string) []ScheduleView {
@@ -171,6 +198,7 @@ func (a *App) ListSchedules(ctx context.Context, project string) []ScheduleView 
 		p := cfg.Projects[pname]
 		for _, sc := range p.Spec.Schedules {
 			st := a.loadScheduleState(ctx, pname, sc.Name)
+			effEvery, effMax, dec := a.schedulePacing(ctx, pname, sc)
 			view := ScheduleView{
 				Project:       pname,
 				Name:          sc.Name,
@@ -186,11 +214,17 @@ func (a *App) ListSchedules(ctx context.Context, project string) []ScheduleView 
 				Paused:        a.schedulePaused(ctx, pname, sc.Name),
 				State:         st,
 			}
+			if dec.Enabled {
+				view.EffectiveEvery = effEvery.String()
+				view.EffectiveMaxActiveRuns = effMax
+				view.PacingMode = dec.Mode
+				view.PacingReason = dec.Reason
+			}
 			if sc.Task != nil {
 				view.TaskTitle = sc.Task.Title
 			}
-			if view.Enabled && !view.Paused {
-				view.NextDueAt = max(st.nextDue(sc.Every.Duration), store.Now())
+			if view.Enabled && !view.Paused && !dec.Hold {
+				view.NextDueAt = max(st.nextDue(effEvery), store.Now())
 			}
 			out = append(out, view)
 		}
@@ -237,6 +271,11 @@ func (a *App) TriggerSchedule(ctx context.Context, project, name string, force b
 // used: work was queued, or there was none to queue.
 func (a *App) runSchedule(ctx context.Context, project string, sc config.ProjectSchedule, force bool) (ScheduleState, error) {
 	if sc.HoneMaps != nil {
+		if !force {
+			if _, _, dec := a.schedulePacing(ctx, project, sc); dec.Hold {
+				return ScheduleState{LastStatus: "skipped", LastReason: "quota hold: " + dec.Reason}, nil
+			}
+		}
 		return a.runHoneMapsSchedule(ctx, project, sc)
 	}
 	slots := math.MaxInt
@@ -591,6 +630,10 @@ func (a *App) openPRs(ctx context.Context, project string) (int, error) {
 // two schedules due together cannot both take the last slot; tasks that wait
 // for a human to start them do not count at all.
 func (a *App) scheduleBlockedReason(ctx context.Context, project string, sc config.ProjectSchedule) (string, int, error) {
+	_, effectiveMaxActive, dec := a.schedulePacing(ctx, project, sc)
+	if dec.Hold {
+		return "quota hold: " + dec.Reason, 0, nil
+	}
 	active, err := a.activeRuns(ctx, project)
 	if err != nil {
 		return "", 0, err
@@ -599,7 +642,7 @@ func (a *App) scheduleBlockedReason(ctx context.Context, project string, sc conf
 	if err != nil {
 		return "", 0, err
 	}
-	load, limit := active+len(queued), sc.EffectiveMaxActiveRuns()
+	load, limit := active+len(queued), effectiveMaxActive
 	if load >= limit {
 		return fmt.Sprintf("%d run(s) active and %d queued in project %s (max %d)", active, len(queued), project, limit), 0, nil
 	}
@@ -661,7 +704,8 @@ func (a *App) startQueued(ctx context.Context, project string) error {
 			continue
 		}
 		if !q.rec.Force {
-			if active >= q.sched.EffectiveMaxActiveRuns() {
+			_, effMax, dec := a.schedulePacing(ctx, project, *q.sched)
+			if dec.Hold || active >= effMax {
 				continue
 			}
 			if prs < 0 {
@@ -719,7 +763,8 @@ func (a *App) tickSchedules(ctx context.Context) {
 		due := scheds[:0]
 		for _, sc := range scheds {
 			st := a.loadScheduleState(ctx, pname, sc.Name)
-			if !a.scheduleLive(ctx, pname, &sc) || now < st.nextDue(sc.Every.Duration) {
+			effEvery, _, _ := a.schedulePacing(ctx, pname, sc)
+			if !a.scheduleLive(ctx, pname, &sc) || now < st.nextDue(effEvery) {
 				continue
 			}
 			last[sc.Name] = st.LastRunAt
