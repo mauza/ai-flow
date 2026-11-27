@@ -126,3 +126,37 @@ exit 1
 		t.Fatalf("expected RateLimit error, got %v", err)
 	}
 }
+
+// Regression: under --json-schema, agy (notably Claude models) can concatenate
+// two JSON objects in `response` while `structured_output` holds the single
+// schema-validated object. Complete must return the single validated object.
+func TestCompletePrefersStructuredOutputWhenSchemaSet(t *testing.T) {
+	dir := t.TempDir()
+	fakeAgy := filepath.Join(dir, "fake-agy-double")
+	script := `#!/bin/sh
+cat <<'EOF'
+{"status":"SUCCESS","response":"{\"outcome\":\"ok\",\"summary\":\"first\",\"outputs\":{\"confirmed\":true}}\n{\"outcome\":\"ok\",\"outputs\":{\"confirmed\":true},\"summary\":\"first\"}\n","structured_output":{"outcome":"ok","summary":"first","outputs":{"confirmed":true}},"usage":{"input_tokens":100,"output_tokens":20,"cache_read_tokens":50}}
+EOF
+`
+	if err := os.WriteFile(fakeAgy, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_AGY_TOKEN", `{"token":"dummy"}`)
+	resp, err := Complete(context.Background(), CompleteRequest{
+		Binary:     fakeAgy,
+		Model:      "claude-sonnet-5-5-low",
+		Messages:   []Message{{Role: "user", Content: "confirm"}},
+		JSONSchema: map[string]any{"type": "object"},
+		AuthEnv:    "TEST_AGY_TOKEN",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(resp.Content), &parsed); err != nil {
+		t.Fatalf("content is not a single JSON object (%v): %q", err, resp.Content)
+	}
+	if parsed["outcome"] != "ok" {
+		t.Fatalf("parsed = %v", parsed)
+	}
+}

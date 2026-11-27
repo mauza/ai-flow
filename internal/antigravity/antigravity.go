@@ -252,7 +252,10 @@ func Complete(ctx context.Context, req CompleteRequest) (*CompleteResponse, erro
 	parsed := len(outBytes) > 0 && json.Unmarshal(outBytes, &env) == nil
 	if parsed && env.Status == "SUCCESS" && runErr == nil {
 		content := env.Response
-		if strings.TrimSpace(content) == "" && env.StructuredOutput != nil {
+		// When --json-schema is active, `agy` can emit both its initial reply
+		// and the schema-enforced pass concatenated in `response`; prefer the
+		// single validated `structured_output` object instead.
+		if (len(req.JSONSchema) > 0 || strings.TrimSpace(content) == "") && env.StructuredOutput != nil {
 			if raw, err := json.Marshal(env.StructuredOutput); err == nil {
 				content = string(raw)
 			}
