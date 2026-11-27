@@ -207,3 +207,32 @@ runtimes: {}
 		t.Fatalf("expected unknown type error, got %v", err)
 	}
 }
+
+func TestEnvNotifyDigestAndEmptyEvents(t *testing.T) {
+	dir := t.TempDir()
+	write := func(notify string) {
+		os.WriteFile(filepath.Join(dir, "c.yaml"), []byte("kind: Environment\nllm:\n  upstreams:\n    home: { baseUrl: \"https://example/v1\" }\nnotify:\n"+notify+`
+---
+apiVersion: ai-flow/v1alpha1
+kind: Catalog
+models:
+  m: { upstream: home, model: m }
+runtimes: {}
+`), 0o644)
+	}
+	write("  ntfy: { url: http://ntfy, topic: alerts }\n  events: []\n  digest: { at: \"08:00\", tz: America/Denver }")
+	cfg, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("valid digest-only notify rejected: %v", err)
+	}
+	if len(cfg.Env.Notify.Events) != 0 || cfg.Env.Notify.Sends(config.NotifyGate) || cfg.Env.Notify.Sends(config.NotifyFailed) {
+		t.Fatalf("explicit events: [] was overridden: %+v", cfg.Env.Notify.Events)
+	}
+	if cfg.Env.Notify.Digest == nil || cfg.Env.Notify.Digest.At != "08:00" || cfg.Env.Notify.Digest.TZ != "America/Denver" {
+		t.Fatalf("digest not loaded: %+v", cfg.Env.Notify.Digest)
+	}
+	write("  ntfy: { url: http://ntfy, topic: alerts }\n  digest: { at: \"25:99\", tz: America/Denver }")
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "notify.digest:") {
+		t.Fatalf("expected notify.digest error, got %v", err)
+	}
+}

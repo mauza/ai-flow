@@ -1568,7 +1568,7 @@ func (e *Engine) alertEnd(ctx context.Context, event string, r *store.Run, what,
 func (e *Engine) notifies(project, event string) bool {
 	cfg := e.cfg.Current()
 	n := cfg.Env.Notify
-	if p := cfg.Projects[project]; p != nil && p.Spec.Notify != nil && len(p.Spec.Notify.Events) > 0 {
+	if p := cfg.Projects[project]; p != nil && p.Spec.Notify != nil && p.Spec.Notify.Events != nil {
 		n.Events = p.Spec.Notify.Events
 	}
 	return n.Sends(event)

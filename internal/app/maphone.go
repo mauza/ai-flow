@@ -167,7 +167,16 @@ func (a *App) runHoneMapsSchedule(ctx context.Context, project string, sc config
 	if a.Hub != nil {
 		a.Hub.Publish(hub.Event{Type: "product", ID: project})
 	}
-	if proj := a.Cfg.Current().Projects[project]; proj != nil && proj.Spec.Notify != nil && proj.Spec.Notify.Summaries {
+	cfg := a.Cfg.Current()
+	if cfg.ProjectWantsReports(project) {
+		hr := HoneReport{Summary: summaryText, CommitSHA: commitSHA, Files: len(merged), At: now}
+		if b, err := json.Marshal(hr); err == nil {
+			if err := a.Store.SetKV(ctx, kvHoneReport(project, now), string(b)); err != nil {
+				slog.Warn("save hone report", "project", project, "err", err)
+			}
+		}
+	}
+	if cfg.ProjectNotifySummaries(project) {
 		body := summaryText
 		if commitSHA != "" {
 			body += fmt.Sprintf("\n\nCommitted %s (%d files)", commitSHA, len(merged))

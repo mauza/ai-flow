@@ -221,7 +221,11 @@ func serverCmd(ctx context.Context, args []string) error {
 	}
 	if n := notify.New(env.Notify); n != nil {
 		eng.SetNotifier(n)
-		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events)
+		digest := ""
+		if env.Notify.Digest != nil {
+			digest = env.Notify.Digest.At + " " + env.Notify.Digest.TZ
+		}
+		slog.Info("notifications on", "ntfy", env.Notify.Ntfy.URL, "topic", env.Notify.Ntfy.Topic, "events", env.Notify.Events, "digest", strings.TrimSpace(digest))
 	}
 	qt := quota.New(cfg, st)
 	llmc := llm.New(cfg)

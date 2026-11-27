@@ -159,3 +159,88 @@ func TestQuietResultsWaitForTheDigest(t *testing.T) {
 		t.Fatalf("empty digest sent: %+v", in.sent[1:])
 	}
 }
+
+func TestDigestOnlySuppressesImmediateAlerts(t *testing.T) {
+	out, _ := json.Marshal(map[string]any{"headline": "Bill pages link to related bills"})
+	a, in := reportApp(t, string(out))
+	ctx := context.Background()
+	a.Cfg.Current().Projects["sandbox"].Spec.Notify = &config.ProjectNotify{
+		Summaries: false,
+		Digest:    &config.DigestTime{At: "08:00", TZ: "America/Denver"},
+	}
+	a.reportRun(ctx, releaseRun(t, a, "ship-it", store.RunSucceeded, "ship:merged", "live:deployed", "soak:healthy"))
+	if len(in.sent) != 0 {
+		t.Fatalf("digest-only project sent immediate alert: %+v", in.sent)
+	}
+	denver, _ := time.LoadLocation("America/Denver")
+	now := time.Now().In(denver)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, denver)
+	a.sendDigests(ctx, day.Add(8*time.Hour))
+	if len(in.sent) != 1 || !strings.Contains(in.sent[0].Title, "1 shipped") || !strings.Contains(in.sent[0].Body, "Bill pages link to related bills") {
+		t.Fatalf("digest missing recorded run: %+v", in.sent)
+	}
+}
+
+func TestCombinedEnvironmentDigest(t *testing.T) {
+	out, _ := json.Marshal(map[string]any{"headline": "Faster bill search"})
+	a, in := reportApp(t, string(out))
+	ctx := context.Background()
+	cfg := a.Cfg.Current()
+	cfg.Env.Notify.Events = []string{}
+	cfg.Env.Notify.Digest = &config.DigestTime{At: "08:00", TZ: "America/Denver"}
+	cfg.Projects["sandbox"].Spec.Notify = nil
+	cfg.Projects["other"] = &config.Project{
+		Metadata: config.ProjectMetadata{Name: "other"},
+		Spec:     config.ProjectSpec{Repo: "repo/sandbox"},
+	}
+	// Separate-digest project should not be duplicated into the combined digest.
+	cfg.Projects["separate"] = &config.Project{
+		Metadata: config.ProjectMetadata{Name: "separate"},
+		Spec: config.ProjectSpec{
+			Repo:   "repo/sandbox",
+			Notify: &config.ProjectNotify{Digest: &config.DigestTime{At: "08:00", TZ: "America/Denver"}},
+		},
+	}
+
+	a.reportRun(ctx, releaseRun(t, a, "search", store.RunSucceeded, "ship:merged", "live:deployed", "soak:healthy"))
+	if len(in.sent) != 0 {
+		t.Fatalf("combined digest-only mode sent immediate alert: %+v", in.sent)
+	}
+	nowMS := store.Now()
+	hr, _ := json.Marshal(HoneReport{Summary: "Added 2 ready tasks", CommitSHA: "abc1234", Files: 2, At: nowMS})
+	if err := a.Store.SetKV(ctx, kvHoneReport("other", nowMS), string(hr)); err != nil {
+		t.Fatal(err)
+	}
+	sepRep, _ := json.Marshal(RunReport{RunID: "r-sep", Result: ResultShipped, Headline: "Separate item", At: nowMS})
+	if err := a.Store.SetKV(ctx, kvReport("separate", "r-sep"), string(sepRep)); err != nil {
+		t.Fatal(err)
+	}
+
+	denver, _ := time.LoadLocation("America/Denver")
+	now := time.Now().In(denver)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, denver)
+	a.sendDigests(ctx, day.Add(7*time.Hour+59*time.Minute))
+	if len(in.sent) != 0 {
+		t.Fatalf("digest sent early: %+v", in.sent)
+	}
+	a.sendDigests(ctx, day.Add(8*time.Hour))
+	a.sendDigests(ctx, day.Add(9*time.Hour))
+	if len(in.sent) != 2 {
+		t.Fatalf("want 1 combined + 1 separate digest, got %d: %+v", len(in.sent), in.sent)
+	}
+	combined := in.sent[0]
+	if combined.Title != "ai-flow today: 1 shipped, 1 honed" {
+		t.Fatalf("unexpected combined title: %q", combined.Title)
+	}
+	for _, want := range []string{"sandbox (1 shipped):", "Faster bill search", "other (1 honed):", "Added 2 ready tasks"} {
+		if !strings.Contains(combined.Body, want) {
+			t.Errorf("combined body missing %q:\n%s", want, combined.Body)
+		}
+	}
+	if strings.Contains(combined.Body, "Separate item") {
+		t.Errorf("separate-digest project leaked into combined digest:\n%s", combined.Body)
+	}
+	if in.sent[1].Title != "separate today: 1 shipped" {
+		t.Fatalf("unexpected separate digest: %+v", in.sent[1])
+	}
+}

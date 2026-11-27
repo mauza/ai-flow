@@ -98,6 +98,16 @@ func TestProjectNotifySettings(t *testing.T) {
 	if got := f2.titles(t, 2); len(got) != 1 {
 		t.Fatalf("sent %v", got)
 	}
+	// Explicit empty events list disables environment-level events for a project.
+	h3 := newHarness(t)
+	f3 := h3.notifier(config.NotifyGate, config.NotifyFailed)
+	h3.cfg.Projects["sandbox"].Spec.Notify = &config.ProjectNotify{Events: []string{}}
+	id3 := h3.flow(gateFlow)
+	v3, _ := h3.st.LastVisit(h3.ctx, id3)
+	must(t, h3.e.Decide(h3.ctx, id3, v3.Seq, "reject", "t", ""))
+	if got := f3.titles(t, 1); len(got) != 0 {
+		t.Fatalf("empty project events still sent: %v", got)
+	}
 }
 
 func TestPageProbesWatchTheContent(t *testing.T) {

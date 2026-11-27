@@ -308,9 +308,13 @@ type MCPServer struct {
 type Notify struct {
 	Ntfy *Ntfy `json:"ntfy,omitempty"`
 	// Events to send: gate (a gate opened), stuck (a gate still waits after
-	// stuckAfter), failed, succeeded. Default: gate, stuck, failed.
+	// stuckAfter), failed, succeeded. Default: gate, stuck, failed. Set to []
+	// to disable immediate event alerts while keeping digests enabled.
 	Events     []string      `json:"events,omitempty"`
 	StuckAfter flow.Duration `json:"stuckAfter,omitzero"` // default 4h
+	// Digest sends one combined daily summary across all projects that do not
+	// configure their own project-level digest.
+	Digest *DigestTime `json:"digest,omitempty"`
 }
 
 type Ntfy struct {
@@ -330,6 +334,28 @@ const (
 // Sends reports whether event is configured to notify.
 func (n Notify) Sends(event string) bool {
 	return n.Ntfy != nil && slices.Contains(n.Events, event)
+}
+
+// ProjectNotifySummaries reports whether project wants immediate per-run summaries.
+func (c *Config) ProjectNotifySummaries(project string) bool {
+	if c == nil {
+		return false
+	}
+	p := c.Projects[project]
+	return p != nil && p.Spec.Notify != nil && p.Spec.Notify.Summaries
+}
+
+// ProjectWantsReports reports whether finished runs and story-map honing for
+// project should be recorded (for immediate summaries and/or a daily digest).
+func (c *Config) ProjectWantsReports(project string) bool {
+	if c == nil {
+		return false
+	}
+	if c.Env.Notify.Digest != nil {
+		return true
+	}
+	p := c.Projects[project]
+	return p != nil && p.Spec.Notify != nil && (p.Spec.Notify.Summaries || p.Spec.Notify.Digest != nil)
 }
 
 // ---- Catalog ----
@@ -1406,6 +1432,11 @@ func (c *Config) check() error {
 	for _, ev := range c.Env.Notify.Events {
 		if !slices.Contains([]string{NotifyGate, NotifyStuck, NotifyFailed, NotifySucceeded}, ev) {
 			errs = append(errs, fmt.Sprintf("notify.events: unknown event %q (gate, stuck, failed, succeeded)", ev))
+		}
+	}
+	if c.Env.Notify.Digest != nil {
+		if _, _, err := c.Env.Notify.Digest.parse(); err != nil {
+			errs = append(errs, fmt.Sprintf("notify.digest: %v", err))
 		}
 	}
 	if len(errs) > 0 {

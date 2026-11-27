@@ -41,7 +41,19 @@ type RunReport struct {
 	At       int64    `json:"at"`
 }
 
+// HoneReport records one story-map honing pass that changed files, so daily
+// digests can summarize it without sending an immediate alert.
+type HoneReport struct {
+	Summary   string `json:"summary"`
+	CommitSHA string `json:"commit_sha,omitempty"`
+	Files     int    `json:"files,omitempty"`
+	At        int64  `json:"at"`
+}
+
 func kvReport(project, runID string) string { return "report/" + project + "/" + runID }
+func kvHoneReport(project string, at int64) string {
+	return fmt.Sprintf("hone_report/%s/%d", project, at)
+}
 
 // runResult reads the result off the run's release steps.
 func (a *App) runResult(ctx context.Context, run *store.Run) (string, error) {
@@ -151,13 +163,15 @@ var resultStyle = map[string]struct {
 	ResultCanceled:   {"Canceled", 0, ""},
 }
 
-// reportRun tells the owner of a project with notify.summaries what a finished
-// run did, and keeps it for the digest.
+// reportRun records what a finished run did for projects with summaries or a
+// daily digest, and pushes an immediate notification only when notify.summaries
+// is enabled.
 func (a *App) reportRun(ctx context.Context, run *store.Run) {
-	p := a.Cfg.Current().Projects[run.Project]
-	if p == nil || p.Spec.Notify == nil || !p.Spec.Notify.Summaries {
+	cfg := a.Cfg.Current()
+	if !cfg.ProjectWantsReports(run.Project) {
 		return
 	}
+	wantSummary := cfg.ProjectNotifySummaries(run.Project)
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	result, err := a.runResult(ctx, run)
@@ -178,7 +192,7 @@ func (a *App) reportRun(ctx context.Context, run *store.Run) {
 	if err := a.Store.SetKV(ctx, kvReport(run.Project, run.ID), string(b)); err != nil {
 		slog.Warn("save run report", "run", run.ID, "err", err)
 	}
-	if style.priority == 0 {
+	if !wantSummary || style.priority == 0 {
 		return
 	}
 	var body []string
@@ -218,10 +232,49 @@ func (a *App) send(ctx context.Context, m notify.Message, path, prURL string) {
 
 func kvDigest(project string) string { return "digest/" + project }
 
-// sendDigests sends each project's daily digest once its local time has come.
+var digestGroups = []struct{ result, label string }{
+	{ResultAtRisk, "check production"},
+	{ResultRolledBack, "rolled back"},
+	{ResultShipped, "shipped"},
+	{ResultPROpen, "PR open"},
+	{ResultFailed, "did not ship"},
+	{ResultDone, "other"},
+}
+
+type projectDigestData struct {
+	project  string
+	byResult map[string][]RunReport
+	honed    []HoneReport
+	waiting  []string
+	counts   []string
+}
+
+func (d *projectDigestData) empty() bool {
+	return len(d.byResult) == 0 && len(d.honed) == 0 && len(d.waiting) == 0
+}
+
+// sendDigests sends the environment-level combined daily summary (when configured)
+// and each project's own daily digest once its local time has come.
 func (a *App) sendDigests(ctx context.Context, now time.Time) {
-	for _, name := range slices.Sorted(maps.Keys(a.Cfg.Current().Projects)) {
-		n := a.Cfg.Current().Projects[name].Spec.Notify
+	cfg := a.Cfg.Current()
+	if d := cfg.Env.Notify.Digest; d != nil {
+		due, day := d.Due(now)
+		last, err := a.Store.GetKV(ctx, kvDigest("_all"))
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			slog.Warn("digest", "scope", "all", "err", err)
+		} else if due && last != day {
+			// Marked first: a digest that can't be sent is not worth repeating.
+			if err := a.Store.SetKV(ctx, kvDigest("_all"), day); err != nil {
+				slog.Warn("digest", "scope", "all", "err", err)
+			} else if m, err := a.combinedDailyDigest(ctx, now.Add(-24*time.Hour).UnixMilli()); err != nil {
+				slog.Warn("digest", "scope", "all", "err", err)
+			} else if m != nil {
+				a.send(ctx, *m, "/runs", "")
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
+		n := cfg.Projects[name].Spec.Notify
 		if n == nil || n.Digest == nil {
 			continue
 		}
@@ -250,9 +303,7 @@ func (a *App) sendDigests(ctx context.Context, now time.Time) {
 	}
 }
 
-// dailyDigest is what happened in a project since a time and what waits for its
-// owner, or nil when there is nothing to say.
-func (a *App) dailyDigest(ctx context.Context, project string, since int64) (*notify.Message, error) {
+func (a *App) collectProjectDigest(ctx context.Context, project string, since int64) (*projectDigestData, error) {
 	raw, err := a.Store.ListKV(ctx, "report/"+project+"/")
 	if err != nil {
 		return nil, err
@@ -264,21 +315,45 @@ func (a *App) dailyDigest(ctx context.Context, project string, since int64) (*no
 			byResult[rep.Result] = append(byResult[rep.Result], rep)
 		}
 	}
-	var body, counts []string
-	for _, group := range []struct{ result, label string }{
-		{ResultAtRisk, "check production"}, {ResultRolledBack, "rolled back"}, {ResultShipped, "shipped"},
-		{ResultPROpen, "PR open"}, {ResultFailed, "did not ship"}, {ResultDone, "other"},
-	} {
-		reps := byResult[group.result]
-		if len(reps) == 0 {
-			continue
+	for k := range byResult {
+		slices.SortFunc(byResult[k], func(x, y RunReport) int {
+			if x.At < y.At {
+				return -1
+			}
+			if x.At > y.At {
+				return 1
+			}
+			return 0
+		})
+	}
+	var honed []HoneReport
+	if hraw, err := a.Store.ListKV(ctx, "hone_report/"+project+"/"); err != nil {
+		slog.Warn("digest hone reports", "project", project, "err", err)
+	} else {
+		for _, v := range hraw {
+			var hr HoneReport
+			if json.Unmarshal([]byte(v), &hr) == nil && hr.At >= since {
+				honed = append(honed, hr)
+			}
 		}
-		slices.SortFunc(reps, func(x, y RunReport) int { return int(x.At - y.At) })
-		counts = append(counts, fmt.Sprintf("%d %s", len(reps), group.label))
-		body = append(body, strings.ToUpper(group.label[:1])+group.label[1:]+":")
-		for _, rep := range reps {
-			body = append(body, "• "+clip(rep.Headline, 110))
+		slices.SortFunc(honed, func(x, y HoneReport) int {
+			if x.At < y.At {
+				return -1
+			}
+			if x.At > y.At {
+				return 1
+			}
+			return 0
+		})
+	}
+	var counts []string
+	for _, group := range digestGroups {
+		if n := len(byResult[group.result]); n > 0 {
+			counts = append(counts, fmt.Sprintf("%d %s", n, group.label))
 		}
+	}
+	if len(honed) > 0 {
+		counts = append(counts, fmt.Sprintf("%d honed", len(honed)))
 	}
 	att, err := a.Attention(ctx, project)
 	if err != nil {
@@ -299,15 +374,111 @@ func (a *App) dailyDigest(ctx context.Context, project string, since int64) (*no
 	} else if prs > 0 {
 		waiting = append(waiting, fmt.Sprintf("%d open ai-flow PR(s)", prs))
 	}
-	if len(body) == 0 && len(waiting) == 0 {
+	return &projectDigestData{project: project, byResult: byResult, honed: honed, waiting: waiting, counts: counts}, nil
+}
+
+// dailyDigest is what happened in a project since a time and what waits for its
+// owner, or nil when there is nothing to say.
+func (a *App) dailyDigest(ctx context.Context, project string, since int64) (*notify.Message, error) {
+	d, err := a.collectProjectDigest(ctx, project, since)
+	if err != nil {
+		return nil, err
+	}
+	if d.empty() {
 		return nil, nil
 	}
+	var body []string
+	for _, group := range digestGroups {
+		reps := d.byResult[group.result]
+		if len(reps) == 0 {
+			continue
+		}
+		body = append(body, strings.ToUpper(group.label[:1])+group.label[1:]+":")
+		for _, rep := range reps {
+			body = append(body, "• "+clip(rep.Headline, 110))
+		}
+	}
+	if len(d.honed) > 0 {
+		body = append(body, "Story maps honed:")
+		for _, hr := range d.honed {
+			body = append(body, "• "+clip(hr.Summary, 110))
+		}
+	}
+	counts := d.counts
 	if len(counts) == 0 {
 		counts = []string{"no runs"}
 	}
-	if len(waiting) > 0 {
-		body = append(body, "Open to you, if you want: "+strings.Join(waiting, ", "))
+	if len(d.waiting) > 0 {
+		body = append(body, "Open to you, if you want: "+strings.Join(d.waiting, ", "))
 	}
 	return &notify.Message{Title: project + " today: " + strings.Join(counts, ", "), Body: clip(strings.Join(body, "\n"), 3500),
 		Priority: 2, Tags: []string{"newspaper"}}, nil
+}
+
+// combinedDailyDigest summarizes the last 24h across all projects that do not
+// have their own project-level digest, returning nil when nothing happened and
+// nothing waits.
+func (a *App) combinedDailyDigest(ctx context.Context, since int64) (*notify.Message, error) {
+	cfg := a.Cfg.Current()
+	totals := map[string]int{}
+	totalHoned := 0
+	var sections []string
+	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
+		if n := cfg.Projects[name].Spec.Notify; n != nil && n.Digest != nil {
+			continue
+		}
+		d, err := a.collectProjectDigest(ctx, name, since)
+		if err != nil {
+			slog.Warn("combined digest project", "project", name, "err", err)
+			continue
+		}
+		if d.empty() {
+			continue
+		}
+		header := name
+		if len(d.counts) > 0 {
+			header += " (" + strings.Join(d.counts, ", ") + ")"
+		}
+		lines := []string{header + ":"}
+		for _, group := range digestGroups {
+			reps := d.byResult[group.result]
+			if len(reps) == 0 {
+				continue
+			}
+			totals[group.result] += len(reps)
+			prefix := strings.ToUpper(group.label[:1]) + group.label[1:]
+			for _, rep := range reps {
+				lines = append(lines, fmt.Sprintf("• %s: %s", prefix, clip(rep.Headline, 100)))
+			}
+		}
+		for _, hr := range d.honed {
+			totalHoned++
+			lines = append(lines, "• Story maps honed: "+clip(hr.Summary, 100))
+		}
+		if len(d.waiting) > 0 {
+			lines = append(lines, "• Waiting: "+strings.Join(d.waiting, ", "))
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+	if len(sections) == 0 {
+		return nil, nil
+	}
+	var counts []string
+	for _, group := range digestGroups {
+		if n := totals[group.result]; n > 0 {
+			counts = append(counts, fmt.Sprintf("%d %s", n, group.label))
+		}
+	}
+	if totalHoned > 0 {
+		counts = append(counts, fmt.Sprintf("%d honed", totalHoned))
+	}
+	if len(counts) == 0 {
+		counts = []string{"waiting for you"}
+	}
+	return &notify.Message{
+		Title:    "ai-flow today: " + strings.Join(counts, ", "),
+		Body:     clip(strings.Join(sections, "\n\n"), 3500),
+		Priority: 2,
+		Tags:     []string{"newspaper"},
+	}, nil
 }
