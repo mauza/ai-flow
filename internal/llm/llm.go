@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/mauza/ai-flow/internal/antigravity"
 	"github.com/mauza/ai-flow/internal/config"
 )
 
@@ -49,6 +51,9 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 	up, ok := c.cfg.Current().Env.LLM.Upstreams[m.Upstream]
 	if !ok {
 		return "", Usage{}, fmt.Errorf("model %s: unknown upstream %q", model, m.Upstream)
+	}
+	if up.IsAntigravity() {
+		return c.chatAntigravity(ctx, model, m, up, msgs)
 	}
 	body := map[string]any{"model": m.Model, "messages": msgs, "temperature": opt.Temperature}
 	if opt.MaxTokens > 0 {
@@ -131,6 +136,46 @@ func (c *Client) Chat(ctx context.Context, model string, msgs []Message, opt Opt
 			return "", out.Usage, fmt.Errorf("%s: no choices in response", model)
 		}
 		return out.Choices[0].Message.Content, out.Usage, nil
+	}
+	return "", Usage{}, lastErr
+}
+
+func (c *Client) chatAntigravity(ctx context.Context, model string, m *config.Model, up config.Upstream, msgs []Message) (string, Usage, error) {
+	agyMsgs := make([]antigravity.Message, len(msgs))
+	for i, msg := range msgs {
+		agyMsgs[i] = antigravity.Message{Role: msg.Role, Content: msg.Content}
+	}
+	req := antigravity.CompleteRequest{
+		Binary:   up.Binary,
+		Model:    m.Model,
+		Messages: agyMsgs,
+		AuthEnv:  up.AuthEnv,
+		AuthFile: up.AuthFile,
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
+			case <-ctx.Done():
+				return "", Usage{}, ctx.Err()
+			}
+		}
+		resp, err := antigravity.Complete(ctx, req)
+		if err == nil {
+			return resp.Content, Usage{
+				PromptTokens:     resp.Usage.PromptTokens,
+				CompletionTokens: resp.Usage.CompletionTokens,
+			}, nil
+		}
+		if ctx.Err() != nil {
+			return "", Usage{}, ctx.Err()
+		}
+		var aerr *antigravity.Error
+		if errors.As(err, &aerr) && (aerr.AuthError || (!aerr.RateLimit && !aerr.QuotaLimit && aerr.Status != "")) {
+			return "", Usage{}, fmt.Errorf("%s: %w", model, err)
+		}
+		lastErr = fmt.Errorf("%s: %w", model, err)
 	}
 	return "", Usage{}, lastErr
 }

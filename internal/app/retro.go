@@ -446,6 +446,36 @@ func transcriptDigest(data []byte) string {
 				}
 			}
 		}
+		if evName, _ := ev["event"].(string); evName == "step_update" { // antigravity (agy)
+			if su, ok := ev["step_update"].(map[string]any); ok {
+				state, _ := su["state"].(string)
+				stepType, _ := su["step_type"].(string)
+				if stepType == "tool" && state == "ACTIVE" {
+					name, _ := su["tool_name"].(string)
+					var args map[string]any
+					if info, ok := su["tool_info"].(map[string]any); ok {
+						args, _ = info["parameters"].(map[string]any)
+					}
+					if name == "run_command" {
+						if cmd, _ := args["CommandLine"].(string); cmd != "" {
+							recordTool("bash", map[string]any{"command": cmd})
+						} else {
+							recordTool("bash", args)
+						}
+					} else {
+						recordTool(strings.TrimPrefix(name, "mcp_flow_"), args)
+					}
+				}
+				if stepType == "agent_response" && state == "DONE" {
+					if usage, ok := su["usage"].(map[string]any); ok {
+						in, _ := usage["input_tokens"].(float64)
+						cached, _ := usage["cache_read_tokens"].(float64)
+						totalIn += int64(in + cached)
+						totalCached += int64(cached)
+					}
+				}
+			}
+		}
 	}
 	if len(toolCounts) == 0 && totalIn == 0 {
 		return ""

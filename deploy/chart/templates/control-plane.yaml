@@ -93,7 +93,7 @@ spec:
             capabilities: { drop: [ALL] }
       volumes:
         - name: tmp
-          emptyDir: { sizeLimit: 256Mi }
+          emptyDir: { sizeLimit: 512Mi }
         - name: config
           configMap:
             name: {{ .Values.config.existingConfigMap | default "ai-flow-config" }}

@@ -470,6 +470,34 @@ func (s *Shim) recordUsage(resp map[string]any) {
 	s.mu.Unlock()
 }
 
+// RecordDirectUsage records one model turn from a direct-upstream harness
+// (such as antigravity) that bypasses the HTTP proxy, enforcing the same
+// local turn and token limits (and grace allowance).
+func (s *Shim) RecordDirectUsage(in, out, cached int64) {
+	s.mu.Lock()
+	s.calls++
+	s.tokensIn += in
+	s.tokensOut += out
+	s.tokensCached += cached
+	calls := s.calls
+	graceTurns := s.graceTurns
+	s.mu.Unlock()
+	if s.cfg != nil && s.cfg.Limits != nil && s.cfg.Limits.Turns > 0 && calls >= s.cfg.Limits.Turns+graceTurns {
+		s.budgetStop(fmt.Sprintf("turn limit %d reached", s.cfg.Limits.Turns))
+		return
+	}
+	s.checkBudget()
+}
+
+// SignalBudget triggers a budget stop reported by the control plane for a
+// direct-upstream harness.
+func (s *Shim) SignalBudget(msg string) {
+	if msg == "" {
+		msg = "budget exceeded"
+	}
+	s.budgetStop(msg)
+}
+
 // UsageCachedTokens reads prompt tokens served from cache across Chat
 // Completions, Responses API, and Anthropic/LiteLLM usage shapes.
 func UsageCachedTokens(resp map[string]any) float64 {

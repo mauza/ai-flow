@@ -10,15 +10,18 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mauza/ai-flow/internal/antigravity"
 	"github.com/mauza/ai-flow/internal/protocol"
 )
 
-// A harness is the coding agent an agent node runs: pi, opencode or codex.
-// The runner owns everything around it (the limit shim, skills, the system
-// prompt, nudges, the result file); an adapter only writes the harness's own
-// config, builds its command line and reads its event stream. Every harness
-// talks to the model through the shim and reports through flow_finish, which
-// pi gets from pi-ext and the others from `ai-flow flow-tools` over MCP.
+// A harness is the coding agent an agent node runs: pi, opencode, codex or
+// antigravity. The runner owns everything around it (the limit shim, skills,
+// the system prompt, nudges, the result file); an adapter only writes the
+// harness's own config, builds its command line and reads its event stream.
+// pi, opencode and codex talk to the model through the shim; antigravity runs
+// the official `agy` CLI directly and reports usage back to the broker. Every
+// harness reports completion through flow_finish, which pi gets from pi-ext
+// and the others from `ai-flow flow-tools` over MCP.
 type harness interface {
 	binary() string
 	// setup writes the harness's config and returns its extra environment.
@@ -32,7 +35,12 @@ type harness interface {
 }
 
 // Harnesses are the agent harnesses the runner can start, by catalog name.
-var Harnesses = map[string]harness{"pi": piHarness{}, "opencode": opencodeHarness{}, "codex": codexHarness{}}
+var Harnesses = map[string]harness{
+	"pi":          piHarness{},
+	"opencode":    opencodeHarness{},
+	"codex":       codexHarness{},
+	"antigravity": antigravityHarness{},
+}
 
 // agentSession is what an adapter needs to configure one agent step.
 type agentSession struct {
@@ -412,6 +420,187 @@ func (codexHarness) event(r *Runner, line []byte) {
 	case "error":
 		r.setLastStop("error: " + firstLine(ev.Message))
 	}
+}
+
+// ---- antigravity ----
+
+type antigravityHarness struct{}
+
+func (antigravityHarness) binary() string     { return antigravity.DefaultBinary() }
+func (antigravityHarness) finishTool() string { return "mcp_flow_flow_finish" }
+
+func (antigravityHarness) setup(s *agentSession) ([]string, error) {
+	if err := antigravity.WriteAuth(s.home, "", ""); err != nil {
+		return nil, err
+	}
+	cfgDir := filepath.Join(s.home, ".gemini", "config")
+	if err := linkSkills(filepath.Join(cfgDir, "skills"), s.skills); err != nil {
+		return nil, err
+	}
+	var rules []string
+	if text := strings.TrimSpace(s.instructions()); text != "" {
+		rules = append(rules, text)
+	}
+	if sys := strings.TrimSpace(s.system); sys != "" {
+		rules = append(rules, sys)
+	}
+	if len(rules) > 0 {
+		if err := os.WriteFile(filepath.Join(s.home, ".gemini", "AGENTS.md"), []byte(strings.Join(rules, "\n\n")+"\n"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+
+	eagerTools := map[string]any{"flow_finish": map[string]any{"eager": true}}
+	for _, t := range s.b.MCP {
+		eagerTools[MCPToolName(t.Server, t.Name)] = map[string]any{"eager": true}
+	}
+	mcpCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"flow": map[string]any{
+				"command":        selfBinary(),
+				"args":           []string{"flow-tools"},
+				"env":            s.flowToolsEnv(),
+				"timeoutSeconds": 900,
+				"tools":          eagerTools,
+			},
+		},
+	}
+	if err := writeJSONFile(filepath.Join(cfgDir, "mcp_config.json"), mcpCfg); err != nil {
+		return nil, err
+	}
+
+	allow := []string{"read_file(*)", "command(*)", "mcp(flow/*)"}
+	deny := []string{"read_url(*)", "execute_url(*)", "download_url(*)"}
+	if s.write() {
+		allow = append(allow, "write_file(*)")
+	} else {
+		deny = append(deny, "write_file(*)")
+	}
+	settings := map[string]any{
+		"toolPermission": "always-proceed",
+		"permissions": map[string]any{
+			"allow": allow,
+			"deny":  deny,
+		},
+		"trustedWorkspaces":  []string{s.repo},
+		"showTips":           false,
+		"showFeedbackSurvey": false,
+		"notifications":      false,
+	}
+	if s.b.Agent != nil {
+		mergeSettings(settings, s.b.Agent.Settings)
+	}
+	if err := writeJSONFile(filepath.Join(s.home, ".gemini", "antigravity-cli", "settings.json"), settings); err != nil {
+		return nil, err
+	}
+	return []string{
+		"XDG_CONFIG_HOME=" + filepath.Join(s.home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(s.home, ".local", "share"),
+		"XDG_CACHE_HOME=" + filepath.Join(s.home, ".cache"),
+	}, nil
+}
+
+func (antigravityHarness) args(s *agentSession, prompt string, resume bool) []string {
+	m := s.model()
+	slug := m.UpstreamModel
+	if slug == "" {
+		slug = m.Name
+	}
+	args := []string{"-p", prompt, "--model", slug, "--output-format", "stream-json", "--disable-slash-commands"}
+	if th := s.thinking(); th != "" {
+		args = append(args, "--effort", th)
+	}
+	if resume {
+		args = append(args, "--continue")
+	}
+	return args
+}
+
+func (antigravityHarness) event(r *Runner, line []byte) {
+	var ev struct {
+		Event      string `json:"event"`
+		StepUpdate *struct {
+			State     string `json:"state"`
+			StepType  string `json:"step_type"`
+			ToolName  string `json:"tool_name"`
+			TextDelta string `json:"text_delta"`
+			ToolInfo  *struct {
+				Name       string          `json:"name"`
+				Parameters json.RawMessage `json:"parameters"`
+			} `json:"tool_info"`
+			Usage *struct {
+				InputTokens     int64 `json:"input_tokens"`
+				OutputTokens    int64 `json:"output_tokens"`
+				CacheReadTokens int64 `json:"cache_read_tokens"`
+			} `json:"usage"`
+		} `json:"step_update"`
+		Result *struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	switch ev.Event {
+	case "step_update":
+		su := ev.StepUpdate
+		if su == nil {
+			return
+		}
+		switch {
+		case su.StepType == "tool" && su.State == "ACTIVE":
+			var raw json.RawMessage
+			if su.ToolInfo != nil {
+				raw = su.ToolInfo.Parameters
+			}
+			r.progress(describeAgyTool(su.ToolName, raw))
+		case su.StepType == "agent_response" && su.State == "DONE":
+			if t := strings.TrimSpace(su.TextDelta); t != "" {
+				r.progress(firstLine(t))
+			}
+			if u := su.Usage; u != nil && (u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0) {
+				r.reportDirectUsage(u.InputTokens+u.CacheReadTokens, u.OutputTokens, u.CacheReadTokens)
+			}
+		}
+	case "result":
+		if ev.Result == nil {
+			return
+		}
+		if ev.Result.Error != "" {
+			r.setLastStop("error: " + firstLine(ev.Result.Error))
+		} else if ev.Result.Status != "" {
+			r.setLastStop(strings.ToLower(ev.Result.Status))
+		}
+	}
+}
+
+func describeAgyTool(tool string, raw json.RawMessage) string {
+	var args map[string]any
+	json.Unmarshal(raw, &args)
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := args[k].(string); ok && v != "" {
+				return firstLine(v)
+			}
+		}
+		return ""
+	}
+	switch tool {
+	case "run_command":
+		return "$ " + pick("CommandLine", "command")
+	case "read_file", "view_file":
+		return "read " + pick("Path", "AbsolutePath", "path")
+	case "write_file", "write_to_file":
+		return "write " + pick("Path", "TargetFile", "path")
+	case "edit_file", "replace_file_content", "multi_replace_file_content":
+		return "edit " + pick("Path", "TargetFile", "path")
+	case "grep_search", "find_by_name", "list_dir":
+		return tool + " " + pick("Query", "Pattern", "SearchPath", "DirectoryPath", "path")
+	case "mcp_flow_flow_finish":
+		return "Finishing: " + pick("outcome")
+	}
+	return strings.TrimPrefix(tool, "mcp_flow_")
 }
 
 // shellBody drops codex's `bash -lc "..."` wrapper from a command line.

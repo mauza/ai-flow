@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mauza/ai-flow/internal/antigravity"
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/github"
@@ -834,6 +835,24 @@ func (e *Engine) launch(ctx context.Context, r *store.Run, res *resolve.Resolved
 			spec.Secrets = append(spec.Secrets, SecretMount{SecretName: grant.SecretRef.Name, Key: grant.SecretRef.Key, Env: grant.Env, File: grant.File})
 		case config.GrantEgress:
 			spec.Internet = spec.Internet || grant.Allow == "internet"
+		}
+	}
+	// An antigravity agent step runs `agy` inside the pod and talks directly to
+	// Google's Antigravity backend, so attach the upstream's OAuth secret and
+	// outbound internet egress automatically (scoped only to steps whose model
+	// uses that upstream).
+	if n.Type == flow.TypeAgent && n.Harness == "antigravity" && n.LLM != nil {
+		if m := e.cfg.Current().Catalog.Models[n.LLM.Model]; m != nil {
+			if up := e.cfg.Current().Env.LLM.Upstreams[m.Upstream]; up.IsAntigravity() {
+				spec.Internet = true
+				if up.PodSecret != nil {
+					spec.Secrets = append(spec.Secrets, SecretMount{
+						SecretName: up.PodSecret.Name,
+						Key:        up.PodSecret.Key,
+						File:       antigravity.PodAuthPath,
+					})
+				}
+			}
 		}
 	}
 	// Write intent before the external call. The Kubernetes launcher uses the

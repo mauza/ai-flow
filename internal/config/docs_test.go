@@ -177,3 +177,33 @@ runtimes: {}
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestAntigravityUpstreamConfig(t *testing.T) {
+	dir := t.TempDir()
+	write := func(up string) {
+		os.WriteFile(filepath.Join(dir, "c.yaml"), []byte("kind: Environment\nllm:\n  upstreams:\n    antigravity: "+up+`
+---
+apiVersion: ai-flow/v1alpha1
+kind: Catalog
+models:
+  gemini-4-neon-high: { upstream: antigravity, model: gemini-4-neon-high, reasoning: true, thinking_format: reasoning_effort }
+runtimes: {}
+`), 0o644)
+	}
+	write(`{ type: antigravity, authEnv: ANTIGRAVITY_OAUTH_TOKEN, podSecret: { name: agy-auth, key: token } }`)
+	cfg, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("valid antigravity upstream rejected: %v", err)
+	}
+	if !cfg.Env.LLM.Upstreams["antigravity"].IsAntigravity() {
+		t.Fatal("expected IsAntigravity() == true")
+	}
+	write(`{ type: antigravity, podSecret: { name: agy-auth } }`)
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "podSecret requires name and key") {
+		t.Fatalf("expected podSecret error, got %v", err)
+	}
+	write(`{ type: bogus }`)
+	if _, err := config.Load(dir); err == nil || !strings.Contains(err.Error(), "unknown type") {
+		t.Fatalf("expected unknown type error, got %v", err)
+	}
+}

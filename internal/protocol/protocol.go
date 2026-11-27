@@ -79,7 +79,9 @@ type LLMAccess struct {
 }
 
 type ModelInfo struct {
-	Name            string `json:"name"` // catalog name; what the pod sends as "model"
+	Name            string `json:"name"`                     // catalog name; what the pod sends as "model"
+	UpstreamModel   string `json:"upstream_model,omitempty"` // actual model slug on the upstream (e.g. agy slug)
+	UpstreamType    string `json:"upstream_type,omitempty"`  // "" (openai) | "antigravity"
 	ContextTokens   int    `json:"context_tokens,omitempty"`
 	Reasoning       bool   `json:"reasoning,omitempty"`
 	ThinkingFormat  string `json:"thinking_format,omitempty"`
@@ -137,6 +139,23 @@ type DiffStat struct {
 
 type Progress struct {
 	Text string `json:"text"`
+}
+
+// UsageReport lets a direct-upstream harness (e.g. antigravity) report its
+// token usage back to the broker so run/visit totals and budgets stay accurate.
+type UsageReport struct {
+	Model        string `json:"model"`
+	TokensIn     int64  `json:"tokens_in"`
+	TokensOut    int64  `json:"tokens_out"`
+	TokensCached int64  `json:"tokens_cached,omitempty"`
+}
+
+// UsageResponse tells a direct-upstream harness whether the run or step budget
+// has now been exceeded.
+type UsageResponse struct {
+	OverBudget bool   `json:"over_budget,omitempty"`
+	Soft       bool   `json:"soft,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // MCPCall asks the control plane to call one granted MCP tool.

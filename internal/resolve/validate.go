@@ -473,6 +473,22 @@ func (v *validator) checkModelNode(n *Node) {
 		if _, ok := cat.Harnesses[n.Harness]; !ok {
 			v.errf(id, "harness", "unknown harness %q", n.Harness)
 		}
+		for i, name := range models {
+			m := cat.Models[name]
+			if m == nil {
+				continue
+			}
+			field := "model"
+			if i > 0 {
+				field = "llm.fallbacks"
+			}
+			isAgy := v.cfg.Env.LLM.Upstreams[m.Upstream].IsAntigravity()
+			if isAgy && n.Harness != "antigravity" {
+				v.errf(id, field, "model %q uses an antigravity upstream and requires harness \"antigravity\" (got %q)", name, n.Harness)
+			} else if !isAgy && n.Harness == "antigravity" {
+				v.errf(id, field, "harness \"antigravity\" requires a model on an antigravity upstream (%q uses %q)", name, m.Upstream)
+			}
+		}
 		for _, s := range n.Skills {
 			if _, ok := cat.Skills[s]; !ok {
 				v.errf(id, "skills", "unknown skill %q", s)

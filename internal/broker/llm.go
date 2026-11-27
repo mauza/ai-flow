@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mauza/ai-flow/internal/antigravity"
 	"github.com/mauza/ai-flow/internal/config"
 	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/grant"
@@ -105,6 +107,11 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		}
 	}
 
+	if up.IsAntigravity() {
+		b.llmAntigravity(w, ctx, c, name, model, up, body)
+		return
+	}
+
 	body["model"] = model.Model
 	stream, _ := body["stream"].(bool)
 	if stream && path == "/chat/completions" {
@@ -178,6 +185,123 @@ func (b *Broker) llmProxy(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		flusher.Flush()
 	}
 	b.recordUsage(context.WithoutCancel(ctx), c, name, model, usage, headerCost)
+}
+
+func (b *Broker) llmAntigravity(w http.ResponseWriter, ctx context.Context, c *grant.Claims, name string, model *config.Model, up config.Upstream, body map[string]any) {
+	rawMsgs, _ := body["messages"].([]any)
+	msgs := make([]antigravity.Message, 0, len(rawMsgs))
+	for _, item := range rawMsgs {
+		m, _ := item.(map[string]any)
+		role, _ := m["role"].(string)
+		content := extractMessageText(m["content"])
+		msgs = append(msgs, antigravity.Message{Role: role, Content: content})
+	}
+	var schema map[string]any
+	if rf, ok := body["response_format"].(map[string]any); ok {
+		if js, ok := rf["json_schema"].(map[string]any); ok {
+			if sc, ok := js["schema"].(map[string]any); ok {
+				schema = sc
+			}
+		}
+	}
+	effort, _ := body["reasoning_effort"].(string)
+	resp, err := antigravity.Complete(ctx, antigravity.CompleteRequest{
+		Binary:     up.Binary,
+		Model:      model.Model,
+		Effort:     effort,
+		Messages:   msgs,
+		JSONSchema: schema,
+		AuthEnv:    up.AuthEnv,
+		AuthFile:   up.AuthFile,
+	})
+	if err != nil {
+		var aerr *antigravity.Error
+		if errors.As(err, &aerr) {
+			switch {
+			case aerr.RateLimit:
+				limitErr(w, 429, flow.LimitRateLimited, aerr.Message)
+				return
+			case aerr.QuotaLimit:
+				limitErr(w, 429, flow.LimitQuotaExhausted, aerr.Message)
+				return
+			case aerr.AuthError:
+				httpErr(w, 401, aerr.Message)
+				return
+			}
+		}
+		httpErr(w, 502, "antigravity: "+err.Error())
+		return
+	}
+
+	usage := map[string]any{
+		"prompt_tokens":     float64(resp.Usage.PromptTokens),
+		"completion_tokens": float64(resp.Usage.CompletionTokens),
+		"total_tokens":      float64(resp.Usage.PromptTokens + resp.Usage.CompletionTokens),
+		"prompt_tokens_details": map[string]any{
+			"cached_tokens": float64(resp.Usage.CachedTokens),
+		},
+	}
+	b.recordUsage(context.WithoutCancel(ctx), c, name, model, usage, 0)
+
+	stream, _ := body["stream"].(bool)
+	if !stream {
+		writeJSON(w, 200, map[string]any{
+			"id":      "agy-" + SessionID(c.Run, c.Seq),
+			"object":  "chat.completion",
+			"model":   name,
+			"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": resp.Content}, "finish_reason": "stop"}},
+			"usage":   usage,
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	flusher, _ := w.(http.Flusher)
+	emit := func(payload any) {
+		raw, _ := json.Marshal(payload)
+		w.Write([]byte("data: "))
+		w.Write(raw)
+		w.Write([]byte("\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	emit(map[string]any{
+		"id":      "agy-" + SessionID(c.Run, c.Seq),
+		"object":  "chat.completion.chunk",
+		"model":   name,
+		"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant", "content": resp.Content}, "finish_reason": nil}},
+	})
+	emit(map[string]any{
+		"id":      "agy-" + SessionID(c.Run, c.Seq),
+		"object":  "chat.completion.chunk",
+		"model":   name,
+		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+		"usage":   usage,
+	})
+	w.Write([]byte("data: [DONE]\n\n"))
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+func extractMessageText(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case []any:
+		var parts []string
+		for _, item := range x {
+			if m, ok := item.(map[string]any); ok {
+				if t, _ := m["text"].(string); t != "" {
+					parts = append(parts, t)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 func (b *Broker) recordUsage(ctx context.Context, c *grant.Claims, name string, m *config.Model, usage any, headerCost float64) {

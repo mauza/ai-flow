@@ -54,6 +54,8 @@ func (r *Runner) runAgent(ctx context.Context) *protocol.Result {
 		return &protocol.Result{Error: err.Error()}
 	}
 	defer shim.Close()
+	r.shim = shim
+	defer func() { r.shim = nil }()
 
 	flowDir := filepath.Join(r.work, "flow")
 	s := &agentSession{
@@ -174,6 +176,34 @@ func (r *Runner) setLastStop(s string) {
 	r.progressMu.Lock()
 	r.lastStop = s
 	r.progressMu.Unlock()
+}
+
+// reportDirectUsage records one model step's usage from a direct-upstream
+// harness (like antigravity) both locally on the shim (turn/token limits) and
+// on the control plane (run/visit totals and run/project budgets).
+func (r *Runner) reportDirectUsage(in, out, cached int64) {
+	if r.shim != nil {
+		r.shim.RecordDirectUsage(in, out, cached)
+	}
+	if r.b == nil || r.podURL == "" {
+		return
+	}
+	model := ""
+	if r.b.LLM != nil && len(r.b.LLM.Models) > 0 {
+		model = r.b.LLM.Models[0].Name
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var resp protocol.UsageResponse
+	if err := r.post(ctx, "/v1/usage", protocol.UsageReport{
+		Model: model, TokensIn: in, TokensOut: out, TokensCached: cached,
+	}, &resp); err != nil {
+		slog.Warn("report direct usage", "err", err)
+		return
+	}
+	if resp.OverBudget && r.shim != nil {
+		r.shim.SignalBudget(resp.Message)
+	}
 }
 
 func (r *Runner) runHarness(ctx context.Context, h harness, args, env []string, transcript *transcriptCapture, shim *Shim) error {

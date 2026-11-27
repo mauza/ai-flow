@@ -139,13 +139,31 @@ type LLM struct {
 	Upstreams map[string]Upstream `json:"upstreams"`
 }
 
+const (
+	UpstreamOpenAI      = ""            // default: OpenAI-compatible HTTP endpoint
+	UpstreamAntigravity = "antigravity" // Google Antigravity CLI (`agy`)
+)
+
 type Upstream struct {
-	BaseURL string `json:"baseUrl"`
+	Type    string `json:"type,omitempty"` // "" / "openai" (default) | "antigravity"
+	BaseURL string `json:"baseUrl,omitempty"`
 	// BaseURLEnv names an env var that, when set, replaces BaseURL, so a
 	// shared config file can point at each developer's own endpoint.
 	BaseURLEnv string `json:"baseUrlEnv,omitempty"`
 	APIKeyEnv  string `json:"apiKeyEnv,omitempty"`
+	// Antigravity-only fields: AuthEnv names an env var containing the JSON
+	// contents of antigravity-oauth-token; AuthFile names a path to that file.
+	AuthEnv  string `json:"authEnv,omitempty"`
+	AuthFile string `json:"authFile,omitempty"`
+	// Binary overrides the `agy` executable path (defaults to AI_FLOW_AGY or "agy").
+	Binary string `json:"binary,omitempty"`
+	// PodSecret names a Kubernetes Secret in the runs namespace mounted into
+	// agent pods that use this antigravity upstream.
+	PodSecret *SecretRef `json:"podSecret,omitempty"`
 }
+
+// IsAntigravity reports whether u runs through the Google Antigravity CLI (`agy`).
+func (u Upstream) IsAntigravity() bool { return u.Type == UpstreamAntigravity }
 
 type ObjectStore struct {
 	Type string `json:"type,omitempty"` // s3 | garage | local
@@ -1054,8 +1072,17 @@ func (c *Config) check() error {
 		}
 	}
 	for name, u := range c.Env.LLM.Upstreams {
-		if u.BaseURL == "" {
-			errs = append(errs, fmt.Sprintf("llm upstream %s: baseUrl is required (or set %s)", name, orName(u.BaseURLEnv, "baseUrlEnv")))
+		switch u.Type {
+		case UpstreamOpenAI, "openai":
+			if u.BaseURL == "" {
+				errs = append(errs, fmt.Sprintf("llm upstream %s: baseUrl is required (or set %s)", name, orName(u.BaseURLEnv, "baseUrlEnv")))
+			}
+		case UpstreamAntigravity:
+			if u.PodSecret != nil && (u.PodSecret.Name == "" || u.PodSecret.Key == "") {
+				errs = append(errs, fmt.Sprintf("llm upstream %s: podSecret requires name and key", name))
+			}
+		default:
+			errs = append(errs, fmt.Sprintf("llm upstream %s: unknown type %q (expected \"\" or %q)", name, u.Type, UpstreamAntigravity))
 		}
 	}
 	for name, m := range c.Catalog.Models {

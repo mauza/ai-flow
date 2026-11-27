@@ -177,6 +177,63 @@ func TestCodexConfig(t *testing.T) {
 	}
 }
 
+func TestAntigravityConfig(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_OAUTH_TOKEN", `{"auth_method":"oauth","token":"dummy"}`)
+	s := testSession(t, AgentTools(false))
+	s.b.LLM.Models[0].Name = "gemini-4-neon-high"
+	s.b.LLM.Models[0].UpstreamModel = "gemini-4-neon-high"
+	s.b.LLM.Models[0].UpstreamType = "antigravity"
+	s.b.MCP = []protocol.MCPTool{{Server: "demo", Name: "word_stats"}}
+
+	env, err := antigravityHarness{}.setup(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "XDG_CONFIG_HOME="+filepath.Join(s.home, ".config")) {
+		t.Fatalf("env = %v", env)
+	}
+	if _, err := os.Stat(filepath.Join(s.home, ".gemini", "antigravity-cli", "antigravity-oauth-token")); err != nil {
+		t.Fatalf("oauth token not written: %v", err)
+	}
+	var settings map[string]any
+	rawSettings, _ := os.ReadFile(filepath.Join(s.home, ".gemini", "antigravity-cli", "settings.json"))
+	if err := json.Unmarshal(rawSettings, &settings); err != nil {
+		t.Fatal(err)
+	}
+	perms := settings["permissions"].(map[string]any)
+	deny := perms["deny"].([]any)
+	hasWriteDeny := false
+	for _, d := range deny {
+		if d == "write_file(*)" {
+			hasWriteDeny = true
+		}
+	}
+	if !hasWriteDeny {
+		t.Fatalf("read-only antigravity step must deny write_file(*): %v", perms)
+	}
+	var mcpCfg map[string]any
+	rawMCP, _ := os.ReadFile(filepath.Join(s.home, ".gemini", "config", "mcp_config.json"))
+	if err := json.Unmarshal(rawMCP, &mcpCfg); err != nil {
+		t.Fatal(err)
+	}
+	flowSrv := mcpCfg["mcpServers"].(map[string]any)["flow"].(map[string]any)
+	tools := flowSrv["tools"].(map[string]any)
+	if tools["flow_finish"] == nil || tools["demo__word_stats"] == nil {
+		t.Fatalf("mcp eager tools = %v", tools)
+	}
+	agents, _ := os.ReadFile(filepath.Join(s.home, ".gemini", "AGENTS.md"))
+	if !strings.Contains(string(agents), "Be careful.") || !strings.Contains(string(agents), "# Step") {
+		t.Fatalf("AGENTS.md = %q", agents)
+	}
+	if target, _ := os.Readlink(filepath.Join(s.home, ".gemini", "config", "skills", "small-diffs")); target != s.skills[0] {
+		t.Fatalf("skill link = %q", target)
+	}
+	args := antigravityHarness{}.args(s, "go", true)
+	if !slices.Contains(args, "--continue") || !slices.Contains(args, "gemini-4-neon-high") || !slices.Contains(args, "--effort") {
+		t.Fatalf("args = %v", args)
+	}
+}
+
 func TestTomlString(t *testing.T) {
 	if got := tomlString("a\"b\\c\nd\x01é"); got != `"a\"b\\c\nd\u0001é"` {
 		t.Fatalf("got %s", got)

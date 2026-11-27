@@ -76,11 +76,19 @@ harnesses:
         flow_finish summary which commands you ran and what they reported, and
         what you could not check.
       - Never weaken, skip or delete a test to make it pass.
+  antigravity:
+    description: Google Antigravity CLI (agy) — native tools plus granted flow tools over MCP. Requires a model on an antigravity upstream.
+    instructions: |
+      - Read the code you are about to change, and its tests, before editing.
+      - Verify with the repository's own test and build commands. Say in the
+        mcp_flow_flow_finish summary which commands you ran and what they reported, and
+        what you could not check.
+      - Never weaken, skip or delete a test to make it pass.
 
 runtimes:
   agent-base:
     image: ai-flow-agent:dev
-    description: pi, git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks. No Docker daemon in any runtime; run apps as processes.
+    description: pi, opencode, codex, antigravity (agy), git, ripgrep, python3, node. Use for agent/llm nodes and Python or JS checks. No Docker daemon in any runtime; run apps as processes.
   agent-go:
     image: ai-flow-agent-go:dev
     description: agent-base plus the Go toolchain and gcc (cgo works, so go test -race works).

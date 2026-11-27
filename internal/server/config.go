@@ -60,7 +60,12 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreams := []map[string]string{}
 	for _, name := range sortedKeys(env.LLM.Upstreams) {
-		upstreams = append(upstreams, map[string]string{"name": name, "base_url": env.LLM.Upstreams[name].BaseURL})
+		u := env.LLM.Upstreams[name]
+		baseURL := u.BaseURL
+		if u.IsAntigravity() {
+			baseURL = "antigravity (agy)"
+		}
+		upstreams = append(upstreams, map[string]string{"name": name, "base_url": baseURL})
 	}
 	mcp := sortedKeys(env.MCP.Servers)
 	writeJSON(w, 200, map[string]any{

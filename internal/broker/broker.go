@@ -74,6 +74,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/exchange", b.exchange)
 	mux.HandleFunc("POST /v1/result", b.withDeliveryGrant(b.result))
 	mux.HandleFunc("POST /v1/progress", b.withGrant(b.progress))
+	mux.HandleFunc("POST /v1/usage", b.withDeliveryGrant(b.usage))
 	mux.HandleFunc("POST /v1/transcript", b.withDeliveryGrant(b.transcript))
 	mux.HandleFunc("POST /v1/mcp/call", b.withGrant(b.mcpCall))
 	mux.HandleFunc("GET /llm/v1/models", b.withGrant(b.llmModels))
@@ -304,9 +305,13 @@ func (b *Broker) buildBundle(ctx context.Context, runID string, seq int) (*proto
 			if m == nil {
 				continue
 			}
+			up := b.cfg.Current().Env.LLM.Upstreams[m.Upstream]
 			claims.Models = append(claims.Models, name)
-			access.Models = append(access.Models, protocol.ModelInfo{Name: name, ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
-				ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens})
+			access.Models = append(access.Models, protocol.ModelInfo{
+				Name: name, UpstreamModel: m.Model, UpstreamType: up.Type,
+				ContextTokens: m.ContextTokens, Reasoning: m.Reasoning,
+				ThinkingFormat: m.ThinkingFormat, MaxOutputTokens: m.MaxOutputTokens,
+			})
 		}
 		bundle.LLM = access
 	}
@@ -471,6 +476,41 @@ func (b *Broker) progress(w http.ResponseWriter, r *http.Request, c *grant.Claim
 		b.hub.Publish(hub.Event{Type: "progress", ID: c.Run, Seq: c.Seq, Text: p.Text})
 	}
 	w.WriteHeader(204)
+}
+
+// usage records token usage reported by a direct-upstream harness (such as
+// antigravity) that does not proxy LLM requests through /llm/v1, and reports
+// back whether the run or step budget has been exceeded.
+func (b *Broker) usage(w http.ResponseWriter, r *http.Request, c *grant.Claims) {
+	var u protocol.UsageReport
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&u); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	modelName := u.Model
+	if modelName == "" && len(c.Models) > 0 {
+		modelName = c.Models[0]
+	}
+	if !c.AllowsModel(modelName) {
+		httpErr(w, 403, fmt.Sprintf("model %q is not granted to this node", modelName))
+		return
+	}
+	var cost float64
+	if m := b.cfg.Current().Catalog.Models[modelName]; m != nil {
+		cost = float64(u.TokensIn)*m.InputPer1M/1e6 + float64(u.TokensOut)*m.OutputPer1M/1e6
+	}
+	if u.TokensIn > 0 || u.TokensOut > 0 || u.TokensCached > 0 {
+		if err := b.store.AddUsage(r.Context(), c.Run, c.Seq, modelName, u.TokensIn, u.TokensOut, u.TokensCached, cost); err != nil {
+			slog.Warn("record direct usage", "err", err)
+		}
+	}
+	resp := protocol.UsageResponse{}
+	if msg, soft, err := b.overBudget(r.Context(), c); err == nil && msg != "" {
+		resp.OverBudget = true
+		resp.Soft = soft
+		resp.Message = msg
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (b *Broker) mcpCall(w http.ResponseWriter, r *http.Request, c *grant.Claims) {

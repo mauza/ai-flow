@@ -76,8 +76,15 @@ func Resolve(f *flow.Flow, cfg *config.Config) *Resolved {
 			if n.LLM != nil && n.LLM.Model != "" {
 				name = n.LLM.Model
 			}
-			if m := cfg.Catalog.Models[name]; m != nil && m.LLM != nil {
-				fillDefaults(&n.Node, &flow.Node{LLM: m.LLM})
+			if m := cfg.Catalog.Models[name]; m != nil {
+				if m.LLM != nil {
+					fillDefaults(&n.Node, &flow.Node{LLM: m.LLM})
+				}
+				// Models on an antigravity upstream use the antigravity harness
+				// by default, before catalog.defaults fills in pi.
+				if n.Type == flow.TypeAgent && n.Harness == "" && cfg.Env.LLM.Upstreams[m.Upstream].IsAntigravity() {
+					n.Harness = "antigravity"
+				}
 			}
 		}
 		fillDefaults(&n.Node, cfg.Catalog.Defaults)

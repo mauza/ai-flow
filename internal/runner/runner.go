@@ -43,6 +43,7 @@ type Runner struct {
 	lastProgress       time.Time
 	lastStop           string // how pi's last assistant message ended, for errors
 	finalTranscriptKey string // only the synchronous final upload sets this
+	shim               *Shim  // active agent shim (for direct-upstream usage/budget accounting)
 }
 
 // Main runs one node and exits. It returns an error only when the result

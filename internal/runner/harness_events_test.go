@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mauza/ai-flow/internal/flow"
 	"github.com/mauza/ai-flow/internal/protocol"
 )
 
@@ -15,11 +17,17 @@ func eventRunner(t *testing.T) (*Runner, *[]string) {
 	r := runtimeRunner(t)
 	var got []string
 	r.http = &http.Client{Transport: runtimeTransport(func(req *http.Request) (*http.Response, error) {
-		var p protocol.Progress
-		b, _ := io.ReadAll(req.Body)
-		json.Unmarshal(b, &p)
-		got = append(got, p.Text)
-		return runtimeResponse(), nil
+		if req.URL.Path == "/v1/progress" {
+			var p protocol.Progress
+			b, _ := io.ReadAll(req.Body)
+			json.Unmarshal(b, &p)
+			got = append(got, p.Text)
+		}
+		resp := runtimeResponse()
+		if req.URL.Path == "/v1/usage" {
+			resp.Body = io.NopCloser(strings.NewReader(`{}`))
+		}
+		return resp, nil
 	})}
 	return r, &got
 }
@@ -74,5 +82,38 @@ func TestCodexEvents(t *testing.T) {
 	feed(r, codexHarness{}, `{"type":"turn.failed","error":{"message":"context window exceeded\nmore"}}`)
 	if r.lastStop != "error: context window exceeded" {
 		t.Errorf("lastStop %q", r.lastStop)
+	}
+}
+
+func TestAntigravityEvents(t *testing.T) {
+	r, got := eventRunner(t)
+	r.shim = NewShim(&protocol.LLMAccess{
+		Models: []protocol.ModelInfo{{Name: "gemini-4-neon-high"}},
+		Config: &flow.LLMConfig{Limits: &flow.Limits{Tokens: 5000}},
+	}, "g")
+	feed(r, antigravityHarness{},
+		`{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"go test ./..."}}}}`,
+		`{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"mcp_flow_flow_finish","tool_info":{"name":"mcp_flow_flow_finish","parameters":{"outcome":"done"}}}}`,
+		`{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","text_delta":"All tests pass.\nDetails","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_tokens":500}}}`,
+		`{"event":"result","result":{"status":"SUCCESS"}}`,
+	)
+	want := []string{"$ go test ./...", "Finishing: done", "All tests pass."}
+	if len(*got) != len(want) {
+		t.Fatalf("progress %q", *got)
+	}
+	for i := range want {
+		if (*got)[i] != want[i] {
+			t.Errorf("progress[%d] = %q, want %q", i, (*got)[i], want[i])
+		}
+	}
+	if in, out, calls := r.shim.Usage(); in != 1500 || out != 200 || calls != 1 {
+		t.Fatalf("shim usage = %d/%d/%d", in, out, calls)
+	}
+	if r.lastStop != "success" {
+		t.Errorf("lastStop = %q", r.lastStop)
+	}
+	feed(r, antigravityHarness{}, `{"event":"result","result":{"status":"ERROR","error":"quota exceeded\nmore"}}`)
+	if r.lastStop != "error: quota exceeded" {
+		t.Errorf("lastStop = %q", r.lastStop)
 	}
 }

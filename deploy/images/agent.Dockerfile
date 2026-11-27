@@ -1,7 +1,7 @@
 # Runtime for pod nodes: node-runner (ai-flow node) + the agent harnesses (pi with
-# the ai-flow pi extension, opencode, codex), git, ripgrep, python3 and node.
-# Runs as uid 1000 with a read-only root filesystem; everything writable lives
-# under /work and /tmp.
+# the ai-flow pi extension, opencode, codex, antigravity), git, ripgrep, python3
+# and node. Runs as uid 1000 with a read-only root filesystem; everything
+# writable lives under /work and /tmp.
 FROM node:22-bookworm-slim
 ARG PI_VERSION=0.73.1
 ARG CODEX_VERSION=0.166.0
@@ -15,12 +15,15 @@ RUN apt-get update \
  && arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
  && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${arch}.tar.gz" \
     | tar -xz -C /usr/local/bin opencode \
- && opencode --version && codex --version
+ && curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin \
+ && rm -rf /root/.cache/antigravity \
+ && opencode --version && codex --version && agy --version
 COPY pi-ext /opt/ai-flow/pi-ext
 COPY bin/linux/ai-flow /usr/local/bin/ai-flow
 ENV AI_FLOW_PI=pi \
     AI_FLOW_OPENCODE=opencode \
     AI_FLOW_CODEX=codex \
+    AI_FLOW_AGY=agy \
     AI_FLOW_PI_EXT=/opt/ai-flow/pi-ext/index.ts \
     HOME=/work/flow/home \
     PI_OFFLINE=1 \
